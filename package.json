@@ -1,0 +1,27 @@
+{
+  "name": "poke-around",
+  "version": "0.3.2",
+  "description": "Expose your machine to your Poke AI assistant via MCP tunnel",
+  "type": "module",
+  "scripts": {
+    "build:bridge": "bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-gate-bridge.js",
+    "build": "zig build",
+    "release": "bun run build:bridge && zig build release-all"
+  },
+  "keywords": [
+    "poke",
+    "mcp",
+    "tunnel",
+    "shell",
+    "terminal",
+    "ai",
+    "cli",
+    "remote",
+    "os"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0"
+  }
+}

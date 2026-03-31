@@ -1,0 +1,7 @@
+.mermaid svg {
+  line-height: normal !important;
+}
+
+.mermaid svg * {
+  line-height: normal !important;
+}

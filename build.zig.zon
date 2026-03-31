@@ -1,0 +1,8 @@
+.{
+    .name = .poke_gate,
+    .version = "0.3.2",
+    .fingerprint = 0xedc5fc08818e9501,
+    .minimum_zig_version = "0.14.0",
+    .paths = .{"."},
+    .dependencies = .{},
+}
