@@ -1,7 +1,7 @@
 .{
-    .name = "poke-around",
+    .name = .poke_around,
     .version = "0.3.2",
-    .fingerprint = 0xedc5fc08818e9501,
+    .fingerprint = 0xe68d55cca2ea6d76,
     .minimum_zig_version = "0.13.0",
     .paths = .{"."},
     .dependencies = .{},
