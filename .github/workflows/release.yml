@@ -129,64 +129,10 @@ jobs:
 
             Then open Poke macOS Around from your menu bar.
 
-            Or install via Homebrew:
-
-            ```
-            brew install f/tap/poke-around
-            ```
-
             ## CLI alternative
 
+            Download the binary for your platform and run it:
+
+            ```bash
+            ./poke-around
             ```
-            npx poke-around
-            ```
-
-      - name: Compute DMG SHA256
-        id: sha
-        run: echo "sha256=$(shasum -a 256 'build/release/Poke.macOS.Gate.dmg' | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-
-      - name: Update Homebrew Cask tap
-        env:
-          TAP_REPO_TOKEN_HOMEBREW: ${{ secrets.TAP_REPO_TOKEN_HOMEBREW }}
-          VERSION: ${{ steps.version.outputs.tag }}
-          SHA256: ${{ steps.sha.outputs.sha256 }}
-        run: |
-          if [[ -z "${TAP_REPO_TOKEN_HOMEBREW:-}" ]]; then
-            echo "Skipping Homebrew tap update because TAP_REPO_TOKEN_HOMEBREW is not set."
-            exit 0
-          fi
-
-          VERSION_NUM="${VERSION#v}"
-          git clone https://x-access-token:${TAP_REPO_TOKEN_HOMEBREW}@github.com/f/homebrew-tap.git tap
-          mkdir -p tap/Casks
-          cat > tap/Casks/poke-around.rb << EOF
-          cask "poke-around" do
-            version "${VERSION_NUM}"
-            sha256 "${SHA256}"
-
-            url "https://github.com/undivisible/poke-around/releases/download/${VERSION}/Poke.macOS.Gate.dmg"
-            name "Poke Around"
-            desc "macOS menu bar app to expose your machine to your Poke AI assistant"
-            homepage "https://github.com/undivisible/poke-around"
-
-            depends_on macos: ">= :sequoia"
-
-            app "Poke macOS Around.app"
-
-            postflight do
-              system_command "/usr/bin/xattr", args: ["-cr", "#{appdir}/Poke macOS Around.app"]
-            end
-
-            zap trash: [
-              "~/Library/Preferences/dev.fka.Poke-macOS-Gate.plist",
-              "~/Library/Saved Application State/dev.fka.Poke-macOS-Gate.savedState",
-              "~/.config/poke-around",
-            ]
-          end
-          EOF
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "Update poke-around to ${VERSION}"
-          git push

@@ -2,14 +2,6 @@
 
 ## Install
 
-### Homebrew
-
-The recommended way to install on macOS:
-
-```bash
-brew install f/tap/poke-around
-```
-
 ### Manual download
 
 Download the latest binary for your platform from [GitHub Releases](https://github.com/undivisible/poke-around/releases/latest).

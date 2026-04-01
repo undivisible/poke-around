@@ -42,15 +42,11 @@ features:
     authenticated agent can reach your machine.
 ---
 
-## Quick install
+## Quick start
 
 ::: code-group
 
-```bash [Homebrew]
-brew install f/tap/poke-around
-```
-
-```bash [npm]
+```bash [Binary]
 ./poke-around
 ```
 

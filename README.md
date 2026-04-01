@@ -21,12 +21,6 @@ Run Poke Around on your Mac, then message Poke from iMessage, Telegram, or SMS t
 
 ## Install
 
-**Homebrew** (recommended)
-
-```bash
-brew install f/tap/poke-around
-```
-
 **Install via Zig**
 
 If you have Zig installed, you can build and install the binary from source:

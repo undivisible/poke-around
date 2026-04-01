@@ -78,4 +78,4 @@ In **full** mode, all tools execute directly without approval.
 
 ## Reporting issues
 
-If you discover a security vulnerability, please email [security@fka.dev](mailto:security@fka.dev) instead of opening a public issue.
+If you discover a security vulnerability, please report it privately via GitHub Security Advisories in the [poke-around repository](https://github.com/undivisible/poke-around/security/advisories/new) instead of opening a public issue.
