@@ -38,6 +38,10 @@ pub const AppRuntime = struct {
             _ = p.wait() catch std.process.Child.Term{ .Exited = 0 };
         }
         self.allocator.free(self.bridge_path);
+        // Free state and runtime allocations
+        self.state.deinit();
+        self.allocator.destroy(self.state);
+        // Runtime itself is freed by caller with allocator.destroy(runtime)
     }
 };
 
@@ -515,4 +519,5 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
 
     logAlways(ansi.blue ++ ansi.bold ++ "Shutting down..." ++ ansi.reset, .{});
     runtime.deinit();
+    allocator.destroy(runtime);
 }

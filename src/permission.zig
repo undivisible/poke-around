@@ -37,6 +37,7 @@ pub const PermissionService = struct {
     }
 
     pub fn deinit(self: *PermissionService) void {
+        self.allocator.free(self.secret);
         var pit = self.pending.iterator();
         while (pit.next()) |entry| {
             self.allocator.free(entry.value_ptr.session_id);
