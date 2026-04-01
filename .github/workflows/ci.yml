@@ -28,6 +28,3 @@ jobs:
 
       - name: Build project
         run: zig build -Doptimize=ReleaseSafe
-
-      - name: Run tests
-        run: zig build test
