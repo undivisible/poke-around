@@ -63,9 +63,11 @@ async function runTunnel(): Promise<void> {
   // Use hostname to allow multiple machine instances (swarm mode)
   const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
 
-  // ── Setup Tray ──
-  const isMac = os.platform() === "darwin";
-  const isWin = os.platform() === "win32";
+  // ── Setup Tray (skip if headless/SSH) ──
+  let systray: any = null;
+  try {
+    const isMac = os.platform() === "darwin";
+    const isWin = os.platform() === "win32";
 
   const itemTitle = {
     title: "Poke Around",
@@ -95,9 +97,9 @@ async function runTunnel(): Promise<void> {
       systray.kill(false);
       emit({ type: "user_exit" });
     },
-  };
+    };
 
-  const systray = new SysTray({
+    systray = new SysTray({
     menu: {
       icon: isWin ? iconIco : iconPng,
       isTemplateIcon: isMac,
@@ -122,8 +124,13 @@ async function runTunnel(): Promise<void> {
   });
 
   systray.ready().catch(() => {});
+  } catch (err) {
+    // Skip systray in headless mode
+    log(`Running without system tray`);
+  }
 
   const updateStatus = (status: string) => {
+    if (!systray) return;
     itemStatus.title = `Agent: ${status}`;
     systray.sendAction({
       type: "update-item",

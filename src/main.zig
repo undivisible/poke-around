@@ -80,6 +80,11 @@ pub fn main() !void {
         return;
     }
 
+    if (std.mem.eql(u8, subcmd, "status")) {
+        try runStatus(allocator);
+        return;
+    }
+
     if (std.mem.eql(u8, subcmd, "set-mode")) {
         const new_mode = if (argv.len > 1) argv[1] else {
             std.debug.print("Usage: poke-around set-mode <full|limited|sandbox>\n", .{});
@@ -259,6 +264,7 @@ fn printHelp() void {
         \\
         \\USAGE:
         \\  poke-around [--mode <mode>] [--verbose]
+        \\  poke-around status
         \\  poke-around run-agent <name>
         \\  poke-around agent get <name>
         \\  poke-around agent create [--prompt "<description>"]
@@ -285,3 +291,95 @@ fn printAgentUsage() void {
         \\
     , .{});
 }
+
+/// Show the status of poke-around daemon
+fn runStatus(allocator: std.mem.Allocator) !void {
+    // Check if systemd service is running
+    const systemd_check = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "systemctl", "--user", "is-active", "poke-around.service" },
+    }) catch null;
+    const is_systemd_running = if (systemd_check) |result| blk: {
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        break :blk result.term.Exited == 0;
+    } else false;
+
+    const state_json = config.readStateJson(allocator) catch {
+        if (is_systemd_running) {
+            // Service is running via systemd but no state file yet
+            std.debug.print("\n  {s}●{s} poke-around {s}starting{s}\n\n", .{ app.ansi.yellow, app.ansi.reset, app.ansi.yellow, app.ansi.reset });
+            std.debug.print("  Service is starting up...\n\n", .{});
+            std.debug.print("  Use {s}journalctl --user -u poke-around -f{s} to see logs\n\n", .{ app.ansi.dim, app.ansi.reset });
+            return;
+        }
+        std.debug.print("\npoke-around is {s}not running{s}\n\n", .{ app.ansi.red, app.ansi.reset });
+        std.debug.print("Start it with: {s}systemctl --user start poke-around{s}\n\n", .{ app.ansi.dim, app.ansi.reset });
+        return;
+    };
+    defer allocator.free(state_json);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, state_json, .{}) catch {
+        std.debug.print("poke-around state file corrupted\n", .{});
+        return;
+    };
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => {
+            std.debug.print("Invalid state format\n", .{});
+            return;
+        },
+    };
+
+    const is_running = is_systemd_running or blk: {
+        const pid_val = obj.get("pid") orelse break :blk false;
+        const pid = switch (pid_val) {
+            .integer => |i| i,
+            else => break :blk false,
+        };
+        // Check if PID exists
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &.{ "kill", "-0", try std.fmt.allocPrint(allocator, "{d}", .{pid}) },
+        }) catch break :blk false;
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        break :blk result.term.Exited == 0;
+    };
+
+    std.debug.print("\n", .{});
+    std.debug.print("  {s}●{s} poke-around {s}{s}{s}\n\n", .{
+        if (is_running) app.ansi.green else app.ansi.red,
+        app.ansi.reset,
+        if (is_running) app.ansi.green else app.ansi.red,
+        if (is_running) "running" else "stopped",
+        app.ansi.reset,
+    });
+
+    if (obj.get("connectionId")) |conn| {
+        const conn_str = switch (conn) {
+            .string => |s| s,
+            else => "unknown",
+        };
+        std.debug.print("  Connection ID: {s}{s}{s}\n", .{ app.ansi.dim, conn_str, app.ansi.reset });
+    }
+
+    const mode = config.readPermissionMode(allocator) catch "full";
+    defer allocator.free(mode);
+    std.debug.print("  Access mode:   {s}{s}{s}\n", .{ app.ansi.dim, mode, app.ansi.reset });
+
+    if (obj.get("port")) |port_val| {
+        const port = switch (port_val) {
+            .integer => |p| p,
+            else => 0,
+        };
+        std.debug.print("  MCP server:    {s}http://127.0.0.1:{d}/mcp{s}\n", .{ app.ansi.dim, port, app.ansi.reset });
+    }
+
+    std.debug.print("\n", .{});
+    std.debug.print("  Use {s}journalctl --user -u poke-around -f{s} to see logs\n", .{ app.ansi.dim, app.ansi.reset });
+    std.debug.print("\n", .{});
+}
+

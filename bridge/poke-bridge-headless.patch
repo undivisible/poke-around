@@ -1,0 +1,21 @@
+--- a/bridge/poke-bridge.ts
++++ b/bridge/poke-bridge.ts
+@@ -63,6 +63,10 @@ async function runTunnel(): Promise<void> {
+   // Use hostname to allow multiple machine instances (swarm mode)
+   const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+ 
++  // ── Check if running headless (systemd, SSH, no display) ──
++  const hasDisplay = process.env.DISPLAY || process.platform === "darwin" || process.platform === "win32";
++  const isHeadless = !hasDisplay || process.env.SSH_CONNECTION || process.env.SSH_TTY;
++
+   // ── Setup Tray ──
+   const isMac = os.platform() === "darwin";
+   const isWin = os.platform() === "win32";
+@@ -97,6 +101,7 @@ async function runTunnel(): Promise<void> {
+     },
+   };
+ 
++  let systray: any = null;
+   const systray = new SysTray({
+     menu: {
+       icon: isWin ? iconIco : iconPng,
