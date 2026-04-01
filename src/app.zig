@@ -24,8 +24,8 @@ pub const AppRuntime = struct {
     pub fn deinit(self: *AppRuntime) void {
         self.stop_flag.store(true, .release);
         if (self.bridge_process) |*p| {
-            p.kill() catch {};
-            _ = p.wait() catch {};
+            _ = p.kill() catch std.process.Child.Term{ .Signal = 15 };
+            _ = p.wait() catch std.process.Child.Term{ .Exited = 0 };
         }
         self.allocator.free(self.bridge_path);
     }
@@ -202,7 +202,11 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch {
+        // If it's not JSON, it might be auth output from the Poke SDK (like login codes)
+        logAlways("{s}", .{trimmed});
+        return;
+    };
     const obj = switch (parsed.value) {
         .object => |o| o,
         else => return,
@@ -419,6 +423,14 @@ fn pokeCredentialsPath(allocator: std.mem.Allocator) ![]u8 {
 
 // ── Main daemon entry point ───────────────────────────────────────────────────
 
+var global_runtime: ?*AppRuntime = null;
+
+pub fn initiateShutdown() void {
+    if (global_runtime) |rt| {
+        rt.stop_flag.store(true, .release);
+    }
+}
+
 pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
     // Kill existing instances
     platform.killExistingInstances(allocator);
@@ -472,8 +484,13 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
     // Start bridge
     try startBridge(runtime);
 
+    global_runtime = runtime;
+
     // Block main thread (signal handling)
     while (!runtime.stop_flag.load(.acquire)) {
         std.time.sleep(1 * std.time.ns_per_s);
     }
+
+    logAlways("Shutting down...", .{});
+    runtime.deinit();
 }

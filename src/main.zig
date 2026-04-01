@@ -122,12 +122,8 @@ fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool)
     try app.runDaemon(allocator, mode_str, verbose);
 }
 
-var shutdown_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-
 fn handleSignal(_: c_int) callconv(.C) void {
-    shutdown_flag.store(true, .release);
-    std.debug.print("\nShutting down...\n", .{});
-    std.process.exit(0);
+    app.initiateShutdown();
 }
 
 /// Create an agent via the Poke bridge (sends a message to the Poke agent).
