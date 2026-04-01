@@ -59,7 +59,7 @@ pub fn discoverAgents(allocator: std.mem.Allocator) ![]Agent {
         return allocator.alloc(Agent, 0);
     defer dir.close();
 
-    var agents = std.ArrayList(Agent).init(allocator);
+    var agents = std.array_list.Managed(Agent).init(allocator);
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file) continue;
@@ -240,8 +240,8 @@ const SchedulerCtx = struct {
 };
 
 var scheduler_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-var scheduler_threads: std.ArrayList(std.Thread) = undefined;
-var scheduler_ctxs: std.ArrayList(*SchedulerCtx) = undefined;
+var scheduler_threads: std.array_list.Managed(std.Thread) = undefined;
+var scheduler_ctxs: std.array_list.Managed(*SchedulerCtx) = undefined;
 var scheduler_allocator: std.mem.Allocator = undefined;
 
 /// Start the agent scheduler. Safe to call only once at a time.
@@ -250,8 +250,8 @@ pub fn startScheduler(allocator: std.mem.Allocator, log_enabled: bool) !void {
     scheduler_running.store(true, .release);
 
     scheduler_allocator = allocator;
-    scheduler_threads = std.ArrayList(std.Thread).init(allocator);
-    scheduler_ctxs = std.ArrayList(*SchedulerCtx).init(allocator);
+    scheduler_threads = std.array_list.Managed(std.Thread).init(allocator);
+    scheduler_ctxs = std.array_list.Managed(*SchedulerCtx).init(allocator);
 
     const agents = try discoverAgents(allocator);
     defer {
@@ -299,7 +299,7 @@ fn schedulerLoop(ctx: *SchedulerCtx) void {
         // Sleep in 1s increments so we can check stop flag
         var slept: u64 = 0;
         while (slept < ctx.agent.interval_ms and !ctx.stop.load(.acquire)) {
-            std.time.sleep(1 * std.time.ns_per_s);
+            std.Thread.sleep(1 * std.time.ns_per_s);
             slept += 1000;
         }
         if (!ctx.stop.load(.acquire)) {

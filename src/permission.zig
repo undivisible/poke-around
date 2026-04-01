@@ -23,7 +23,7 @@ pub const PermissionService = struct {
     allocator: std.mem.Allocator,
     secret: []u8,
     pending: std.StringHashMap(Approval),
-    whitelist: std.StringHashMap(std.ArrayList([]u8)),
+    whitelist: std.StringHashMap(std.array_list.Managed([]u8)),
     mutex: std.Thread.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, secret: []const u8) !PermissionService {
@@ -31,7 +31,7 @@ pub const PermissionService = struct {
             .allocator = allocator,
             .secret = try allocator.dupe(u8, secret),
             .pending = std.StringHashMap(Approval).init(allocator),
-            .whitelist = std.StringHashMap(std.ArrayList([]u8)).init(allocator),
+            .whitelist = std.StringHashMap(std.array_list.Managed([]u8)).init(allocator),
             .mutex = .{},
         };
     }
@@ -159,7 +159,7 @@ pub const PermissionService = struct {
 
         if (!self.whitelist.contains(session_id)) {
             const key = try self.allocator.dupe(u8, session_id);
-            try self.whitelist.put(key, std.ArrayList([]u8).init(self.allocator));
+            try self.whitelist.put(key, std.array_list.Managed([]u8).init(self.allocator));
         }
         const list = self.whitelist.getPtr(session_id).?;
         const pat_copy = try self.allocator.dupe(u8, pattern);
@@ -195,7 +195,7 @@ pub const PermissionService = struct {
         }
 
         // Remove pending approvals for this session
-        var to_remove = std.ArrayList([]const u8).init(self.allocator);
+        var to_remove = std.array_list.Managed([]const u8).init(self.allocator);
         defer to_remove.deinit();
 
         var it = self.pending.iterator();

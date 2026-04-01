@@ -128,7 +128,7 @@ fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool)
     if (@import("builtin").os.tag != .windows) {
         const sa = std.posix.Sigaction{
             .handler = .{ .handler = handleSignal },
-            .mask = std.posix.empty_sigset,
+            .mask = std.mem.zeroes(std.posix.sigset_t),
             .flags = 0,
         };
         std.posix.sigaction(std.posix.SIG.INT, &sa, null);
@@ -137,7 +137,7 @@ fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool)
     try app.runDaemon(allocator, mode_str, verbose);
 }
 
-fn handleSignal(_: c_int) callconv(.C) void {
+fn handleSignal(_: c_int) callconv(.c) void {
     app.initiateShutdown();
 }
 
@@ -163,9 +163,9 @@ fn runAgentCreate(allocator: std.mem.Allocator, prompt: ?[]const u8) !void {
 
     const description = if (prompt) |p| p else blk: {
         std.debug.print("\n  Describe the agent you want to create:\n  > ", .{});
-        var line_buf: [1024]u8 = undefined;
-        const stdin = std.io.getStdIn().reader();
-        const line = try stdin.readUntilDelimiterOrEof(&line_buf, '\n') orelse return error.NoInput;
+        var r_buf: [1024]u8 = undefined;
+        var stdin = std.fs.File.stdin().reader(&r_buf);
+        const line = (try stdin.interface.takeDelimiter('\n')) orelse return error.NoInput;
         break :blk std.mem.trim(u8, line, " \t\r\n");
     };
 

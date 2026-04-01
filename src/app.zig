@@ -180,7 +180,7 @@ fn bridgeStdoutReader(ctx: *BridgeCtx) void {
 
     const stdout = runtime.bridge_process.?.stdout orelse return;
     var buf: [4096]u8 = undefined;
-    var line_buf = std.ArrayList(u8).init(runtime.allocator);
+    var line_buf = std.array_list.Managed(u8).init(runtime.allocator);
     defer line_buf.deinit();
 
     while (!runtime.stop_flag.load(.acquire)) {
@@ -291,7 +291,7 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
 }
 
 fn reconnectAfterDelay(runtime: *AppRuntime) void {
-    std.time.sleep(RECONNECT_DELAY_MS * std.time.ns_per_ms);
+    std.Thread.sleep(RECONNECT_DELAY_MS * std.time.ns_per_ms);
     if (runtime.stop_flag.load(.acquire)) return;
 
     logAlways("Reconnecting bridge...", .{});
@@ -341,9 +341,9 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
     defer runtime.allocator.free(msg);
 
     // JSON-encode the message for the bridge
-    var escaped_buf = std.ArrayList(u8).init(runtime.allocator);
+    var escaped_buf = std.array_list.Managed(u8).init(runtime.allocator);
     defer escaped_buf.deinit();
-    try std.json.stringify(msg, .{}, escaped_buf.writer());
+    try escaped_buf.writer().print("{f}", .{std.json.fmt(msg, .{})});
 
     const cmd = try std.fmt.allocPrint(
         runtime.allocator,
@@ -371,7 +371,7 @@ fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
     };
 
     // Read connection IDs to clean up
-    var ids = std.ArrayList([]const u8).init(allocator);
+    var ids = std.array_list.Managed([]const u8).init(allocator);
     defer ids.deinit();
 
     if (obj.get("connectionId")) |v| {
@@ -523,7 +523,7 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
 
     // Block main thread (signal handling)
     while (!runtime.stop_flag.load(.acquire)) {
-        std.time.sleep(1 * std.time.ns_per_s);
+        std.Thread.sleep(1 * std.time.ns_per_s);
     }
 
     logAlways(ansi.blue ++ ansi.bold ++ "Shutting down..." ++ ansi.reset, .{});

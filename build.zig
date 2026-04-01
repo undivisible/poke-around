@@ -7,9 +7,11 @@ pub fn build(b: *std.Build) void {
     // ── Main executable ──────────────────────────────────────────────────────
     const exe = b.addExecutable(.{
         .name = "poke-around",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     b.installArtifact(exe);
 
@@ -66,9 +68,11 @@ pub fn build(b: *std.Build) void {
         });
         const cross_exe = b.addExecutable(.{
             .name = "poke-around",
-            .root_source_file = b.path("src/main.zig"),
-            .target = cross_target,
-            .optimize = .ReleaseSafe,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = cross_target,
+                .optimize = .ReleaseSafe,
+            }),
         });
         const dest_dir = b.fmt("release/{s}", .{rt.name});
         const install_cross = b.addInstallArtifact(cross_exe, .{
@@ -86,9 +90,11 @@ pub fn build(b: *std.Build) void {
     // ── Test step ────────────────────────────────────────────────────────────
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     const run_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_tests.step);

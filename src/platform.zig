@@ -117,7 +117,7 @@ fn buildMacosSandboxProfile(allocator: std.mem.Allocator, home: []const u8) ![]u
 
 fn singleQuote(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     // Replace every ' with '"'"' for shell-safe single quoting
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf = std.array_list.Managed(u8).init(allocator);
     try buf.append('\'');
     for (s) |c| {
         if (c == '\'') {
@@ -282,7 +282,7 @@ pub fn extractExecutable(allocator: std.mem.Allocator, segment: []const u8) ![]u
 
 /// Split a command into segments on &&, ||, ;, newline.
 pub fn splitCommandSegments(allocator: std.mem.Allocator, command: []const u8) ![][]const u8 {
-    var segments = std.ArrayList([]const u8).init(allocator);
+    var segments = std.array_list.Managed([]const u8).init(allocator);
     var i: usize = 0;
     var start: usize = 0;
     while (i < command.len) {

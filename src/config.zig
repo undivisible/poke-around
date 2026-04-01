@@ -132,9 +132,9 @@ pub fn setStateField(allocator: std.mem.Allocator, field: []const u8, value: []c
     };
     try obj.put(field, std.json.Value{ .string = value });
 
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf = std.array_list.Managed(u8).init(allocator);
     defer buf.deinit();
-    try std.json.stringify(std.json.Value{ .object = obj }, .{}, buf.writer());
+    try buf.writer().print("{f}", .{std.json.fmt(std.json.Value{ .object = obj }, .{})});
     try writeStateJson(allocator, buf.items);
 }
 
@@ -188,9 +188,9 @@ pub fn savePermissionMode(allocator: std.mem.Allocator, mode: []const u8) !void 
     defer obj.deinit();
     try obj.put("permissionMode", std.json.Value{ .string = mode });
 
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf = std.array_list.Managed(u8).init(allocator);
     defer buf.deinit();
-    try std.json.stringify(std.json.Value{ .object = obj }, .{}, buf.writer());
+    try buf.writer().print("{f}", .{std.json.fmt(std.json.Value{ .object = obj }, .{})});
 
     const file = try std.fs.createFileAbsolute(path, .{});
     defer file.close();
