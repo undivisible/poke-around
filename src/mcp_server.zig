@@ -701,6 +701,8 @@ const TimeoutCtx = struct {
 };
 
 fn timeoutThread(ctx: *TimeoutCtx, timeout_ms: u64) void {
+    // ctx is owned by this thread — free it on exit regardless of outcome
+    defer ctx.allocator.destroy(ctx);
     std.time.sleep(timeout_ms * std.time.ns_per_ms);
     if (!ctx.done.load(.acquire)) {
         _ = ctx.child.kill() catch std.process.Child.Term{ .Signal = 15 };
@@ -709,6 +711,7 @@ fn timeoutThread(ctx: *TimeoutCtx, timeout_ms: u64) void {
 
 fn runCommandInternal(
     allocator: std.mem.Allocator,
+    timeout_allocator: std.mem.Allocator,
     command: []const u8,
     cwd: ?[]const u8,
     mode: PermissionMode,
@@ -732,19 +735,26 @@ fn runCommandInternal(
     const start_ms = std.time.milliTimestamp();
     try child.spawn();
 
-    // Heap-allocate ctx so the watchdog thread can safely access it
-    const timeout_ctx = try allocator.create(TimeoutCtx);
+    // Allocate from the long-lived timeout_allocator so the watchdog thread
+    // can safely access ctx after the arena (allocator) is freed.
+    // Ownership transfers to the thread; it frees ctx on exit.
+    const timeout_ctx = try timeout_allocator.create(TimeoutCtx);
     timeout_ctx.* = .{
         .child = &child,
         .done = std.atomic.Value(bool).init(false),
-        .allocator = allocator,
+        .allocator = timeout_allocator,
     };
-    const watchdog = std.Thread.spawn(.{}, timeoutThread, .{ timeout_ctx, 30_000 }) catch null;
+    const watchdog = std.Thread.spawn(.{}, timeoutThread, .{ timeout_ctx, 30_000 }) catch blk: {
+        // Spawn failed — we still own ctx, free it now.
+        timeout_allocator.destroy(timeout_ctx);
+        break :blk null;
+    };
 
     const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch try allocator.dupe(u8, "");
     const stderr_raw = child.stderr.?.readToEndAlloc(allocator, 10 * 1024) catch try allocator.dupe(u8, "");
 
     const timed_out = timeout_ctx.done.load(.acquire) == false;
+    // Signal the thread that the command is done; thread frees ctx on its own.
     timeout_ctx.done.store(true, .release);
 
     const wait_result = child.wait() catch std.process.Child.Term{ .Exited = 1 };
@@ -754,7 +764,7 @@ fn runCommandInternal(
     };
 
     if (watchdog) |t| t.detach();
-    allocator.destroy(timeout_ctx);
+    // Do NOT free timeout_ctx here — thread owns it now.
 
     const stderr = if (sandbox_note) |note|
         try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ stderr_raw, note })
@@ -792,7 +802,7 @@ fn toolRunCommand(
         ));
     }
 
-    const result = runCommandInternal(allocator, command, cwd, state.permission_mode, state.home_dir) catch |err| {
+    const result = runCommandInternal(allocator, state.allocator, command, cwd, state.permission_mode, state.home_dir) catch |err| {
         state.loop_guard.release(fp, false);
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Command execution error: {}", .{err}));
     };
@@ -916,7 +926,7 @@ fn toolSystemInfo(allocator: std.mem.Allocator, state: *AppState) ![]const u8 {
         ,
     };
 
-    const result = runCommandInternal(allocator, cmd, null, .full, state.home_dir) catch |err|
+    const result = runCommandInternal(allocator, state.allocator, cmd, null, .full, state.home_dir) catch |err|
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "system_info error: {}", .{err}));
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -1018,7 +1028,7 @@ fn toolNetworkSpeed(allocator: std.mem.Allocator, args: std.json.Value, state: *
     }
     try parts.appendSlice(" && printf 'DL=%s\\nUL=%s\\n' \"${DL:-}\" \"${UL:-}\"");
 
-    const result = runCommandInternal(allocator, parts.items, null, .full, state.home_dir) catch |err|
+    const result = runCommandInternal(allocator, state.allocator, parts.items, null, .full, state.home_dir) catch |err|
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Speed test error: {}", .{err}));
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -1135,7 +1145,7 @@ fn toolWebFetch(allocator: std.mem.Allocator, args: std.json.Value, state: *AppS
     const cmd = try std.fmt.allocPrint(allocator, "curl -fsSL --max-time 15 {s}", .{url});
     defer allocator.free(cmd);
 
-    const res = runCommandInternal(allocator, cmd, null, state.permission_mode, state.home_dir) catch |err| {
+    const res = runCommandInternal(allocator, state.allocator, cmd, null, state.permission_mode, state.home_dir) catch |err| {
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "fetch failed: {}", .{err}));
     };
     defer allocator.free(res.stdout);
@@ -1204,7 +1214,7 @@ fn toolHttpRequest(allocator: std.mem.Allocator, args: std.json.Value, state: *A
     const cmd = try parts.toOwnedSlice();
     defer allocator.free(cmd);
 
-    const res = runCommandInternal(allocator, cmd, null, state.permission_mode, state.home_dir) catch |err| {
+    const res = runCommandInternal(allocator, state.allocator, cmd, null, state.permission_mode, state.home_dir) catch |err| {
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "http_request failed: {}", .{err}));
     };
     defer allocator.free(res.stdout);
