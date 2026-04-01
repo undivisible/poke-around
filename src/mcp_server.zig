@@ -551,6 +551,30 @@ fn handleToolCall(
         std.debug.print("[{s}] tool: {s}\n", .{ ts, tool_name });
     }
 
+    const status_cmd = std.fmt.allocPrint(allocator, "{{\"type\":\"status_update\",\"status\":\"Running: {s}\"}}", .{tool_name}) catch null;
+    if (status_cmd) |cmd| {
+        state.sendToBridge(cmd);
+        allocator.free(cmd);
+    }
+
+    const result = handleToolCallInner(allocator, tool_name, args, session_id, state);
+
+    const idle_cmd = std.fmt.allocPrint(allocator, "{{\"type\":\"status_update\",\"status\":\"Idle\"}}", .{}) catch null;
+    if (idle_cmd) |cmd| {
+        state.sendToBridge(cmd);
+        allocator.free(cmd);
+    }
+
+    return result;
+}
+
+fn handleToolCallInner(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    args: std.json.Value,
+    session_id: []const u8,
+    state: *AppState,
+) ![]const u8 {
     // Access policy check
     if (try evaluatePolicy(allocator, tool_name, args, state.permission_mode)) |reason| {
         defer allocator.free(reason);

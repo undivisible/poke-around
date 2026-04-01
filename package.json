@@ -4,7 +4,7 @@
   "description": "Expose your machine to your Poke AI assistant via MCP tunnel",
   "type": "module",
   "scripts": {
-    "build:bridge": "bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js",
+    "build:bridge": "bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js && cp -R bridge/node_modules/systray2/traybin bridge/dist/traybin",
     "build": "zig build",
     "release": "bun run build:bridge && zig build release-all"
   },
@@ -23,5 +23,8 @@
   "license": "MPL-2.0",
   "engines": {
     "bun": ">=1.0"
+  },
+  "dependencies": {
+    "systray2": "^2.1.4"
   }
 }

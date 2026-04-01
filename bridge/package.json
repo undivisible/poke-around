@@ -3,6 +3,7 @@
   "version": "0.3.2",
   "type": "module",
   "dependencies": {
-    "poke": "^0.4.2"
+    "poke": "^0.4.2",
+    "systray2": "^2.1.4"
   }
 }

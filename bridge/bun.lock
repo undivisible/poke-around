@@ -6,10 +6,25 @@
       "name": "poke-around-bridge",
       "dependencies": {
         "poke": "^0.4.2",
+        "systray2": "^2.1.4",
       },
     },
   },
   "packages": {
+    "debug": ["debug@4.4.3", "", { "dependencies": { "ms": "^2.1.3" } }, "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA=="],
+
+    "fs-extra": ["fs-extra@10.1.0", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^6.0.1", "universalify": "^2.0.0" } }, "sha512-oRXApq54ETRj4eMiFzGnHWGy+zo5raudjuxN0b8H7s/RU2oW0Wvsx9O0ACRN/kRq9E8Vu/ReskGB5o3ji+FzHQ=="],
+
+    "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
+
+    "jsonfile": ["jsonfile@6.2.0", "", { "dependencies": { "universalify": "^2.0.0" }, "optionalDependencies": { "graceful-fs": "^4.1.6" } }, "sha512-FGuPw30AdOIUTRMC2OMRtQV+jkVj2cfPqSeWXv1NEAJ1qZ5zb1X6z1mFhbfOB/iy3ssJCD+3KuZ8r8C3uVFlAg=="],
+
+    "ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
+
     "poke": ["poke@0.4.2", "", { "bin": { "poke": "dist/cli.cjs" } }, "sha512-eT4HPy3GcopLpHPv4Tb5PdwqEO2TYL9DQ3pGDHBrCdOWIaR3diS/Vlcu7lcMvznfl825cmbqOJFGs9r9/Wvq/Q=="],
+
+    "systray2": ["systray2@2.1.4", "", { "dependencies": { "debug": "^4.3.2", "fs-extra": "^10.0.0" } }, "sha512-ncviZ7m2fecb2tAAx7pl4nlbnwvSyL4GIKnRUvfiJXTsHysh3chSlxVxNk7Yj8jlfF2TsBn2CjLwCfhJQkR7/w=="],
+
+    "universalify": ["universalify@2.0.1", "", {}, "sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw=="],
   }
 }

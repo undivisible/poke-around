@@ -13,6 +13,9 @@
 import { PokeTunnel, isLoggedIn, login, getToken, Poke } from "poke";
 import * as readline from "node:readline";
 import * as os from "node:os";
+import _SysTray from "systray2";
+const SysTray = (_SysTray as any).default || _SysTray;
+import { iconPng, iconIco } from "./icon.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -60,6 +63,74 @@ async function runTunnel(): Promise<void> {
   // Use hostname to allow multiple machine instances (swarm mode)
   const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
 
+  // ── Setup Tray ──
+  const isMac = os.platform() === "darwin";
+  const isWin = os.platform() === "win32";
+
+  const itemTitle = {
+    title: "Poke Around",
+    tooltip: "",
+    enabled: false,
+  };
+  const itemStatus = {
+    title: "Agent: Idle",
+    tooltip: "Agent status",
+    enabled: false,
+  };
+  const itemRestart = {
+    title: "Restart Tunnel",
+    tooltip: "Restart the connection",
+    checked: false,
+    enabled: true,
+    click: () => {
+      emit({ type: "user_restart" });
+    },
+  };
+  const itemExit = {
+    title: "Exit",
+    tooltip: "Exit Poke Around",
+    checked: false,
+    enabled: true,
+    click: () => {
+      systray.kill(false);
+      emit({ type: "user_exit" });
+    },
+  };
+
+  const systray = new SysTray({
+    menu: {
+      icon: isWin ? iconIco : iconPng,
+      isTemplateIcon: isMac,
+      title: "",
+      tooltip: "Poke Around",
+      items: [
+        itemTitle,
+        SysTray.separator,
+        itemStatus,
+        SysTray.separator,
+        itemRestart,
+        itemExit,
+      ],
+    },
+    debug: false,
+  });
+
+  systray.onClick((action) => {
+    if (action.item.click) {
+      action.item.click();
+    }
+  });
+
+  systray.ready().catch(() => {});
+
+  const updateStatus = (status: string) => {
+    itemStatus.title = `Agent: ${status}`;
+    systray.sendAction({
+      type: "update-item",
+      item: itemStatus,
+    }).catch(() => {});
+  };
+
   // Create or reuse webhook
   let webhookUrl: string | null = null;
   let webhookToken: string | null = null;
@@ -105,6 +176,7 @@ async function runTunnel(): Promise<void> {
       const cmd = JSON.parse(trimmed) as Record<string, unknown>;
 
       if (cmd.type === "send_webhook") {
+        updateStatus("Sending message...");
         if (!webhookUrl || !webhookToken) {
           emit({ type: "webhook_error", message: "No webhook configured." });
           return;
@@ -119,10 +191,15 @@ async function runTunnel(): Promise<void> {
         } catch (err) {
           emit({ type: "webhook_error", message: String(err) });
         }
+        setTimeout(() => updateStatus("Idle"), 3000);
+
+      } else if (cmd.type === "status_update") {
+        updateStatus(cmd.status as string);
 
       } else if (cmd.type === "stop") {
         log("Stop requested.");
         await tunnel.stop();
+        systray.kill(false);
         process.exit(0);
       }
     } catch {
@@ -132,6 +209,7 @@ async function runTunnel(): Promise<void> {
 
   rl.on("close", () => {
     // parent closed stdin → shut down
+    systray.kill(false);
     tunnel.stop().finally(() => process.exit(0));
   });
 }

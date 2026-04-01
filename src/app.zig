@@ -259,6 +259,18 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
         };
         log(runtime.verbose, "Tools synced: {d}", .{count});
 
+    } else if (std.mem.eql(u8, event_type, "user_restart")) {
+        logAlways(ansi.yellow ++ "User requested restart..." ++ ansi.reset, .{});
+        if (runtime.bridge_process) |*p| {
+            _ = p.kill() catch std.process.Child.Term{ .Signal = 15 };
+            _ = p.wait() catch std.process.Child.Term{ .Exited = 0 };
+        }
+        runtime.bridge_process = null;
+
+    } else if (std.mem.eql(u8, event_type, "user_exit")) {
+        logAlways(ansi.blue ++ ansi.bold ++ "User requested exit via tray." ++ ansi.reset, .{});
+        initiateShutdown();
+
     } else if (std.mem.eql(u8, event_type, "webhook_ready")) {
         log(runtime.verbose, "Webhook configured.", .{});
 
