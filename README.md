@@ -1,39 +1,21 @@
-<p align="center">
-  <img src="assets/logo.png" width="128" height="128" alt="Poke Around icon">
-</p>
+Let Poke around your computer.
 
-<h1 align="center">Poke Around</h1>
-
-<p align="center">
-  Let your <a href="https://poke.com">Poke</a> AI assistant access your machine.<br>
-  <sub>A community project — not affiliated with Poke or The Interaction Company.</sub>
-</p>
-
-<p align="center">
-  <a href="https://github.com/undivisible/poke-around/releases/latest"><img src="https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square" alt="Latest Release"></a>
-  <a href="https://github.com/undivisible/poke-around/blob/main/LICENSE"><img src="https://img.shields.io/github/license/undivisible/poke-around?style=flat-square" alt="License"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%2015%2B-blue?style=flat-square" alt="Platform">
-</p>
-
----
-
-Run Poke Around on your Mac, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
+Run Poke Around on your machine, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
 
 ## Install
 
 **Install via Wax** (recommended)
 
-We recommend using the [Wax package manager](https://github.com/semitechnological/wax) instead of Homebrew.
-
-First, install Wax either from GitHub or via Cargo:
+We recommend [Wax](https://github.com/semitechnological/wax), a Homebrew-compatible package manager. Install it via Cargo:
 
 ```bash
 cargo install waxpkg
 ```
 
-Then install Poke Around using Wax:
+Then tap and install:
 
 ```bash
+wax tap add undivisible/tap
 wax install poke-around
 ```
 

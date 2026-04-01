@@ -340,19 +340,18 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
     );
     defer runtime.allocator.free(msg);
 
-    // JSON-encode the message for the bridge
-    var escaped_buf = std.ArrayList(u8).init(runtime.allocator);
-    defer escaped_buf.deinit();
-    try std.json.stringify(msg, .{}, escaped_buf.writer());
-
-    const cmd = try std.fmt.allocPrint(
+    // Use send-message directly (same as `poke-around notify` CLI).
+    // This avoids depending on the webhook being set up in the bridge.
+    var child = std.process.Child.init(
+        &.{ pickRuntime(runtime.bridge_path), runtime.bridge_path, "send-message", "--message", msg },
         runtime.allocator,
-        "{{\"type\":\"send_webhook\",\"message\":{s}}}",
-        .{escaped_buf.items},
     );
-    defer runtime.allocator.free(cmd);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Inherit;
+    child.stdin_behavior = .Ignore;
+    try child.spawn();
+    _ = child.wait() catch {};
 
-    runtime.state.sendToBridge(cmd);
     logAlways(ansi.dim ++ "Notified Poke agent about connection." ++ ansi.reset, .{});
 }
 

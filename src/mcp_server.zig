@@ -214,7 +214,11 @@ fn handleConnection(conn: std.net.Server.Connection, state: *AppState) void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const req = parseHttpRequest(allocator, conn.stream) catch return;
+    const req = parseHttpRequest(allocator, conn.stream) catch |err| {
+        const err_body = std.fmt.allocPrint(allocator, "{{\"error\":\"{}\"}}", .{err}) catch return;
+        writeHttpResponse(conn.stream, 400, err_body) catch {};
+        return;
+    };
     const response = buildHttpResponse(allocator, req, state) catch |err| {
         const err_body = std.fmt.allocPrint(allocator, "{{\"error\":\"{}\"}}", .{err}) catch return;
         writeHttpResponse(conn.stream, 500, err_body) catch {};
@@ -319,6 +323,7 @@ fn writeHttpResponse(stream: std.net.Stream, status: u16, body: []const u8) !voi
     try writer.print(
         "HTTP/1.1 {d} {s}\r\n" ++
             "Content-Type: application/json\r\n" ++
+            "Connection: close\r\n" ++
             "Access-Control-Allow-Origin: *\r\n" ++
             "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n" ++
             "Access-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, Accept\r\n" ++
