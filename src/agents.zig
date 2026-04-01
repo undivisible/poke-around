@@ -377,7 +377,7 @@ pub fn runAgentByName(allocator: std.mem.Allocator, name: []const u8) !void {
 
 // ── Download agent from GitHub ────────────────────────────────────────────────
 
-const REPO_BASE = "https://raw.githubusercontent.com/f/poke-around/main/examples/agents";
+const REPO_BASE = "https://raw.githubusercontent.com/undivisible/poke-around/main/examples/agents";
 
 pub fn downloadAgent(allocator: std.mem.Allocator, name: []const u8) !void {
     const agents_dir = try config.ensureAgentsDir(allocator);
@@ -419,7 +419,7 @@ pub fn downloadAgent(allocator: std.mem.Allocator, name: []const u8) !void {
     }
 
     const content = js_content orelse {
-        std.debug.print("Agent \"{s}\" not found.\nBrowse: https://github.com/f/poke-around/tree/main/examples/agents\n", .{name});
+        std.debug.print("Agent \"{s}\" not found.\nBrowse: https://github.com/undivisible/poke-around/tree/main/examples/agents\n", .{name});
         return error.AgentNotFound;
     };
     defer allocator.free(content);

@@ -4,7 +4,7 @@ Built a useful agent? Share it with the community by opening a pull request.
 
 ## How sharing works
 
-Community agents live in the [`examples/agents/`](https://github.com/f/poke-around/tree/main/examples/agents) directory of the Poke Around repository. Anyone can install them with:
+Community agents live in the [`examples/agents/`](https://github.com/undivisible/poke-around/tree/main/examples/agents) directory of the Poke Around repository. Anyone can install them with:
 
 ```bash
 ./poke-around agent get <name>
@@ -14,7 +14,7 @@ Community agents live in the [`examples/agents/`](https://github.com/f/poke-arou
 
 ### 1. Fork the repo
 
-Go to [github.com/f/poke-around](https://github.com/f/poke-around) and click **Fork**.
+Go to [github.com/undivisible/poke-around](https://github.com/undivisible/poke-around) and click **Fork**.
 
 ### 2. Add your agent files
 
@@ -65,7 +65,7 @@ Use `your_*_here` as placeholder values — the installer detects these and prom
 
 ### 6. Open a PR
 
-Push to your fork and open a pull request to `f/poke-around` with:
+Push to your fork and open a pull request to `undivisible/poke-around` with:
 
 - **Title:** `agent: add <name>`
 - **Description:** What the agent does, what service it connects to, any prerequisites
@@ -77,7 +77,7 @@ git commit -m "agent: add your-agent"
 git push origin agent/your-agent
 ```
 
-Then open the PR at [github.com/f/poke-around/compare](https://github.com/f/poke-around/compare).
+Then open the PR at [github.com/undivisible/poke-around/compare](https://github.com/undivisible/poke-around/compare).
 
 ## Agent ideas
 

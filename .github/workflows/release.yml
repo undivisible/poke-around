@@ -164,10 +164,10 @@ jobs:
             version "${VERSION_NUM}"
             sha256 "${SHA256}"
 
-            url "https://github.com/f/poke-around/releases/download/${VERSION}/Poke.macOS.Gate.dmg"
+            url "https://github.com/undivisible/poke-around/releases/download/${VERSION}/Poke.macOS.Gate.dmg"
             name "Poke Around"
             desc "macOS menu bar app to expose your machine to your Poke AI assistant"
-            homepage "https://github.com/f/poke-around"
+            homepage "https://github.com/undivisible/poke-around"
 
             depends_on macos: ">= :sequoia"
 

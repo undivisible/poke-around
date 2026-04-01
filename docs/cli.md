@@ -88,7 +88,7 @@ Sends your description to Poke with detailed instructions and examples. Poke gen
 ./poke-around agent get <name>
 ```
 
-Downloads an agent from the [community repository](https://github.com/f/poke-around/tree/main/examples/agents) and saves it to `~/.config/poke-around/agents/`.
+Downloads an agent from the [community repository](https://github.com/undivisible/poke-around/tree/main/examples/agents) and saves it to `~/.config/poke-around/agents/`.
 
 If the agent has an `.env` file, you'll be prompted to fill in the values:
 

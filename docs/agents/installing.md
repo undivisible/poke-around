@@ -59,7 +59,7 @@ If you already have a `.env.<name>` file, it won't be overwritten. You'll see:
 
 See all community agents at:
 
-[github.com/f/poke-around/tree/main/examples/agents](https://github.com/f/poke-around/tree/main/examples/agents)
+[github.com/undivisible/poke-around/tree/main/examples/agents](https://github.com/undivisible/poke-around/tree/main/examples/agents)
 
 ## Install via macOS app
 

@@ -14,7 +14,7 @@ hero:
       link: /getting-started
     - theme: alt
       text: View on GitHub
-      link: https://github.com/f/poke-around
+      link: https://github.com/undivisible/poke-around
 
 features:
 - icon: 🖥️
@@ -56,7 +56,7 @@ brew install f/tap/poke-around
 
 ```bash [Manual]
 # Download from GitHub Releases
-# https://github.com/f/poke-around/releases/latest
+# https://github.com/undivisible/poke-around/releases/latest
 ```
 
 :::

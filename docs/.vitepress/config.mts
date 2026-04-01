@@ -17,7 +17,7 @@ export default withMermaid(
         {
           text: 'Download',
           items: [
-            { text: 'macOS App', link: 'https://github.com/f/poke-around/releases/latest' },
+            { text: 'macOS App', link: 'https://github.com/undivisible/poke-around/releases/latest' },
             { text: 'Homebrew', link: '/getting-started#homebrew' },
             { text: 'npm', link: 'https://www.npmjs.com/package/poke-around' },
           ]
@@ -53,7 +53,7 @@ export default withMermaid(
         }
       ],
       socialLinks: [
-        { icon: 'github', link: 'https://github.com/f/poke-around' },
+        { icon: 'github', link: 'https://github.com/undivisible/poke-around' },
         { icon: 'npm', link: 'https://www.npmjs.com/package/poke-around' },
       ],
       footer: {
@@ -61,7 +61,7 @@ export default withMermaid(
         copyright: 'Released under the MIT License.',
       },
       editLink: {
-        pattern: 'https://github.com/f/poke-around/edit/main/docs/:path',
+        pattern: 'https://github.com/undivisible/poke-around/edit/main/docs/:path',
         text: 'Edit this page on GitHub',
       },
     },

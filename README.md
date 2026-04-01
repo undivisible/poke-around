@@ -10,9 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/f/poke-around/releases/latest"><img src="https://img.shields.io/github/v/release/f/poke-around?style=flat-square" alt="Latest Release"></a>
-  <a href="https://www.npmjs.com/package/poke-around"><img src="https://img.shields.io/npm/v/poke-around?style=flat-square" alt="npm"></a>
-  <a href="https://github.com/f/poke-around/blob/main/LICENSE"><img src="https://img.shields.io/github/license/f/poke-around?style=flat-square" alt="License"></a>
+  <a href="https://github.com/undivisible/poke-around/releases/latest"><img src="https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square" alt="Latest Release"></a>
+  <a href="https://github.com/undivisible/poke-around/blob/main/LICENSE"><img src="https://img.shields.io/github/license/undivisible/poke-around?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-macOS%2015%2B-blue?style=flat-square" alt="Platform">
 </p>
 
@@ -33,7 +32,7 @@ brew install f/tap/poke-around
 If you have Zig installed, you can build and install the binary from source:
 
 ```bash
-git clone https://github.com/f/poke-around.git
+git clone https://github.com/undivisible/poke-around.git
 cd poke-around
 zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/poke-around
@@ -41,7 +40,7 @@ zig build -Doptimize=ReleaseSafe
 
 **Manual download**
 
-Download the latest binary for your platform (Linux, macOS, Windows) from [Releases](https://github.com/f/poke-around/releases).
+Download the latest binary for your platform (Linux, macOS, Windows) from [Releases](https://github.com/undivisible/poke-around/releases).
 
 Since the app is not notarized on macOS, you may need to run:
 

@@ -33,9 +33,9 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/f/poke-around:latest
-            ghcr.io/f/poke-around:${{ steps.vars.outputs.tag }}
+            ghcr.io/undivisible/poke-around:latest
+            ghcr.io/undivisible/poke-around:${{ steps.vars.outputs.tag }}
           labels: |
-            org.opencontainers.image.source=https://github.com/f/poke-around
+            org.opencontainers.image.source=https://github.com/undivisible/poke-around
             org.opencontainers.image.description=Expose your machine to your Poke AI assistant via MCP tunnel
             org.opencontainers.image.licenses=MIT

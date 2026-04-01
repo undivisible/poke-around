@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in this project, please report it privately through GitHub Security Advisories:
 
-https://github.com/f/poke-around/security/advisories/new
+https://github.com/undivisible/poke-around/security/advisories/new
 
 Please do not disclose vulnerabilities publicly until maintainers have had a chance to investigate and patch.
 

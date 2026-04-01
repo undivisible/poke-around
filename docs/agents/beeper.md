@@ -104,4 +104,4 @@ Or use the macOS Agents editor.
 
 ## Source
 
-[View on GitHub](https://github.com/f/poke-around/blob/main/examples/agents/beeper.1h.js)
+[View on GitHub](https://github.com/undivisible/poke-around/blob/main/examples/agents/beeper.1h.js)
