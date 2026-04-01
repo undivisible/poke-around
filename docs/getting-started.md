@@ -2,6 +2,15 @@
 
 ## Install
 
+### Install via Wax
+
+We recommend using the [Wax package manager](https://github.com/semitechnological/wax) instead of Homebrew.
+
+```bash
+cargo install waxpkg
+wax install poke-around
+```
+
 ### Manual download
 
 Download the latest binary for your platform from [GitHub Releases](https://github.com/undivisible/poke-around/releases/latest).

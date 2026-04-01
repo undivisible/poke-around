@@ -21,9 +21,25 @@ Run Poke Around on your Mac, then message Poke from iMessage, Telegram, or SMS t
 
 ## Install
 
+**Install via Wax** (recommended)
+
+We recommend using the [Wax package manager](https://github.com/semitechnological/wax) instead of Homebrew.
+
+First, install Wax either from GitHub or via Cargo:
+
+```bash
+cargo install waxpkg
+```
+
+Then install Poke Around using Wax:
+
+```bash
+wax install poke-around
+```
+
 **Install via Zig**
 
-If you have Zig installed, you can build and install the binary from source:
+If you prefer to build from source:
 
 ```bash
 git clone https://github.com/undivisible/poke-around.git

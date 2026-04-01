@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "poke-around-bridge",
+      "dependencies": {
+        "poke": "^0.4.2",
+      },
+    },
+  },
+  "packages": {
+    "poke": ["poke@0.4.2", "", { "bin": { "poke": "dist/cli.cjs" } }, "sha512-eT4HPy3GcopLpHPv4Tb5PdwqEO2TYL9DQ3pGDHBrCdOWIaR3diS/Vlcu7lcMvznfl825cmbqOJFGs9r9/Wvq/Q=="],
+  }
+}

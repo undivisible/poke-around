@@ -46,6 +46,11 @@ features:
 
 ::: code-group
 
+```bash [Wax]
+cargo install waxpkg
+wax install poke-around
+```
+
 ```bash [Binary]
 ./poke-around
 ```
