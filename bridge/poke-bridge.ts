@@ -20,7 +20,7 @@ function emit(obj: Record<string, unknown>): void {
 }
 
 function log(msg: string): void {
-  process.stderr.write(`[bridge] ${msg}\n`);
+  process.stderr.write(`\x1b[2m[bridge] ${msg}\x1b[0m\n`);
 }
 
 async function ensureAuth(): Promise<string> {

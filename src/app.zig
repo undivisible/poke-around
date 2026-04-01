@@ -11,6 +11,16 @@ const agents = @import("agents.zig");
 
 const RECONNECT_DELAY_MS: u64 = 15_000;
 
+pub const ansi = struct {
+    pub const reset = "\x1b[0m";
+    pub const dim = "\x1b[2m";
+    pub const green = "\x1b[32m";
+    pub const blue = "\x1b[34m";
+    pub const yellow = "\x1b[33m";
+    pub const red = "\x1b[31m";
+    pub const bold = "\x1b[1m";
+};
+
 pub const AppRuntime = struct {
     allocator: std.mem.Allocator,
     state: *mcp_server.AppState,
@@ -35,19 +45,19 @@ fn log(verbose: bool, comptime fmt: []const u8, args: anytype) void {
     if (!verbose) return;
     const ts = std.time.timestamp();
     const secs = @mod(ts, 86400);
-    const h = @divTrunc(secs, 3600);
-    const m = @divTrunc(@mod(secs, 3600), 60);
-    const s = @mod(secs, 60);
-    std.debug.print("[{d:0>2}:{d:0>2}:{d:0>2}] " ++ fmt ++ "\n", .{ h, m, s } ++ args);
+    const h: u64 = @intCast(@divTrunc(secs, 3600));
+    const m: u64 = @intCast(@divTrunc(@mod(secs, 3600), 60));
+    const s: u64 = @intCast(@mod(secs, 60));
+    std.debug.print(ansi.dim ++ "{d:0>2}:{d:0>2}:{d:0>2} │ " ++ ansi.reset ++ fmt ++ "\n", .{ h, m, s } ++ args);
 }
 
 pub fn logAlways(comptime fmt: []const u8, args: anytype) void {
     const ts = std.time.timestamp();
     const secs = @mod(ts, 86400);
-    const h = @divTrunc(secs, 3600);
-    const m = @divTrunc(@mod(secs, 3600), 60);
-    const s = @mod(secs, 60);
-    std.debug.print("[{d:0>2}:{d:0>2}:{d:0>2}] " ++ fmt ++ "\n", .{ h, m, s } ++ args);
+    const h: u64 = @intCast(@divTrunc(secs, 3600));
+    const m: u64 = @intCast(@divTrunc(@mod(secs, 3600), 60));
+    const s: u64 = @intCast(@mod(secs, 60));
+    std.debug.print(ansi.dim ++ "{d:0>2}:{d:0>2}:{d:0>2} │ " ++ ansi.reset ++ fmt ++ "\n", .{ h, m, s } ++ args);
 }
 
 // ── Bridge resolution ────────────────────────────────────────────────────────
@@ -134,7 +144,7 @@ pub fn startBridge(runtime: *AppRuntime) !void {
 
     const rt = pickRuntime(runtime.bridge_path);
 
-    logAlways("Starting bridge: {s} {s}", .{ rt, runtime.bridge_path });
+    logAlways(ansi.dim ++ "Starting bridge: {s} {s}" ++ ansi.reset, .{ rt, runtime.bridge_path });
 
     var child = std.process.Child.init(
         &.{ rt, runtime.bridge_path, "tunnel", "--mcp-url", mcp_url },
@@ -222,17 +232,17 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
             .string => |s| s,
             else => "?",
         };
-        logAlways("Tunnel connected ({s})", .{conn_id});
-        logAlways("Ready — your Poke agent can now access this machine.", .{});
+        logAlways(ansi.green ++ ansi.bold ++ "✔ Tunnel connected ({s})" ++ ansi.reset, .{conn_id});
+        logAlways(ansi.green ++ "Ready — your Poke agent can now access this machine." ++ ansi.reset, .{});
 
         // Save connection ID and notify Poke
         config.setStateField(runtime.allocator, "connectionId", conn_id) catch {};
-        notifyPoke(runtime, conn_id) catch |err| logAlways("Notify Poke failed: {}", .{err});
+        notifyPoke(runtime, conn_id) catch |err| logAlways(ansi.red ++ "Notify Poke failed: {}" ++ ansi.reset, .{err});
         agents.startScheduler(runtime.allocator, runtime.verbose) catch |err|
-            logAlways("Agent scheduler error: {}", .{err});
+            logAlways(ansi.red ++ "Agent scheduler error: {}" ++ ansi.reset, .{err});
 
     } else if (std.mem.eql(u8, event_type, "disconnected")) {
-        logAlways("Tunnel disconnected.", .{});
+        logAlways(ansi.yellow ++ "Tunnel disconnected." ++ ansi.reset, .{});
         agents.stopScheduler();
 
     } else if (std.mem.eql(u8, event_type, "error")) {
@@ -240,7 +250,7 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
             .string => |s| s,
             else => "unknown",
         };
-        logAlways("Bridge error: {s}", .{msg});
+        logAlways(ansi.red ++ "Bridge error: {s}" ++ ansi.reset, .{msg});
 
     } else if (std.mem.eql(u8, event_type, "tools_synced")) {
         const count = switch (obj.get("count") orelse std.json.Value{ .integer = 0 }) {
@@ -327,64 +337,7 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
     defer runtime.allocator.free(cmd);
 
     runtime.state.sendToBridge(cmd);
-    logAlways("Notified Poke agent about connection.", .{});
-}
-
-// ── Stale connection cleanup ──────────────────────────────────────────────────
-
-fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
-    const raw = config.readStateJson(allocator) catch return;
-    defer allocator.free(raw);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return;
-    defer parsed.deinit();
-
-    const obj = switch (parsed.value) {
-        .object => |o| o,
-        else => return,
-    };
-
-    // Read connection IDs to clean up
-    var ids = std.ArrayList([]const u8).init(allocator);
-    defer ids.deinit();
-
-    if (obj.get("connectionId")) |v| {
-        if (v == .string) ids.append(v.string) catch {};
-    }
-    if (obj.get("connectionHistory")) |v| {
-        if (v == .array) {
-            for (v.array.items) |item| {
-                if (item == .string) ids.append(item.string) catch {};
-            }
-        }
-    }
-
-    if (ids.items.len == 0) return;
-
-    // Read Poke token from poke SDK credentials
-    const token = readPokeToken(allocator) catch return;
-    defer allocator.free(token);
-
-    const base_url = std.process.getEnvVarOwned(allocator, "POKE_API") catch
-        allocator.dupe(u8, "https://poke.com/api/v1") catch return;
-    defer allocator.free(base_url);
-
-    logAlways("Cleaning up {d} old connection(s)...", .{ids.items.len});
-
-    for (ids.items) |id| {
-        const url = std.fmt.allocPrint(allocator, "{s}/mcp/connections/{s}", .{ base_url, id }) catch continue;
-        defer allocator.free(url);
-
-        const auth_hdr = std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{token}) catch continue;
-        defer allocator.free(auth_hdr);
-        const del_argv = [_][]const u8{ "curl", "-fsSL", "-X", "DELETE", "-H", auth_hdr, url };
-        var child = std.process.Child.init(&del_argv, allocator);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.stdin_behavior = .Ignore;
-        child.spawn() catch continue;
-        _ = child.wait() catch std.process.Child.Term{ .Exited = 1 };
-    }
+    logAlways(ansi.dim ++ "Notified Poke agent about connection." ++ ansi.reset, .{});
 }
 
 /// Read the Poke SDK auth token from ~/.config/poke/credentials.json
@@ -432,9 +385,6 @@ pub fn initiateShutdown() void {
 }
 
 pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
-    // Kill existing instances
-    platform.killExistingInstances(allocator);
-
     // Determine permission mode (env > CLI arg > config file)
     const mode = blk: {
         const from_env = std.process.getEnvVarOwned(allocator, "POKE_GATE_PERMISSION_MODE") catch null;
@@ -447,13 +397,13 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
         break :blk mcp_server.PermissionMode.full;
     };
 
-    logAlways("poke-around starting...", .{});
-    logAlways("Access mode: {s}", .{@tagName(mode)});
+    logAlways(ansi.blue ++ ansi.bold ++ "▶ poke-around starting..." ++ ansi.reset, .{});
+    logAlways(ansi.dim ++ "Access mode: {s}" ++ ansi.reset, .{@tagName(mode)});
 
     // Resolve bridge path
     const bridge_path = resolveBridgePath(allocator) catch |err| {
-        logAlways("ERROR: Could not find poke-around-bridge.js: {}", .{err});
-        logAlways("Run: cd bridge && bun install && bun build poke-bridge.ts --bundle --outfile dist/poke-around-bridge.js", .{});
+        logAlways(ansi.red ++ "ERROR: Could not find poke-around-bridge.js: {}" ++ ansi.reset, .{err});
+        logAlways(ansi.dim ++ "Run: cd bridge && bun install && bun build poke-bridge.ts --bundle --outfile dist/poke-around-bridge.js" ++ ansi.reset, .{});
         return err;
     };
 
@@ -463,10 +413,7 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
 
     // Start MCP HTTP server
     const port = try mcp_server.startMcpServer(allocator, state);
-    logAlways("MCP server on port {d}", .{port});
-
-    // Cleanup stale Poke connections
-    cleanupStaleConnections(allocator);
+    logAlways(ansi.dim ++ "MCP server on port {d}" ++ ansi.reset, .{port});
 
     // Create runtime
     const runtime = try allocator.create(AppRuntime);
@@ -491,6 +438,6 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
         std.time.sleep(1 * std.time.ns_per_s);
     }
 
-    logAlways("Shutting down...", .{});
+    logAlways(ansi.blue ++ ansi.bold ++ "Shutting down..." ++ ansi.reset, .{});
     runtime.deinit();
 }

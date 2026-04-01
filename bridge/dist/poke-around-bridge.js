@@ -2819,7 +2819,7 @@ function emit(obj) {
 `);
 }
 function log(msg) {
-  process.stderr.write(`[bridge] ${msg}
+  process.stderr.write(`\x1B[2m[bridge] ${msg}\x1B[0m
 `);
 }
 async function ensureAuth() {
