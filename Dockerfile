@@ -12,10 +12,10 @@ RUN zig build -Doptimize=ReleaseSafe
 # Stage 2: Final runtime image
 FROM node:20-slim
 WORKDIR /app
-COPY --from=builder-zig /app/zig-out/bin/poke-gate /usr/local/bin/poke-gate
-COPY --from=builder-zig /app/bridge/dist/poke-gate-bridge.js /usr/local/bin/poke-gate-bridge.js
+COPY --from=builder-zig /app/zig-out/bin/poke-around /usr/local/bin/poke-around
+COPY --from=builder-zig /app/bridge/dist/poke-around-bridge.js /usr/local/bin/poke-around-bridge.js
 
 # Note: The Zig app expects the bridge to be alongside it or in certain paths.
 # Based on src/app.zig, it looks for it alongside the executable.
 
-ENTRYPOINT ["poke-gate"]
+ENTRYPOINT ["poke-around"]

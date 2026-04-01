@@ -7,13 +7,13 @@ There are two ways to create agents: **ask Poke to generate one** (recommended) 
 The fastest way — describe what you want and Poke writes the code for you:
 
 ```bash
-npx poke-around agent create --prompt "monitor disk space and alert when above 85%"
+./poke-around agent create --prompt "monitor disk space and alert when above 85%"
 ```
 
 Or interactively:
 
 ```bash
-npx poke-around agent create
+./poke-around agent create
 > Describe the agent you want to create:
 > track my git repos for uncommitted changes
 ```
@@ -70,7 +70,7 @@ import { Poke, getToken } from "poke";
 
 const token = getToken();
 if (!token) {
-  console.error("Not signed in. Run: npx poke login");
+  console.error("Not signed in. Run: poke login");
   process.exit(1);
 }
 
@@ -104,7 +104,7 @@ const apiKey = process.env.MY_API_KEY;
 Run your agent manually:
 
 ```bash
-npx poke-around run-agent hello
+./poke-around run-agent hello
 ```
 
 You should see:
@@ -117,10 +117,10 @@ You should see:
 
 ## Step 6: Let it run
 
-Start Poke Gate normally. Your agent will be discovered and scheduled:
+Start Poke Around normally. Your agent will be discovered and scheduled:
 
 ```bash
-npx poke-around
+./poke-around
 ```
 
 ```
@@ -132,7 +132,7 @@ npx poke-around
 ## Tips
 
 - **Keep agents fast.** They have a 5-minute timeout. If your agent takes longer, it'll be killed.
-- **Use `console.log`** for debugging. Output appears in the Poke Gate logs.
+- **Use `console.log`** for debugging. Output appears in the Poke Around logs.
 - **Handle errors gracefully.** If your agent throws, it logs the error and continues to the next scheduled run.
 - **Change the interval** by renaming the file (e.g. `hello.1h.js` → `hello.30m.js`) or using the macOS Agents editor.
 

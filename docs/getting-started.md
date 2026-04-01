@@ -30,12 +30,12 @@ zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/poke-around
 ```
 
-Poke Gate needs **Accessibility** permission on your Mac to automate keyboard/mouse and take screenshots.
+Poke Around needs **Accessibility** permission on your Mac to automate keyboard/mouse and take screenshots.
 
 ### 1. Sign in
-Poke Gate uses Poke OAuth to authenticate. On first launch:
+Poke Around uses Poke OAuth to authenticate. On first launch:
 
-1. Open Poke Gate from your menu bar.
+1. Open Poke Around from your menu bar.
 2. The **Setup View** will appear to guide you through:
    - Selecting an access mode (Full, Limited, or Sandbox)
    - Granting the required macOS Accessibility permissions
@@ -45,7 +45,7 @@ Poke Gate uses Poke OAuth to authenticate. On first launch:
 You can also sign in manually:
 
 ```bash
-npx poke login
+poke login
 ```
 
 ## Verify it works

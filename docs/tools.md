@@ -1,6 +1,6 @@
 # Tools
 
-Poke Gate exposes 7 tools to your Poke agent via MCP.
+Poke Around exposes 7 tools to your Poke agent via MCP.
 
 ## run_command
 

@@ -303,7 +303,7 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
 
     const msg = try std.fmt.allocPrint(
         runtime.allocator,
-        "Hey! I've connected my computer to you via Poke Gate (tunnel: {s}). {s} " ++
+        "Hey! I've connected my computer to you via Poke Around (tunnel: {s}). {s} " ++
             "Just use the tools whenever I ask you to do something on my computer. " ++
             "Now reply me with \"now I am connected to your computer\" but everytime write those replies in most creative fun way.",
         .{ connection_id, mode_msg },

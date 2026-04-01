@@ -2,12 +2,12 @@
 layout: home
 
 hero:
-  name: Poke Gate
+  name: Poke Around
   text: A two-way bridge between your Mac and your AI.
   tagline: Poke pulls from your Mac when you ask. Your Mac pushes to Poke when something happens. Run commands, read files, take screenshots — and automate it all with Agents.
   image:
     src: /logo.png
-    alt: Poke Gate
+    alt: Poke Around
   actions:
     - theme: brand
       text: Get Started
@@ -51,7 +51,7 @@ brew install f/tap/poke-around
 ```
 
 ```bash [npm]
-npx poke-around
+./poke-around
 ```
 
 ```bash [Manual]
@@ -64,5 +64,5 @@ npx poke-around
 <br>
 
 ::: tip Community project
-Poke Gate is open source and not affiliated with Poke or The Interaction Company of California.
+Poke Around is open source and not affiliated with Poke or The Interaction Company of California.
 :::

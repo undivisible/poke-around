@@ -112,7 +112,7 @@ jobs:
             zig-out/release/windows-x86_64/poke-around.exe
             zig-out/release/macos-x86_64/poke-around
             zig-out/release/macos-aarch64/poke-around
-          name: Poke Gate ${{ steps.version.outputs.tag }}
+          name: Poke Around ${{ steps.version.outputs.tag }}
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -165,7 +165,7 @@ jobs:
             sha256 "${SHA256}"
 
             url "https://github.com/f/poke-around/releases/download/${VERSION}/Poke.macOS.Gate.dmg"
-            name "Poke Gate"
+            name "Poke Around"
             desc "macOS menu bar app to expose your machine to your Poke AI assistant"
             homepage "https://github.com/f/poke-around"
 

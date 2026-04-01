@@ -4,10 +4,10 @@ Built a useful agent? Share it with the community by opening a pull request.
 
 ## How sharing works
 
-Community agents live in the [`examples/agents/`](https://github.com/f/poke-around/tree/main/examples/agents) directory of the Poke Gate repository. Anyone can install them with:
+Community agents live in the [`examples/agents/`](https://github.com/f/poke-around/tree/main/examples/agents) directory of the Poke Around repository. Anyone can install them with:
 
 ```bash
-npx poke-around agent get <name>
+./poke-around agent get <name>
 ```
 
 ## Submit your agent

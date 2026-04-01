@@ -1,6 +1,6 @@
 # Community Agents
 
-Ready-to-use agents you can install with a single command. All agents are open source and included in the [Poke Gate repository](https://github.com/f/poke-around/tree/main/examples/agents).
+Ready-to-use agents you can install with a single command. All agents are open source and included in the [Poke Around repository](https://github.com/f/poke-around/tree/main/examples/agents).
 
 ## Beeper Message Digest
 
@@ -13,7 +13,7 @@ Fetches messages from the last hour via [Beeper Desktop](https://beeper.com)'s l
 | **Requires** | Beeper Desktop running, API token |
 
 ```bash
-npx poke-around agent get beeper
+./poke-around agent get beeper
 ```
 
 [Full documentation →](/agents/beeper)
@@ -31,7 +31,7 @@ Sends a daily summary of your Mac usage — currently running apps, uptime, and 
 | **Requires** | Nothing — works out of the box |
 
 ```bash
-npx poke-around agent get screentime
+./poke-around agent get screentime
 ```
 
 ---
@@ -47,7 +47,7 @@ Monitors your battery and alerts you via Poke when it drops below 20% on battery
 | **Requires** | Nothing — works out of the box |
 
 ```bash
-npx poke-around agent get battery
+./poke-around agent get battery
 ```
 
 ::: tip Custom threshold
@@ -67,7 +67,7 @@ Tracks which WiFi network you're on and notifies Poke when you switch networks o
 | **Requires** | Nothing — works out of the box |
 
 ```bash
-npx poke-around agent get wifi
+./poke-around agent get wifi
 ```
 
 ---

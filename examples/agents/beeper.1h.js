@@ -14,7 +14,7 @@ const BEEPER_BASE = process.env.BEEPER_BASE_URL || "http://localhost:23373";
 const BEEPER_TOKEN = process.env.BEEPER_TOKEN;
 
 if (!BEEPER_TOKEN) {
-  console.error("BEEPER_TOKEN not set. Create ~/.config/poke-gate/agents/.env.beeper");
+  console.error("BEEPER_TOKEN not set. Create ~/.config/poke-around/agents/.env.beeper");
   process.exit(1);
 }
 

@@ -1,12 +1,12 @@
 # Security
 
 ::: danger Full shell access
-In **full** mode, Poke Gate grants **full shell access** to your Poke agent. Understand the implications before running it — or choose a more restrictive mode.
+In **full** mode, Poke Around grants **full shell access** to your Poke agent. Understand the implications before running it — or choose a more restrictive mode.
 :::
 
 ## Access modes
 
-Poke Gate supports three access modes that control what tools your agent can use:
+Poke Around supports three access modes that control what tools your agent can use:
 
 ### Full (default)
 
@@ -34,14 +34,14 @@ Broader command support than Limited, plus commands like `brew`, `node`, `python
 **CLI:**
 
 ```bash
-npx poke-around --mode limited
-npx poke-around --mode sandbox
+./poke-around --mode limited
+./poke-around --mode sandbox
 ```
 
 **Environment variable:**
 
 ```bash
-POKE_GATE_PERMISSION_MODE=sandbox npx poke-around
+POKE_GATE_PERMISSION_MODE=sandbox ./poke-around
 ```
 
 **macOS app:** Open Settings and select the access mode. The app restarts automatically when you change it.
@@ -50,7 +50,7 @@ POKE_GATE_PERMISSION_MODE=sandbox npx poke-around
 
 In **limited** and **sandbox** modes, risky tools (`run_command`, `write_file`, `take_screenshot`) use an HMAC-signed approval flow:
 
-1. The agent calls the tool — Poke Gate returns `AWAITING_APPROVAL` with a signed token
+1. The agent calls the tool — Poke Around returns `AWAITING_APPROVAL` with a signed token
 2. The agent asks you in chat to approve
 3. You approve — the agent re-calls the tool with the approval token
 4. Optionally, you can `remember_in_session` (same command) or `remember_all_risky` (all risky tools for the session)
@@ -64,13 +64,13 @@ In **full** mode, all tools execute directly without approval.
 - **Chat approval** — risky tools require explicit approval before execution (in full mode)
 - **Access policies** — limited and sandbox modes enforce strict command allowlists
 - **Loop guard** — duplicate or recently-failed commands are suppressed to prevent runaway retries
-- **No persistent access** — quitting Poke Gate closes the tunnel and deletes the connection
+- **No persistent access** — quitting Poke Around closes the tunnel and deletes the connection
 - **Connection cleanup** — old connections are deleted before new ones are created
 
 ## Best practices
 
 1. **Choose the right access mode** — use `limited` or `sandbox` if you don't need full shell access.
-2. **Only run on trusted machines** — don't run Poke Gate on shared or public computers.
+2. **Only run on trusted machines** — don't run Poke Around on shared or public computers.
 3. **Quit when not needed** — close the app when you don't need remote access.
 4. **Review agent scripts** — before installing a community agent, read the code. Agents run with your user permissions.
 5. **Keep env files secure** — `.env` files in `~/.config/poke-around/agents/` may contain API tokens. Don't commit them to git.

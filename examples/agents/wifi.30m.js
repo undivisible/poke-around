@@ -18,7 +18,7 @@ if (!token) {
   process.exit(1);
 }
 
-const STATE_FILE = join(homedir(), ".config", "poke-gate", "agents", ".wifi-state.json");
+const STATE_FILE = join(homedir(), ".config", "poke-around", "agents", ".wifi-state.json");
 
 function getCurrentNetwork() {
   try {

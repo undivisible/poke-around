@@ -18,7 +18,7 @@ if (!token) {
   process.exit(1);
 }
 
-const STATE_FILE = join(homedir(), ".config", "poke-gate", "agents", ".context-state.json");
+const STATE_FILE = join(homedir(), ".config", "poke-around", "agents", ".context-state.json");
 
 function loadState() {
   try { return JSON.parse(readFileSync(STATE_FILE, "utf-8")); }

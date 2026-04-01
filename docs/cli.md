@@ -3,7 +3,7 @@
 ## Start the gate
 
 ```bash
-npx poke-around
+./poke-around
 ```
 
 Starts the MCP server, connects the tunnel, and begins the agent scheduler. On first run, if you're not signed in, opens Poke OAuth in your browser.
@@ -11,8 +11,8 @@ Starts the MCP server, connects the tunnel, and begins the agent scheduler. On f
 ### Access mode
 
 ```bash
-npx poke-around --mode limited
-npx poke-around --mode sandbox
+./poke-around --mode limited
+./poke-around --mode sandbox
 ```
 
 Controls which tools your Poke agent can use. Defaults to `full` if not specified.
@@ -28,9 +28,9 @@ You can also set the mode via the `POKE_GATE_PERMISSION_MODE` environment variab
 ### Verbose mode
 
 ```bash
-npx poke-around --verbose
+./poke-around --verbose
 # or
-npx poke-around -v
+./poke-around -v
 ```
 
 Shows real-time tool calls:
@@ -45,7 +45,7 @@ Shows real-time tool calls:
 ## Run an agent
 
 ```bash
-npx poke-around run-agent <name>
+./poke-around run-agent <name>
 ```
 
 Runs a single agent script immediately and exits. Useful for testing.
@@ -53,7 +53,7 @@ Runs a single agent script immediately and exits. Useful for testing.
 **Example:**
 
 ```bash
-npx poke-around run-agent beeper
+./poke-around run-agent beeper
 ```
 
 Finds `~/.config/poke-around/agents/beeper.*.js` and runs it with the env from `.env.beeper`.
@@ -61,7 +61,7 @@ Finds `~/.config/poke-around/agents/beeper.*.js` and runs it with the env from `
 ## Generate an agent with AI
 
 ```bash
-npx poke-around agent create --prompt "<description>"
+./poke-around agent create --prompt "<description>"
 ```
 
 Sends your description to Poke with detailed instructions and examples. Poke generates the agent code and saves it directly to `~/.config/poke-around/agents/` using the `write_file` tool.
@@ -71,37 +71,21 @@ Sends your description to Poke with detailed instructions and examples. Poke gen
 **Interactive mode:**
 
 ```bash
-npx poke-around agent create
+./poke-around agent create
 ```
 
 **Examples:**
 
 ```bash
-npx poke-around agent create --prompt "alert me when disk space is above 85%"
-npx poke-around agent create --prompt "send me a daily git commit summary across all repos"
-npx poke-around agent create --prompt "track Spotify listening and log my music taste"
+./poke-around agent create --prompt "alert me when disk space is above 85%"
+./poke-around agent create --prompt "send me a daily git commit summary across all repos"
+./poke-around agent create --prompt "track Spotify listening and log my music taste"
 ```
-
-## Download the macOS app
-
-```bash
-npx poke-around download-macos
-```
-
-Downloads and installs the Poke macOS Gate app from GitHub Releases. Matches the version of the npm package being run.
-
-This command:
-1. Downloads the DMG from the matching GitHub release
-2. Mounts the DMG, copies the app to `/Applications`
-3. Clears the quarantine flag (`xattr -cr`)
-4. Launches the app
-
-The macOS app also checks for updates automatically on startup and shows a banner when a new version is available.
 
 ## Install an agent
 
 ```bash
-npx poke-around agent get <name>
+./poke-around agent get <name>
 ```
 
 Downloads an agent from the [community repository](https://github.com/f/poke-around/tree/main/examples/agents) and saves it to `~/.config/poke-around/agents/`.
@@ -118,7 +102,7 @@ Fetching agent "beeper" from GitHub...
 
   Saved: ~/.config/poke-around/agents/.env.beeper
 
-  Test it: npx poke-around run-agent beeper
+  Test it: ./poke-around run-agent beeper
 ```
 
 ## Environment variables

@@ -1,17 +1,17 @@
 # Installing Agents
 
-You can download community agents from the Poke Gate repository with a single command.
+You can download community agents from the Poke Around repository with a single command.
 
 ## Install an agent
 
 ```bash
-npx poke-around agent get <name>
+./poke-around agent get <name>
 ```
 
 For example:
 
 ```bash
-npx poke-around agent get beeper
+./poke-around agent get beeper
 ```
 
 This does three things:
@@ -34,7 +34,7 @@ Fetching agent "beeper" from GitHub...
 
   Saved: ~/.config/poke-around/agents/.env.beeper
 
-  Test it: npx poke-around run-agent beeper
+  Test it: ./poke-around run-agent beeper
 ```
 
 The prompt parses the `.env` template, identifies placeholder values, and asks you for real ones. Comments from the template are shown as hints.
@@ -44,7 +44,7 @@ The prompt parses the `.env` template, identifies placeholder values, and asks y
 Always test the agent before relying on it:
 
 ```bash
-npx poke-around run-agent beeper
+./poke-around run-agent beeper
 ```
 
 ## Existing env files

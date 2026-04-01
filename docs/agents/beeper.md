@@ -17,12 +17,12 @@ Every hour:
 
 - [Beeper Desktop](https://beeper.com) running on your machine
 - Beeper API token (find it in Beeper Desktop > Settings > API)
-- Signed in to Poke (`npx poke login`)
+- Signed in to Poke (`poke login`)
 
 ## Install
 
 ```bash
-npx poke-around agent get beeper
+./poke-around agent get beeper
 ```
 
 When prompted, paste your Beeper token:
@@ -34,7 +34,7 @@ BEEPER_TOKEN (Find it in Beeper Desktop > Settings > API): <paste>
 ## Test
 
 ```bash
-npx poke-around run-agent beeper
+./poke-around run-agent beeper
 ```
 
 Expected output:

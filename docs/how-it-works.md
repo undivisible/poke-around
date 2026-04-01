@@ -1,6 +1,6 @@
 # How It Works
 
-Poke Gate bridges your machine to Poke's cloud so your AI assistant can execute tasks locally.
+Poke Around bridges your machine to Poke's cloud so your AI assistant can execute tasks locally.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ Poke Gate bridges your machine to Poke's cloud so your AI assistant can execute 
 flowchart TB
     You["You"] -->|message via iMessage,\nTelegram, or SMS| Agent["Poke Agent"]
     Agent -->|tool call| Tunnel["MCP Tunnel"]
-    Tunnel -->|WebSocket| Gate["Poke Gate"]
+    Tunnel -->|WebSocket| Gate["Poke Around"]
     Gate -->|execute| Mac["Your Mac"]
     Mac -->|result| Gate
     Gate -->|response| Tunnel
@@ -24,7 +24,7 @@ flowchart TB
 
 3. **The tool call travels through the MCP tunnel** — a WebSocket connection from Poke's cloud to your machine via the Piko protocol.
 
-4. **Poke Gate receives the call** on your local MCP server (a lightweight HTTP server running on localhost).
+4. **Poke Around receives the call** on your local MCP server (a lightweight HTTP server running on localhost).
 
 5. **The tool executes locally** — runs the shell command, reads the file, takes the screenshot, etc.
 
@@ -42,7 +42,7 @@ A WebSocket-based tunnel from the [Poke SDK](https://www.npmjs.com/package/poke)
 
 ### Connection lifecycle
 
-- On startup, Poke Gate creates a connection via `POST /mcp/connections/cli`
+- On startup, Poke Around creates a connection via `POST /mcp/connections/cli`
 - A WebSocket tunnel is established to the upstream URL
 - Poke's cloud can now route tool calls through the tunnel to your machine
 - If the connection drops, it reconnects automatically
@@ -50,8 +50,8 @@ A WebSocket-based tunnel from the [Poke SDK](https://www.npmjs.com/package/poke)
 
 ## On-connect notification
 
-When the tunnel connects, Poke Gate sends a message to your Poke agent:
+When the tunnel connects, Poke Around sends a message to your Poke agent:
 
-> "Hey! I've connected my computer to you via Poke Gate. You can now run commands, read and write files, list directories, take screenshots, and check system info on my machine."
+> "Hey! I've connected my computer to you via Poke Around. You can now run commands, read and write files, list directories, take screenshots, and check system info on my machine."
 
 This ensures the agent knows your machine is available and which tools it can use.

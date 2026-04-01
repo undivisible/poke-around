@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" width="128" height="128" alt="Poke Gate icon">
+  <img src="assets/logo.png" width="128" height="128" alt="Poke Around icon">
 </p>
 
-<h1 align="center">Poke Gate</h1>
+<h1 align="center">Poke Around</h1>
 
 <p align="center">
   Let your <a href="https://poke.com">Poke</a> AI assistant access your machine.<br>
@@ -18,7 +18,7 @@
 
 ---
 
-Run Poke Gate on your Mac, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
+Run Poke Around on your Mac, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
 
 ## Install
 
@@ -99,14 +99,14 @@ Intervals: `Nm` (minutes) or `Nh` (hours). Minimum is 10 minutes.
 Download a community agent from the repository:
 
 ```bash
-npx poke-around agent get beeper
+./poke-around agent get beeper
 ```
 
 This downloads `beeper.1h.js` and `.env.beeper` to `~/.config/poke-around/agents/`. Edit the env file with your credentials and test it:
 
 ```bash
 nano ~/.config/poke-around/agents/.env.beeper
-npx poke-around run-agent beeper
+./poke-around run-agent beeper
 ```
 
 ### Per-agent env files
@@ -166,7 +166,7 @@ Agents start running when poke-around connects and run once immediately on start
 
 ## Access modes
 
-Poke Gate supports three access modes that control what your agent can do:
+Poke Around supports three access modes that control what your agent can do:
 
 | Mode | Description |
 |------|-------------|
@@ -177,21 +177,21 @@ Poke Gate supports three access modes that control what your agent can do:
 Set the mode via CLI flag, environment variable, or the macOS app Settings:
 
 ```bash
-npx poke-around --mode sandbox
+./poke-around --mode sandbox
 # or
-POKE_GATE_PERMISSION_MODE=limited npx poke-around
+POKE_GATE_PERMISSION_MODE=limited ./poke-around
 ```
 
 ## Security
 
-**In full mode, Poke Gate grants full shell access to your Poke agent.** This means:
+**In full mode, Poke Around grants full shell access to your Poke agent.** This means:
 
 - Any command can be run with your user's permissions
 - Files can be read and written anywhere your user has access
 - Risky tools require approval in chat before execution
 - Only your Poke agent (authenticated via Poke OAuth) can reach the tunnel
 
-Only run Poke Gate on machines and networks you trust. Use `limited` or `sandbox` mode if you want tighter restrictions.
+Only run Poke Around on machines and networks you trust. Use `limited` or `sandbox` mode if you want tighter restrictions.
 
 ## Credits
 

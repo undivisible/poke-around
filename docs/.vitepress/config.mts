@@ -3,7 +3,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 
 export default withMermaid(
   defineConfig({
-    title: 'Poke Gate',
+    title: 'Poke Around',
     description: 'Let your Poke AI assistant access your machine',
     head: [
       ['link', { rel: 'icon', href: '/logo.png' }],

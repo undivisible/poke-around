@@ -27,7 +27,7 @@ flowchart TB
 
 1. You place a `.js` file in `~/.config/poke-around/agents/`
 2. The filename defines the schedule: `name.interval.js`
-3. When Poke Gate connects, it discovers all agents and starts their timers
+3. When Poke Around connects, it discovers all agents and starts their timers
 4. Each agent runs once immediately, then repeats on schedule
 5. Agents use the Poke SDK to send messages — pushing data to your agent
 

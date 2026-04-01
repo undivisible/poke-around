@@ -19,7 +19,7 @@ if (!token) {
 }
 
 const THRESHOLD = parseInt(process.env.BATTERY_THRESHOLD || "20", 10);
-const STATE_FILE = join(homedir(), ".config", "poke-gate", "agents", ".battery-state.json");
+const STATE_FILE = join(homedir(), ".config", "poke-around", "agents", ".battery-state.json");
 
 function getBattery() {
   try {

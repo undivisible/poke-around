@@ -1,6 +1,6 @@
 # macOS App
 
-Poke Gate includes a native SwiftUI menu bar app for macOS 15+ (Sequoia).
+Poke Around includes a native SwiftUI menu bar app for macOS 15+ (Sequoia).
 
 ## First-run setup
 
@@ -57,7 +57,7 @@ When Full mode is active, this view appears in both the Settings window and the 
 Open Settings from the popover. The settings window shows:
 
 - **Authentication status** — whether you're signed in via Poke OAuth
-- **Sign in button** — runs `npx poke login` and opens a browser window
+- **Sign in button** — runs `poke login` and opens a browser window
 - **Connection status** — current state with a Reconnect button
 - **Access mode** — radio buttons for Full, Limited, and Sandbox with descriptions
 - **Accessibility status** — permission check with a direct link to System Settings (in Full mode)

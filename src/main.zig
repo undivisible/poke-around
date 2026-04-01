@@ -133,7 +133,7 @@ fn handleSignal(_: c_int) callconv(.C) void {
 /// Create an agent via the Poke bridge (sends a message to the Poke agent).
 fn runAgentCreate(allocator: std.mem.Allocator, prompt: ?[]const u8) !void {
     const SYSTEM_PROMPT =
-        \\Generate a Poke Gate agent based on my description below.
+        \\Generate a Poke Around agent based on my description below.
         \\Write the COMPLETE JavaScript code using the write_file tool to save it directly to the agents folder.
         \\RULES:
         \\- Save to: ~/.config/poke-around/agents/<name>.<interval>.js
