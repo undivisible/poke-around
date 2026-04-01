@@ -241,12 +241,19 @@ fn parseHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream) !HttpR
     _ = parts2.next(); // method
     const path = try allocator.dupe(u8, parts2.next() orelse "/");
 
-    // Headers
+    // Headers — 8 KiB covers Authorization: Bearer <jwt> and any realistic header
     var content_length: usize = 0;
     var session_id: []const u8 = "default";
-    var header_buf: [256]u8 = undefined;
+    var header_buf: [8192]u8 = undefined;
     while (true) {
-        const hline = (try reader.readUntilDelimiterOrEof(&header_buf, '\n')) orelse break;
+        const hline = reader.readUntilDelimiterOrEof(&header_buf, '\n') catch |err| {
+            if (err == error.StreamTooLong) {
+                // Header line exceeded buffer — drain the rest and skip it
+                reader.skipUntilDelimiterOrEof('\n') catch {};
+                continue;
+            }
+            return err;
+        } orelse break;
         const ht = std.mem.trimRight(u8, hline, "\r");
         if (ht.len == 0) break;
         const colon = std.mem.indexOfScalar(u8, ht, ':') orelse continue;
