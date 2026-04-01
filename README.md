@@ -188,6 +188,7 @@ Only run Poke Around on machines and networks you trust. Use `limited` or `sandb
 
 ## Credits
 
+- This project is a native Zig rewrite and continuation of the original [f/poke-gate](https://github.com/f/poke-gate) repository.
 - [Poke](https://poke.com) by [The Interaction Company of California](https://interaction.co)
 - [Poke SDK](https://www.npmjs.com/package/poke)
 
