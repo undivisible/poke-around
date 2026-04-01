@@ -6015,6 +6015,13 @@ async function runTunnel() {
   const poke = new et({ token });
   const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
   let systray = null;
+  const closeTray = () => {
+    if (!systray)
+      return;
+    try {
+      systray.kill(false);
+    } catch {}
+  };
   try {
     const isMac = os.platform() === "darwin";
     const isWin = os.platform() === "win32";
@@ -6043,7 +6050,7 @@ async function runTunnel() {
       checked: false,
       enabled: true,
       click: () => {
-        systray.kill(false);
+        closeTray();
         emit({ type: "user_exit" });
       }
     };
@@ -6141,13 +6148,13 @@ async function runTunnel() {
       } else if (cmd.type === "stop") {
         log("Stop requested.");
         await tunnel.stop();
-        systray.kill(false);
+        closeTray();
         process.exit(0);
       }
     } catch {}
   });
   rl.on("close", () => {
-    systray.kill(false);
+    closeTray();
     tunnel.stop().finally(() => process.exit(0));
   });
 }

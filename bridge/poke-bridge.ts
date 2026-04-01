@@ -65,6 +65,12 @@ async function runTunnel(): Promise<void> {
 
   // ── Setup Tray (skip if headless/SSH) ──
   let systray: any = null;
+  const closeTray = () => {
+    if (!systray) return;
+    try {
+      systray.kill(false);
+    } catch {}
+  };
   try {
     const isMac = os.platform() === "darwin";
     const isWin = os.platform() === "win32";
@@ -94,7 +100,7 @@ async function runTunnel(): Promise<void> {
     checked: false,
     enabled: true,
     click: () => {
-      systray.kill(false);
+      closeTray();
       emit({ type: "user_exit" });
     },
     };
@@ -206,7 +212,7 @@ async function runTunnel(): Promise<void> {
       } else if (cmd.type === "stop") {
         log("Stop requested.");
         await tunnel.stop();
-        systray.kill(false);
+        closeTray();
         process.exit(0);
       }
     } catch {
@@ -216,7 +222,7 @@ async function runTunnel(): Promise<void> {
 
   rl.on("close", () => {
     // parent closed stdin → shut down
-    systray.kill(false);
+    closeTray();
     tunnel.stop().finally(() => process.exit(0));
   });
 }

@@ -40,6 +40,7 @@ pub const PermissionService = struct {
         self.allocator.free(self.secret);
         var pit = self.pending.iterator();
         while (pit.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
             self.allocator.free(entry.value_ptr.session_id);
             self.allocator.free(entry.value_ptr.tool_name);
         }
@@ -52,7 +53,6 @@ pub const PermissionService = struct {
             entry.value_ptr.deinit();
         }
         self.whitelist.deinit();
-        self.allocator.free(self.secret);
     }
 
     pub const ApprovalResult = struct {

@@ -115,6 +115,7 @@ pub const AppState = struct {
         defer allocator.free(final_secret);
 
         const home = try config.getHomeDir(allocator);
+        errdefer allocator.free(home);
 
         return .{
             .allocator = allocator,
@@ -171,7 +172,9 @@ const SrvCtx = struct {
 pub fn startMcpServer(allocator: std.mem.Allocator, state: *AppState) !u16 {
     const address = try std.net.Address.parseIp("127.0.0.1", 0);
     const ctx = try allocator.create(SrvCtx);
+    errdefer allocator.destroy(ctx);
     ctx.server = try address.listen(.{ .reuse_address = true });
+    errdefer ctx.server.deinit();
     ctx.state = state;
     const port = ctx.server.listen_address.getPort();
     const t = try std.Thread.spawn(.{}, serverLoop, .{ctx});
@@ -181,6 +184,7 @@ pub fn startMcpServer(allocator: std.mem.Allocator, state: *AppState) !u16 {
 
 fn serverLoop(ctx: *SrvCtx) void {
     defer ctx.server.deinit();
+    defer ctx.state.allocator.destroy(ctx);
     while (true) {
         const conn = ctx.server.accept() catch |err| {
             std.log.err("[mcp] accept error: {}", .{err});

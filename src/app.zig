@@ -482,14 +482,23 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
         logAlways(ansi.dim ++ "Run: cd bridge && bun install && bun build poke-bridge.ts --bundle --outfile dist/poke-around-bridge.js" ++ ansi.reset, .{});
         return err;
     };
+    errdefer allocator.free(bridge_path);
 
     // Initialize shared state
     const state = try allocator.create(mcp_server.AppState);
+    errdefer allocator.destroy(state);
     state.* = try mcp_server.AppState.init(allocator, mode, verbose);
+    errdefer state.deinit();
 
     // Start MCP HTTP server
     const port = try mcp_server.startMcpServer(allocator, state);
     logAlways(ansi.dim ++ "MCP server on port {d}" ++ ansi.reset, .{port});
+    const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{std.os.linux.getpid()});
+    defer allocator.free(pid_text);
+    const port_text = try std.fmt.allocPrint(allocator, "{d}", .{port});
+    defer allocator.free(port_text);
+    config.setStateField(allocator, "pid", pid_text) catch {};
+    config.setStateField(allocator, "port", port_text) catch {};
 
     // Cleanup stale Poke connections from this machine
     cleanupStaleConnections(allocator);
