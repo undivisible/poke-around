@@ -23,8 +23,5 @@
   "license": "MPL-2.0",
   "engines": {
     "bun": ">=1.0"
-  },
-  "dependencies": {
-    "systray2": "^2.1.4"
   }
 }

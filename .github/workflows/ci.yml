@@ -20,6 +20,9 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Install bridge dependencies
+        run: bun install --cwd bridge
+
       - name: Build bridge
         run: bun run build:bridge
 
