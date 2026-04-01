@@ -12,6 +12,7 @@
 
 import { PokeTunnel, isLoggedIn, login, getToken, Poke } from "poke";
 import * as readline from "node:readline";
+import * as os from "node:os";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -56,11 +57,14 @@ async function runTunnel(): Promise<void> {
   const token = await ensureAuth();
   const poke = new Poke({ token });
 
+  // Use hostname to allow multiple machine instances (swarm mode)
+  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+
   // Create or reuse webhook
   let webhookUrl: string | null = null;
   let webhookToken: string | null = null;
   try {
-    const wh = await poke.createWebhook({ condition: "poke-around", action: "poke-around" });
+    const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
     webhookUrl = wh.webhookUrl;
     webhookToken = wh.webhookToken;
     emit({ type: "webhook_ready", webhookUrl, webhookToken });
@@ -70,7 +74,7 @@ async function runTunnel(): Promise<void> {
 
   const tunnel = new PokeTunnel({
     url: mcpUrl,
-    name: "poke-around",
+    name: tunnelName,
     token,
     cleanupOnStop: true,
   });

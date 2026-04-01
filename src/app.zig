@@ -340,6 +340,63 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
     logAlways(ansi.dim ++ "Notified Poke agent about connection." ++ ansi.reset, .{});
 }
 
+// ── Stale connection cleanup ──────────────────────────────────────────────────
+
+fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
+    const raw = config.readStateJson(allocator) catch return;
+    defer allocator.free(raw);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return;
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return,
+    };
+
+    // Read connection IDs to clean up
+    var ids = std.ArrayList([]const u8).init(allocator);
+    defer ids.deinit();
+
+    if (obj.get("connectionId")) |v| {
+        if (v == .string) ids.append(v.string) catch {};
+    }
+    if (obj.get("connectionHistory")) |v| {
+        if (v == .array) {
+            for (v.array.items) |item| {
+                if (item == .string) ids.append(item.string) catch {};
+            }
+        }
+    }
+
+    if (ids.items.len == 0) return;
+
+    // Read Poke token from poke SDK credentials
+    const token = readPokeToken(allocator) catch return;
+    defer allocator.free(token);
+
+    const base_url = std.process.getEnvVarOwned(allocator, "POKE_API") catch
+        allocator.dupe(u8, "https://poke.com/api/v1") catch return;
+    defer allocator.free(base_url);
+
+    logAlways(ansi.dim ++ "Cleaning up {d} old connection(s)..." ++ ansi.reset, .{ids.items.len});
+
+    for (ids.items) |id| {
+        const url = std.fmt.allocPrint(allocator, "{s}/mcp/connections/{s}", .{ base_url, id }) catch continue;
+        defer allocator.free(url);
+
+        const auth_hdr = std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{token}) catch continue;
+        defer allocator.free(auth_hdr);
+        const del_argv = [_][]const u8{ "curl", "-fsSL", "-X", "DELETE", "-H", auth_hdr, url };
+        var child = std.process.Child.init(&del_argv, allocator);
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        child.stdin_behavior = .Ignore;
+        child.spawn() catch continue;
+        _ = child.wait() catch std.process.Child.Term{ .Exited = 1 };
+    }
+}
+
 /// Read the Poke SDK auth token from ~/.config/poke/credentials.json
 pub fn readPokeToken(allocator: std.mem.Allocator) ![]u8 {
     const cred_path = try pokeCredentialsPath(allocator);
@@ -385,6 +442,9 @@ pub fn initiateShutdown() void {
 }
 
 pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
+    // Kill existing instances on this machine
+    platform.killExistingInstances(allocator);
+
     // Determine permission mode (env > CLI arg > config file)
     const mode = blk: {
         const from_env = std.process.getEnvVarOwned(allocator, "POKE_GATE_PERMISSION_MODE") catch null;
@@ -414,6 +474,9 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
     // Start MCP HTTP server
     const port = try mcp_server.startMcpServer(allocator, state);
     logAlways(ansi.dim ++ "MCP server on port {d}" ++ ansi.reset, .{port});
+
+    // Cleanup stale Poke connections from this machine
+    cleanupStaleConnections(allocator);
 
     // Create runtime
     const runtime = try allocator.create(AppRuntime);

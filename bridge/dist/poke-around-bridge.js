@@ -2814,6 +2814,7 @@ var Gt = class {
 
 // bridge/poke-bridge.ts
 import * as readline from "node:readline";
+import * as os from "node:os";
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + `
 `);
@@ -2846,10 +2847,11 @@ async function runTunnel() {
   }
   const token = await ensureAuth();
   const poke = new et({ token });
+  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
   let webhookUrl = null;
   let webhookToken = null;
   try {
-    const wh = await poke.createWebhook({ condition: "poke-around", action: "poke-around" });
+    const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
     webhookUrl = wh.webhookUrl;
     webhookToken = wh.webhookToken;
     emit({ type: "webhook_ready", webhookUrl, webhookToken });
@@ -2858,7 +2860,7 @@ async function runTunnel() {
   }
   const tunnel = new Gt({
     url: mcpUrl,
-    name: "poke-around",
+    name: tunnelName,
     token,
     cleanupOnStop: true
   });
