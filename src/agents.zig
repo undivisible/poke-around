@@ -77,7 +77,9 @@ pub fn discoverAgents(allocator: std.mem.Allocator) ![]Agent {
         };
 
         const full_path = try std.fs.path.join(allocator, &.{ agents_dir_path, entry.name });
-        const env_file = try std.fs.path.join(allocator, &.{ agents_dir_path, try std.fmt.allocPrint(allocator, ".env.{s}", .{name}) });
+        const env_basename = try std.fmt.allocPrint(allocator, ".env.{s}", .{name});
+        const env_file = try std.fs.path.join(allocator, &.{ agents_dir_path, env_basename });
+        allocator.free(env_basename);
         // Note: env_file may not exist, that's fine
 
         try agents.append(allocator, .{
@@ -240,8 +242,8 @@ const SchedulerCtx = struct {
 };
 
 var scheduler_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-var scheduler_threads: std.ArrayList(std.Thread) = undefined;
-var scheduler_ctxs: std.ArrayList(*SchedulerCtx) = undefined;
+var scheduler_threads: std.ArrayList(std.Thread) = std.ArrayList(std.Thread).empty;
+var scheduler_ctxs: std.ArrayList(*SchedulerCtx) = std.ArrayList(*SchedulerCtx).empty;
 var scheduler_allocator: std.mem.Allocator = undefined;
 
 /// Start the agent scheduler. Safe to call only once at a time.
@@ -354,11 +356,11 @@ pub fn runAgentByName(allocator: std.mem.Allocator, name: []const u8) !void {
         const interval_token = stem[last_dot + 1 ..];
         const interval_ms = parseInterval(interval_token) orelse 0;
         const full_path = try std.fs.path.join(allocator, &.{ agents_dir, entry.name });
-        defer allocator.free(full_path);
-        const env_file = try std.fs.path.join(allocator, &.{ agents_dir, try std.fmt.allocPrint(allocator, ".env.{s}", .{name}) });
-        defer allocator.free(env_file);
+        const env_basename = try std.fmt.allocPrint(allocator, ".env.{s}", .{name});
+        const env_file = try std.fs.path.join(allocator, &.{ agents_dir, env_basename });
+        allocator.free(env_basename);
 
-        const ag = Agent{
+        var ag = Agent{
             .name = try allocator.dupe(u8, name),
             .file = try allocator.dupe(u8, entry.name),
             .path = full_path,
@@ -367,6 +369,7 @@ pub fn runAgentByName(allocator: std.mem.Allocator, name: []const u8) !void {
             .env_file = env_file,
             .allocator = allocator,
         };
+        defer ag.deinit();
         runAgentProcess(allocator, &ag, true);
         return;
     }
