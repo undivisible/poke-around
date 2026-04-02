@@ -65,6 +65,8 @@ async function runTunnel(): Promise<void> {
   // Use hostname plus a session suffix to avoid stale-name collisions on reconnects.
   const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}-${randomUUID().slice(0, 8)}`;
 
+
+
   let stopRequested = false;
   let activeTunnel: PokeTunnel | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -127,6 +129,9 @@ async function runTunnel(): Promise<void> {
             emit({ type: "tools_synced", count: toolCount });
           });
         });
+        // Prevent unhandled rejection if tunnel.start() throws before we reach
+        // `await sessionLost` — the rejection is still surfaced via await below.
+        sessionLost.catch(() => {});
 
         await tunnel.start();
         log(`Tunnel started → ${mcpUrl}`);
@@ -201,6 +206,14 @@ async function runSendMessage(): Promise<void> {
   await poke.sendMessage(message);
   process.stdout.write("sent\n");
 }
+
+// ── global safety net ────────────────────────────────────────────────────────
+// The Poke SDK runs an internal async loop whose Promise can reject unhandled
+// (e.g. on disconnect), which would crash Bun. Emit the error so the Zig
+// parent can reconnect, but keep the process alive so maintainTunnel retries.
+process.on("unhandledRejection", (reason) => {
+  emit({ type: "error", message: `unhandled rejection: ${String(reason)}` });
+});
 
 // ── dispatch ─────────────────────────────────────────────────────────────────
 

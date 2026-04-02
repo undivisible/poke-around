@@ -5,6 +5,7 @@ const app = @import("app.zig");
 const agents = @import("agents.zig");
 const config = @import("config.zig");
 const mcp_server = @import("mcp_server.zig");
+const build_options = @import("build_options");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -19,6 +20,12 @@ pub fn main() !void {
     // Global flags
     const verbose = hasFlag(argv, "--verbose") or hasFlag(argv, "-v");
     const mode_str = getFlagValue(argv, "--mode");
+    const version_flag = hasFlag(argv, "--version") or hasFlag(argv, "-V");
+
+    if (version_flag) {
+        std.debug.print("poke-around {s}\n", .{build_options.version});
+        return;
+    }
 
     if (argv.len == 0 or (argv.len == 1 and (std.mem.eql(u8, argv[0], "--verbose") or std.mem.eql(u8, argv[0], "-v")))) {
         // Default: daemon mode
@@ -296,6 +303,7 @@ fn printHelp() void {
         \\OPTIONS:
         \\  --mode <full|limited|sandbox>   Set access permission mode
         \\  --verbose, -v                    Enable verbose logging
+        \\  --version, -V                    Show version and exit
         \\
         \\ACCESS MODES:
         \\  full      All tools available; destructive actions need one-time approval

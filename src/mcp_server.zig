@@ -168,26 +168,28 @@ const SrvCtx = struct {
     state: *AppState,
 };
 
+// Global server context — avoids a heap allocation so GPA never tracks it,
+// and eliminates the need to join the serverLoop thread on shutdown.
+var g_srv_ctx: SrvCtx = undefined;
+
 pub fn startMcpServer(allocator: std.mem.Allocator, state: *AppState) !u16 {
+    _ = allocator;
     const address = try std.net.Address.parseIp("127.0.0.1", 0);
-    const ctx = try allocator.create(SrvCtx);
-    errdefer allocator.destroy(ctx);
-    ctx.server = try address.listen(.{ .reuse_address = true });
-    errdefer ctx.server.deinit();
-    ctx.state = state;
-    const port = ctx.server.listen_address.getPort();
-    const t = try std.Thread.spawn(.{}, serverLoop, .{ctx});
+    g_srv_ctx.server = try address.listen(.{ .reuse_address = true });
+    errdefer g_srv_ctx.server.deinit();
+    g_srv_ctx.state = state;
+    const port = g_srv_ctx.server.listen_address.getPort();
+    const t = try std.Thread.spawn(.{}, serverLoop, .{&g_srv_ctx});
     t.detach();
     return port;
 }
 
 fn serverLoop(ctx: *SrvCtx) void {
     defer ctx.server.deinit();
-    defer ctx.state.allocator.destroy(ctx);
     while (true) {
         const conn = ctx.server.accept() catch |err| {
             std.log.err("[mcp] accept error: {}", .{err});
-            continue;
+            break;
         };
         const t = std.Thread.spawn(.{}, handleConnection, .{ conn, ctx.state }) catch {
             conn.stream.close();

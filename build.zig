@@ -9,6 +9,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", b.option([]const u8, "version", "0.3.2") orelse "0.3.2");
+    main_module.addOptions("build_options", options);
 
     // ── Main executable ──────────────────────────────────────────────────────
     const exe = b.addExecutable(.{
