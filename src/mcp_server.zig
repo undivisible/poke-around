@@ -760,8 +760,8 @@ fn runCommandInternal(
         break :blk null;
     };
 
-    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch try allocator.dupe(u8, "");
-    const stderr_raw = child.stderr.?.readToEndAlloc(allocator, 10 * 1024) catch try allocator.dupe(u8, "");
+    const stdout = if (child.stdout) |p| p.readToEndAlloc(allocator, 1024 * 1024) catch try allocator.dupe(u8, "") else try allocator.dupe(u8, "");
+    const stderr_raw = if (child.stderr) |p| p.readToEndAlloc(allocator, 10 * 1024) catch try allocator.dupe(u8, "") else try allocator.dupe(u8, "");
 
     // Signal the thread that the command finished before it reads done.
     // Safe: main still holds its own ref, so ctx is alive here.
@@ -1271,8 +1271,8 @@ fn toolGitOperations(allocator: std.mem.Allocator, args: std.json.Value, state: 
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Failed to spawn git: {}", .{err}));
     };
 
-    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch "";
-    const stderr = child.stderr.?.readToEndAlloc(allocator, 64 * 1024) catch "";
+    const stdout = if (child.stdout) |p| p.readToEndAlloc(allocator, 1024 * 1024) catch try allocator.dupe(u8, "") else try allocator.dupe(u8, "");
+    const stderr = if (child.stderr) |p| p.readToEndAlloc(allocator, 64 * 1024) catch try allocator.dupe(u8, "") else try allocator.dupe(u8, "");
     defer allocator.free(stdout);
     defer allocator.free(stderr);
     const term = child.wait() catch std.process.Child.Term{ .Exited = 1 };
