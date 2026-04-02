@@ -142,11 +142,28 @@ pub fn envMapDeinit(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8))
 
 // ── Running agents ───────────────────────────────────────────────────────────
 
+const AGENT_TIMEOUT_MS: u64 = 5 * 60 * 1000; // 5 minutes
+
+const AgentKillCtx = struct {
+    child: *std.process.Child,
+    done: std.atomic.Value(bool),
+};
+
+fn agentKillThread(ctx: *AgentKillCtx) void {
+    std.Thread.sleep(AGENT_TIMEOUT_MS * std.time.ns_per_ms);
+    if (!ctx.done.load(.acquire)) {
+        _ = ctx.child.kill() catch {};
+    }
+}
+
 /// Run an agent process. Blocks until complete (or 5-minute timeout).
 pub fn runAgentProcess(allocator: std.mem.Allocator, agent: *const Agent, log_enabled: bool) void {
     if (log_enabled) {
         std.log.info("[agents] Running agent: {s} ({s})", .{ agent.name, agent.file });
     }
+
+    const home_dir = config.getHomeDir(allocator) catch "";
+    defer if (home_dir.len > 0) allocator.free(home_dir);
 
     // Parse .env file
     var env_map = parseEnvFile(allocator, agent.env_file) catch std.StringHashMap([]u8).init(allocator);
@@ -158,7 +175,7 @@ pub fn runAgentProcess(allocator: std.mem.Allocator, agent: *const Agent, log_en
 
     // Copy current env
     var cur_env = std.process.getEnvMap(allocator) catch {
-        runNodeScript(allocator, agent, &env, log_enabled);
+        runNodeScript(allocator, agent, &env, log_enabled, home_dir);
         return;
     };
     defer cur_env.deinit();
@@ -173,7 +190,7 @@ pub fn runAgentProcess(allocator: std.mem.Allocator, agent: *const Agent, log_en
         env.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
     }
 
-    runNodeScript(allocator, agent, &env, log_enabled);
+    runNodeScript(allocator, agent, &env, log_enabled, home_dir);
 }
 
 fn runNodeScript(
@@ -181,8 +198,10 @@ fn runNodeScript(
     agent: *const Agent,
     env: *std.process.EnvMap,
     log_enabled: bool,
+    home_dir: []const u8,
 ) void {
-    const node_exe = pickNodeExe();
+    var node_buf: [512]u8 = undefined;
+    const node_exe = pickNodeExe(home_dir, &node_buf);
     const argv = [_][]const u8{ node_exe, agent.path };
     const agents_dir = std.fs.path.dirname(agent.path) orelse ".";
 
@@ -198,15 +217,20 @@ fn runNodeScript(
         return;
     };
 
-    // 5-minute timeout via a watchdog
-    const deadline_ms = std.time.milliTimestamp() + 5 * 60 * 1000;
+    // 5-minute hard timeout watchdog
+    var kill_ctx = AgentKillCtx{
+        .child = &child,
+        .done = std.atomic.Value(bool).init(false),
+    };
+    const watchdog = std.Thread.spawn(.{}, agentKillThread, .{&kill_ctx}) catch null;
 
     const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch "";
     defer if (stdout.len > 0) allocator.free(stdout);
     const stderr = child.stderr.?.readToEndAlloc(allocator, 10 * 1024) catch "";
     defer if (stderr.len > 0) allocator.free(stderr);
 
-    _ = deadline_ms; // timeout enforced by node itself for now
+    kill_ctx.done.store(true, .release);
+    if (watchdog) |t| t.detach();
 
     const result = child.wait() catch |err| {
         if (log_enabled) std.log.err("[agents] Wait failed for {s}: {}", .{ agent.name, err });
@@ -223,14 +247,18 @@ fn runNodeScript(
     }
 }
 
-fn pickNodeExe() []const u8 {
-    // prefer bun if available
-    const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
-    for (bun_paths) |p| {
-        std.fs.accessAbsolute(p, .{}) catch continue;
-        return p;
-    }
-    return if (builtin.os.tag == .windows) "node.exe" else "node";
+fn pickNodeExe(home_dir: []const u8, buf: []u8) []const u8 {
+    // Try ~/.bun/bin/bun first — most common on Linux/WSL2 user installs.
+    const home_bun = std.fmt.bufPrint(buf, "{s}/.bun/bin/bun", .{home_dir}) catch return "bun";
+    std.fs.accessAbsolute(home_bun, .{}) catch {
+        const static_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
+        for (static_paths) |p| {
+            std.fs.accessAbsolute(p, .{}) catch continue;
+            return p;
+        }
+        return if (builtin.os.tag == .windows) "node.exe" else "node";
+    };
+    return home_bun;
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────

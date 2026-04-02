@@ -361,24 +361,19 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
 
     const msg = try std.fmt.allocPrint(
         runtime.allocator,
-        "Hey! I've connected my computer to you via Poke Around (tunnel: {s}). {s} " ++
-            "Just use the tools whenever I ask you to do something on my computer. " ++
-            "Now reply me with \"now I am connected to your computer\" but everytime write those replies in most creative fun way.",
+        "Connected to {s} via Poke Around. {s}",
         .{ connection_id, mode_msg },
     );
     defer runtime.allocator.free(msg);
 
-    // Use send-message directly (same as `poke-around notify` CLI).
-    // This avoids depending on the webhook being set up in the bridge.
-    var child = std.process.Child.init(
-        &.{ pickRuntime(runtime.bridge_path), runtime.bridge_path, "send-message", "--message", msg },
-        runtime.allocator,
-    );
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Inherit;
-    child.stdin_behavior = .Ignore;
-    try child.spawn();
-    _ = child.wait() catch {};
+    // Send via the in-process webhook — avoids spawning a subprocess and racing
+    // against the bridge startup. The webhook is always ready before the tunnel
+    // emits "connected".
+    const msg_escaped = try mcp_server.jsonEscapeStr(runtime.allocator, msg);
+    defer runtime.allocator.free(msg_escaped);
+    const cmd = try std.fmt.allocPrint(runtime.allocator, "{{\"type\":\"send_webhook\",\"message\":{s}}}", .{msg_escaped});
+    defer runtime.allocator.free(cmd);
+    runtime.state.sendToBridge(cmd);
 
     logAlways(ansi.dim ++ "Notified Poke agent about connection." ++ ansi.reset, .{});
 }

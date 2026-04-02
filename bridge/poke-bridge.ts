@@ -172,6 +172,15 @@ async function runTunnel(): Promise<void> {
           tunnel.on("error", (err) => {
             reject(err instanceof Error ? err : new Error(String(err)));
           });
+          tunnel.on("oauthRequired", async () => {
+            emit({ type: "auth_required", message: "Poke token expired — re-authenticating…" });
+            try {
+              await login({ openBrowser: true });
+            } catch (authErr) {
+              emit({ type: "error", message: `Re-auth failed: ${String(authErr)}` });
+            }
+            reject(new Error("oauth required, reconnecting"));
+          });
           tunnel.on("toolsSynced", ({ toolCount }) => {
             emit({ type: "tools_synced", count: toolCount });
           });
