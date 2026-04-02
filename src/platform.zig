@@ -24,10 +24,11 @@ pub fn shellArgs(allocator: std.mem.Allocator, command: []const u8) ![]const []c
         },
         else => blk: {
             // prefer zsh, fall back to bash
+            // -lic: login + interactive so .zshrc/.bashrc is sourced (full PATH, aliases, env)
             const shell = if (shellExists("/bin/zsh")) "/bin/zsh" else "/bin/bash";
             const argv = try allocator.alloc([]const u8, 3);
             argv[0] = shell;
-            argv[1] = "-lc";
+            argv[1] = "-lic";
             argv[2] = command;
             break :blk argv;
         },

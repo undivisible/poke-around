@@ -19,19 +19,31 @@ pub fn parsePermissionMode(s: []const u8) PermissionMode {
 }
 
 // ── Loop guard (run_command deduplication) ──────────────────────────────────
+//
+// Only suppresses a command when it has failed LOOP_FAIL_THRESHOLD times within
+// LOOP_WINDOW_MS — i.e. the AI is stuck in a retry loop on the same failing
+// command.  A single failure never blocks a retry.
 
-const LOOP_SUPPRESS_MS: i64 = 60_000;
+const LOOP_WINDOW_MS: i64 = 30_000; // sliding window for counting failures
+const LOOP_FAIL_THRESHOLD: u32 = 3; // failures within window before suppressing
+const LOOP_SUPPRESS_MS: i64 = 60_000; // how long to suppress after threshold
+
+const FailRecord = struct {
+    count: u32,
+    window_start_ms: i64,
+    suppress_until_ms: i64,
+};
 
 pub const LoopGuard = struct {
     in_flight: std.StringHashMap(void),
-    recent_failures: std.StringHashMap(i64), // fingerprint → suppress_until_ms
+    failures: std.StringHashMap(FailRecord),
     mutex: std.Thread.Mutex,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) LoopGuard {
         return .{
             .in_flight = std.StringHashMap(void).init(allocator),
-            .recent_failures = std.StringHashMap(i64).init(allocator),
+            .failures = std.StringHashMap(FailRecord).init(allocator),
             .mutex = .{},
             .allocator = allocator,
         };
@@ -41,19 +53,20 @@ pub const LoopGuard = struct {
         var it = self.in_flight.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
         self.in_flight.deinit();
-        var it2 = self.recent_failures.keyIterator();
+        var it2 = self.failures.keyIterator();
         while (it2.next()) |k| self.allocator.free(k.*);
-        self.recent_failures.deinit();
+        self.failures.deinit();
     }
 
-    /// Try to acquire in-flight slot. Returns false if suppressed.
+    /// Try to acquire in-flight slot. Returns false if currently running or
+    /// suppressed due to repeated rapid failures.
     pub fn tryAcquire(self: *LoopGuard, fingerprint: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.in_flight.contains(fingerprint)) return false;
         const now = std.time.milliTimestamp();
-        if (self.recent_failures.get(fingerprint)) |until| {
-            if (now < until) return false;
+        if (self.failures.get(fingerprint)) |rec| {
+            if (now < rec.suppress_until_ms) return false;
         }
         const key = self.allocator.dupe(u8, fingerprint) catch return false;
         self.in_flight.put(key, {}) catch {
@@ -70,18 +83,34 @@ pub const LoopGuard = struct {
         if (self.in_flight.fetchRemove(fingerprint)) |entry| {
             self.allocator.free(entry.key);
         }
-        if (!success) {
-            const until = std.time.milliTimestamp() + LOOP_SUPPRESS_MS;
-            if (self.recent_failures.getPtr(fingerprint)) |ptr| {
-                ptr.* = until;
-            } else {
-                const key = self.allocator.dupe(u8, fingerprint) catch return;
-                self.recent_failures.put(key, until) catch self.allocator.free(key);
-            }
-        } else {
-            if (self.recent_failures.fetchRemove(fingerprint)) |entry| {
+        if (success) {
+            if (self.failures.fetchRemove(fingerprint)) |entry| {
                 self.allocator.free(entry.key);
             }
+            return;
+        }
+        // Record failure — suppress only after LOOP_FAIL_THRESHOLD failures
+        // within LOOP_WINDOW_MS.
+        const now = std.time.milliTimestamp();
+        if (self.failures.getPtr(fingerprint)) |rec| {
+            if (now - rec.window_start_ms > LOOP_WINDOW_MS) {
+                // Window expired — reset counter.
+                rec.count = 1;
+                rec.window_start_ms = now;
+                rec.suppress_until_ms = 0;
+            } else {
+                rec.count += 1;
+                if (rec.count >= LOOP_FAIL_THRESHOLD) {
+                    rec.suppress_until_ms = now + LOOP_SUPPRESS_MS;
+                }
+            }
+        } else {
+            const key = self.allocator.dupe(u8, fingerprint) catch return;
+            self.failures.put(key, .{
+                .count = 1,
+                .window_start_ms = now,
+                .suppress_until_ms = 0,
+            }) catch self.allocator.free(key);
         }
     }
 };
