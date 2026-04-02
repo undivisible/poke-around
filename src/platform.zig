@@ -147,10 +147,12 @@ fn findExecutable(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
 
 /// Kill other running poke-around instances (best effort, ignores errors).
 pub fn killExistingInstances(allocator: std.mem.Allocator) void {
-    const my_pid = if (builtin.os.tag != .windows)
+    const my_pid = if (builtin.os.tag == .linux)
         std.os.linux.getpid()
+    else if (builtin.os.tag == .windows)
+        std.os.windows.kernel32.GetCurrentProcessId()
     else
-        0;
+        std.c.getpid();
 
     switch (current_os) {
         .macos, .linux => {

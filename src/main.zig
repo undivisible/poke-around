@@ -134,7 +134,17 @@ fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool)
         std.posix.sigaction(std.posix.SIG.INT, &sa, null);
         std.posix.sigaction(std.posix.SIG.TERM, &sa, null);
     }
-    try app.runDaemon(allocator, mode_str, verbose);
+
+    if (@import("builtin").os.tag == .macos) {
+        const menubar = @import("menubar.zig");
+        // Start daemon in a separate thread
+        const t = try std.Thread.spawn(.{}, app.runDaemon, .{ allocator, mode_str, verbose });
+        t.detach();
+        // Run menubar event loop on main thread
+        try menubar.Menubar.run();
+    } else {
+        try app.runDaemon(allocator, mode_str, verbose);
+    }
 }
 
 fn handleSignal(_: c_int) callconv(.c) void {
@@ -327,13 +337,14 @@ fn runStatus(allocator: std.mem.Allocator) !void {
         },
     };
 
+    const pid_val = obj.get("pid");
     const is_running = blk: {
-        const pid_val = obj.get("pid") orelse break :blk false;
-        const pid = switch (pid_val) {
-            .integer => |i| i,
+        const pid = if (pid_val) |v| switch (v) {
+            .integer => |i| @as(std.posix.pid_t, @intCast(i)),
             .string => |s| std.fmt.parseInt(std.posix.pid_t, s, 10) catch break :blk false,
             else => break :blk false,
-        };
+        } else break :blk false;
+
         // Check if PID exists
         const pid_text = std.fmt.allocPrint(allocator, "{d}", .{pid}) catch break :blk false;
         defer allocator.free(pid_text);
@@ -346,16 +357,20 @@ fn runStatus(allocator: std.mem.Allocator) !void {
         break :blk result.term.Exited == 0;
     };
 
-    const is_starting = !is_running and obj.get("port") == null and obj.get("connectionId") == null;
+    const is_starting = !is_running and pid_val == null;
+    const is_crashed = !is_running and pid_val != null;
 
     std.debug.print("\n", .{});
-    std.debug.print("  {s}●{s} poke-around {s}{s}{s}\n\n", .{
-        if (is_running) app.ansi.green else if (is_starting) app.ansi.yellow else app.ansi.red,
-        app.ansi.reset,
-        if (is_running) app.ansi.green else if (is_starting) app.ansi.yellow else app.ansi.red,
-        if (is_running) "running" else if (is_starting) "starting" else "stopped",
-        app.ansi.reset,
-    });
+    if (is_running) {
+        std.debug.print("  {s}●{s} poke-around {s}running{s}\n", .{ app.ansi.green, app.ansi.reset, app.ansi.green, app.ansi.reset });
+    } else if (is_starting) {
+        std.debug.print("  {s}●{s} poke-around {s}starting{s}\n", .{ app.ansi.yellow, app.ansi.reset, app.ansi.yellow, app.ansi.reset });
+    } else if (is_crashed) {
+        std.debug.print("  {s}●{s} poke-around {s}stopped{s} (not found but pid file exists)\n", .{ app.ansi.red, app.ansi.reset, app.ansi.red, app.ansi.reset });
+    } else {
+        std.debug.print("  {s}●{s} poke-around {s}stopped{s}\n", .{ app.ansi.red, app.ansi.reset, app.ansi.red, app.ansi.reset });
+    }
+    std.debug.print("\n", .{});
 
     if (obj.get("connectionId")) |conn| {
         const conn_str = switch (conn) {
@@ -375,32 +390,57 @@ fn runStatus(allocator: std.mem.Allocator) !void {
             .string => |s| std.fmt.parseInt(u16, s, 10) catch 0,
             else => 0,
         };
-        std.debug.print("  MCP server:    {s}http://127.0.0.1:{d}/mcp{s}\n", .{ app.ansi.dim, port, app.ansi.reset });
+        if (port > 0) {
+            std.debug.print("  MCP server:    {s}http://127.0.0.1:{d}/mcp{s}\n", .{ app.ansi.dim, port, app.ansi.reset });
+        }
     }
 
     std.debug.print("\n", .{});
-    std.debug.print("  Use {s}journalctl --user -u poke-around -f{s} to see logs\n", .{ app.ansi.dim, app.ansi.reset });
+    if (@import("builtin").os.tag == .macos) {
+        std.debug.print("  Use {s}brew services info poke-around{s} or {s}log show --predicate 'process == \"poke-around\"'{s} to see status/logs\n", .{ app.ansi.dim, app.ansi.reset, app.ansi.dim, app.ansi.reset });
+    } else {
+        std.debug.print("  Use {s}journalctl --user -u poke-around -f{s} to see logs\n", .{ app.ansi.dim, app.ansi.reset });
+    }
     std.debug.print("\n", .{});
 }
 
 /// Restart the poke-around user service.
 fn runRestart(allocator: std.mem.Allocator) !void {
-    std.debug.print("Restarting poke-around.service...\n", .{});
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "systemctl", "--user", "restart", "poke-around.service" },
-    }) catch |err| {
-        std.debug.print("Failed to restart service: {}\n", .{err});
-        std.process.exit(1);
-    };
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.term.Exited != 0) {
-        if (result.stderr.len > 0) {
+    const is_macos = @import("builtin").os.tag == .macos;
+    if (is_macos) {
+        std.debug.print("Restarting poke-around via brew services...\n", .{});
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &.{ "brew", "services", "restart", "poke-around" },
+        }) catch |err| {
+            std.debug.print("Failed to restart via brew: {}. Trying launchctl...\n", .{err});
+            // fallback to launchctl or just exit
+            std.process.exit(1);
+        };
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        if (result.term.Exited != 0) {
             std.debug.print("{s}\n", .{result.stderr});
+            std.process.exit(1);
         }
-        std.process.exit(1);
+    } else {
+        std.debug.print("Restarting poke-around.service...\n", .{});
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &.{ "systemctl", "--user", "restart", "poke-around.service" },
+        }) catch |err| {
+            std.debug.print("Failed to restart service: {}\n", .{err});
+            std.process.exit(1);
+        };
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        if (result.term.Exited != 0) {
+            if (result.stderr.len > 0) {
+                std.debug.print("{s}\n", .{result.stderr});
+            }
+            std.process.exit(1);
+        }
     }
 
     std.debug.print("Restart requested. Use 'poke-around status' to confirm it came back.\n", .{});

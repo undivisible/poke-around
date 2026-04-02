@@ -358,7 +358,14 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
 
 // ── Stale connection cleanup ──────────────────────────────────────────────────
 
+const poke = @import("poke.zig");
+
+// ...
+
 fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
+    var client = poke.PokeClient.init(allocator) catch return;
+    defer client.deinit();
+
     const raw = config.readStateJson(allocator) catch return;
     defer allocator.free(raw);
 
@@ -387,64 +394,11 @@ fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
 
     if (ids.items.len == 0) return;
 
-    // Read Poke token from poke SDK credentials
-    const token = readPokeToken(allocator) catch return;
-    defer allocator.free(token);
-
-    const base_url = std.process.getEnvVarOwned(allocator, "POKE_API") catch
-        allocator.dupe(u8, "https://poke.com/api/v1") catch return;
-    defer allocator.free(base_url);
-
     logAlways(ansi.dim ++ "Cleaning up {d} old connection(s)..." ++ ansi.reset, .{ids.items.len});
 
     for (ids.items) |id| {
-        const url = std.fmt.allocPrint(allocator, "{s}/mcp/connections/{s}", .{ base_url, id }) catch continue;
-        defer allocator.free(url);
-
-        const auth_hdr = std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{token}) catch continue;
-        defer allocator.free(auth_hdr);
-        const del_argv = [_][]const u8{ "curl", "-fsSL", "-X", "DELETE", "-H", auth_hdr, url };
-        var child = std.process.Child.init(&del_argv, allocator);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.stdin_behavior = .Ignore;
-        child.spawn() catch continue;
-        _ = child.wait() catch std.process.Child.Term{ .Exited = 1 };
+        client.deleteConnection(id) catch continue;
     }
-}
-
-/// Read the Poke SDK auth token from ~/.config/poke/credentials.json
-pub fn readPokeToken(allocator: std.mem.Allocator) ![]u8 {
-    const cred_path = try pokeCredentialsPath(allocator);
-    defer allocator.free(cred_path);
-
-    const file = try std.fs.openFileAbsolute(cred_path, .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 64 * 1024);
-    defer allocator.free(content);
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
-    defer parsed.deinit();
-
-    const obj = switch (parsed.value) {
-        .object => |o| o,
-        else => return error.InvalidCredentials,
-    };
-    const token = switch (obj.get("token") orelse return error.NoToken) {
-        .string => |s| s,
-        else => return error.NoToken,
-    };
-    return allocator.dupe(u8, token);
-}
-
-fn pokeCredentialsPath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "poke", "credentials.json" });
-    } else |_| {}
-    const home = try config.getHomeDir(allocator);
-    defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".config", "poke", "credentials.json" });
 }
 
 // ── Main daemon entry point ───────────────────────────────────────────────────
@@ -454,6 +408,8 @@ var global_runtime: ?*AppRuntime = null;
 pub fn initiateShutdown() void {
     if (global_runtime) |rt| {
         rt.stop_flag.store(true, .release);
+    } else {
+        std.process.exit(0);
     }
 }
 
@@ -493,7 +449,13 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
     // Start MCP HTTP server
     const port = try mcp_server.startMcpServer(allocator, state);
     logAlways(ansi.dim ++ "MCP server on port {d}" ++ ansi.reset, .{port});
-    const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{std.os.linux.getpid()});
+    const pid = if (@import("builtin").os.tag == .linux)
+        std.os.linux.getpid()
+    else if (@import("builtin").os.tag == .windows)
+        std.os.windows.kernel32.GetCurrentProcessId()
+    else
+        std.c.getpid();
+    const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{pid});
     defer allocator.free(pid_text);
     const port_text = try std.fmt.allocPrint(allocator, "{d}", .{port});
     defer allocator.free(port_text);

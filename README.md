@@ -81,6 +81,53 @@ Set the access mode with `--mode`:
 
 Config is stored at `~/.config/poke-around/config.json`.
 
+## System Tray
+
+Poke Around features a system tray (menu bar) icon on all platforms:
+
+- **macOS:** Native menu bar icon with "Quit" option.
+- **Windows:** System tray icon in the overflow menu.
+- **Linux:** AppIndicator tray icon (requires `python3-gi` and `libayatana-appindicator3-0.1`).
+
+The tray icon provides a quick way to see if the daemon is running and to shut it down gracefully.
+
+## Running as a Service
+
+### macOS (Homebrew)
+
+If installed via Homebrew, you can manage the service with:
+
+```bash
+brew services start poke-around
+brew services restart poke-around
+brew services stop poke-around
+```
+
+### Linux (Systemd)
+
+Create a user unit file at `~/.config/systemd/user/poke-around.service`:
+
+```ini
+[Unit]
+Description=Poke Around Daemon
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/poke-around
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+Then run:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable poke-around
+systemctl --user start poke-around
+```
+
 
 ## Agents
 

@@ -13,6 +13,19 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+
+    if (target.result.os.tag == .macos) {
+        const objc_dep = b.dependency("zig_objc", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("objc", objc_dep.module("objc"));
+        exe.linkFramework("AppKit");
+        exe.linkFramework("Foundation");
+        exe.linkSystemLibrary("objc");
+        exe.linkLibC();
+    }
+
     b.installArtifact(exe);
 
     // Also install the bridge alongside the binary
@@ -21,6 +34,14 @@ pub fn build(b: *std.Build) void {
         "bin/poke-around-bridge.js",
     );
     b.getInstallStep().dependOn(&install_bridge.step);
+
+    if (target.result.os.tag == .linux) {
+        const install_helper = b.addInstallFile(
+            b.path("src/menubar_linux.py"),
+            "bin/menubar_linux.py",
+        );
+        b.getInstallStep().dependOn(&install_helper.step);
+    }
 
     // ── Run step ─────────────────────────────────────────────────────────────
     const run_cmd = b.addRunArtifact(exe);
@@ -83,6 +104,13 @@ pub fn build(b: *std.Build) void {
             b.path("bridge/dist/poke-around-bridge.js"),
             b.fmt("{s}/poke-around-bridge.js", .{dest_dir}),
         );
+        if (rt.os == .linux) {
+            const install_helper_cross = b.addInstallFile(
+                b.path("src/menubar_linux.py"),
+                b.fmt("{s}/menubar_linux.py", .{dest_dir}),
+            );
+            release_step.dependOn(&install_helper_cross.step);
+        }
         release_step.dependOn(&install_cross.step);
         release_step.dependOn(&install_bridge_cross.step);
     }
