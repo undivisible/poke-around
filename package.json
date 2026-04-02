@@ -4,7 +4,7 @@
   "description": "Expose your machine to your Poke AI assistant via MCP tunnel",
   "type": "module",
   "scripts": {
-    "build:bridge": "bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js && cp -R bridge/node_modules/systray2/traybin bridge/dist/traybin",
+    "build:bridge": "bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js && bun -e \"import { createRequire } from 'node:module'; import { cpSync, existsSync } from 'node:fs'; import path from 'node:path'; const require = createRequire(import.meta.url); const pkg = require.resolve('systray2/package.json'); const src = path.join(path.dirname(pkg), 'traybin'); if (existsSync(src)) cpSync(src, 'bridge/dist/traybin', { recursive: true }); else console.warn('systray2 traybin missing; skipping copy');\"",
     "build": "zig build",
     "release": "bun run build:bridge && zig build release-all"
   },

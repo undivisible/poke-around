@@ -6,6 +6,7 @@ Poke Around exposes your machine to your Poke assistant over an MCP tunnel so yo
 
 - The current checkout is on feature/computer-use-integration.
 - zig test src/main.zig currently passes locally.
+- The bridge build resolves systray2 traybin dynamically before copying release assets.
 
 ## Requirements
 
