@@ -701,11 +701,17 @@ const TimeoutCtx = struct {
     child: *std.process.Child,
     done: std.atomic.Value(bool),
     allocator: std.mem.Allocator,
+    refs: std.atomic.Value(u32), // shared ref count; last to decrement frees ctx
 };
 
+fn releaseTimeoutCtx(ctx: *TimeoutCtx) void {
+    if (ctx.refs.fetchSub(1, .acq_rel) == 1) {
+        ctx.allocator.destroy(ctx);
+    }
+}
+
 fn timeoutThread(ctx: *TimeoutCtx, timeout_ms: u64) void {
-    // ctx is owned by this thread — free it on exit regardless of outcome
-    defer ctx.allocator.destroy(ctx);
+    defer releaseTimeoutCtx(ctx);
     std.Thread.sleep(timeout_ms * std.time.ns_per_ms);
     if (!ctx.done.load(.acquire)) {
         _ = ctx.child.kill() catch std.process.Child.Term{ .Signal = 15 };
@@ -738,26 +744,28 @@ fn runCommandInternal(
     const start_ms = std.time.milliTimestamp();
     try child.spawn();
 
-    // Allocate from the long-lived timeout_allocator so the watchdog thread
-    // can safely access ctx after the arena (allocator) is freed.
-    // Ownership transfers to the thread; it frees ctx on exit.
+    // Allocate from the long-lived timeout_allocator so ctx survives the arena.
+    // refs starts at 2: one for main, one for the watchdog thread.
+    // The last participant to call releaseTimeoutCtx frees the allocation.
     const timeout_ctx = try timeout_allocator.create(TimeoutCtx);
     timeout_ctx.* = .{
         .child = &child,
         .done = std.atomic.Value(bool).init(false),
         .allocator = timeout_allocator,
+        .refs = std.atomic.Value(u32).init(2),
     };
     const watchdog = std.Thread.spawn(.{}, timeoutThread, .{ timeout_ctx, 30_000 }) catch blk: {
-        // Spawn failed — we still own ctx, free it now.
-        timeout_allocator.destroy(timeout_ctx);
+        // Spawn failed — release thread's ref now (main still holds its ref).
+        releaseTimeoutCtx(timeout_ctx);
         break :blk null;
     };
 
     const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch try allocator.dupe(u8, "");
     const stderr_raw = child.stderr.?.readToEndAlloc(allocator, 10 * 1024) catch try allocator.dupe(u8, "");
 
+    // Signal the thread that the command finished before it reads done.
+    // Safe: main still holds its own ref, so ctx is alive here.
     const timed_out = timeout_ctx.done.load(.acquire) == false;
-    // Signal the thread that the command is done; thread frees ctx on its own.
     timeout_ctx.done.store(true, .release);
 
     const wait_result = child.wait() catch std.process.Child.Term{ .Exited = 1 };
@@ -767,7 +775,7 @@ fn runCommandInternal(
     };
 
     if (watchdog) |t| t.detach();
-    // Do NOT free timeout_ctx here — thread owns it now.
+    releaseTimeoutCtx(timeout_ctx); // release main's ref; thread may free ctx
 
     const stderr = if (sandbox_note) |note|
         try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ stderr_raw, note })
