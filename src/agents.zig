@@ -59,7 +59,7 @@ pub fn discoverAgents(allocator: std.mem.Allocator) ![]Agent {
         return allocator.alloc(Agent, 0);
     defer dir.close();
 
-    var agents = std.array_list.Managed(Agent).init(allocator);
+    var agents = std.ArrayList(Agent).empty;
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file) continue;
@@ -80,7 +80,7 @@ pub fn discoverAgents(allocator: std.mem.Allocator) ![]Agent {
         const env_file = try std.fs.path.join(allocator, &.{ agents_dir_path, try std.fmt.allocPrint(allocator, ".env.{s}", .{name}) });
         // Note: env_file may not exist, that's fine
 
-        try agents.append(.{
+        try agents.append(allocator, .{
             .name = try allocator.dupe(u8, name),
             .file = try allocator.dupe(u8, entry.name),
             .path = full_path,
@@ -90,7 +90,7 @@ pub fn discoverAgents(allocator: std.mem.Allocator) ![]Agent {
             .allocator = allocator,
         });
     }
-    return agents.toOwnedSlice();
+    return agents.toOwnedSlice(allocator);
 }
 
 // ── .env file parsing ────────────────────────────────────────────────────────
@@ -240,8 +240,8 @@ const SchedulerCtx = struct {
 };
 
 var scheduler_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-var scheduler_threads: std.array_list.Managed(std.Thread) = undefined;
-var scheduler_ctxs: std.array_list.Managed(*SchedulerCtx) = undefined;
+var scheduler_threads: std.ArrayList(std.Thread) = undefined;
+var scheduler_ctxs: std.ArrayList(*SchedulerCtx) = undefined;
 var scheduler_allocator: std.mem.Allocator = undefined;
 
 /// Start the agent scheduler. Safe to call only once at a time.
@@ -250,8 +250,8 @@ pub fn startScheduler(allocator: std.mem.Allocator, log_enabled: bool) !void {
     scheduler_running.store(true, .release);
 
     scheduler_allocator = allocator;
-    scheduler_threads = std.array_list.Managed(std.Thread).init(allocator);
-    scheduler_ctxs = std.array_list.Managed(*SchedulerCtx).init(allocator);
+    scheduler_threads = std.ArrayList(std.Thread).empty;
+    scheduler_ctxs = std.ArrayList(*SchedulerCtx).empty;
 
     const agents = try discoverAgents(allocator);
     defer {
@@ -284,9 +284,9 @@ pub fn startScheduler(allocator: std.mem.Allocator, log_enabled: bool) !void {
             .log_enabled = log_enabled,
             .stop = std.atomic.Value(bool).init(false),
         };
-        try scheduler_ctxs.append(ctx);
+        try scheduler_ctxs.append(allocator, ctx);
         const t = try std.Thread.spawn(.{}, schedulerLoop, .{ctx});
-        try scheduler_threads.append(t);
+        try scheduler_threads.append(allocator, t);
     }
 }
 

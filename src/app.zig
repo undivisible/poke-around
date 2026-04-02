@@ -10,6 +10,8 @@ const agents = @import("agents.zig");
 // ── Bridge process management ───────────────────────────────────────────────
 
 const RECONNECT_DELAY_MS: u64 = 15_000;
+const BRIDGE_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
+const BRIDGE_STALE_MS: i64 = 90_000;
 
 pub const ansi = struct {
     pub const reset = "\x1b[0m";
@@ -30,6 +32,7 @@ pub const AppRuntime = struct {
     bridge_path: []u8,
     reconnect_timer: ?std.Thread,
     stop_flag: std.atomic.Value(bool),
+    last_bridge_event_ms: std.atomic.Value(i64),
 
     pub fn deinit(self: *AppRuntime) void {
         self.stop_flag.store(true, .release);
@@ -115,7 +118,7 @@ fn pickRuntime(bridge_path: []const u8) []const u8 {
     const is_ts = std.mem.endsWith(u8, bridge_path, ".ts");
     if (is_ts) {
         // Only bun can run .ts directly
-        const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun", "bun" };
+        const bun_paths = [_][]const u8{ "/home/undivisible/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun", "bun" };
         for (bun_paths) |p| {
             std.fs.accessAbsolute(p, .{}) catch continue;
             return p;
@@ -123,7 +126,7 @@ fn pickRuntime(bridge_path: []const u8) []const u8 {
         return "bun";
     }
     // For .js: try bun first, then node
-    const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
+    const bun_paths = [_][]const u8{ "/home/undivisible/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
     for (bun_paths) |p| {
         std.fs.accessAbsolute(p, .{}) catch continue;
         return p;
@@ -180,8 +183,8 @@ fn bridgeStdoutReader(ctx: *BridgeCtx) void {
 
     const stdout = runtime.bridge_process.?.stdout orelse return;
     var buf: [4096]u8 = undefined;
-    var line_buf = std.array_list.Managed(u8).init(runtime.allocator);
-    defer line_buf.deinit();
+    var line_buf = std.ArrayList(u8).empty;
+    defer line_buf.deinit(runtime.allocator);
 
     while (!runtime.stop_flag.load(.acquire)) {
         const n = stdout.read(&buf) catch break;
@@ -196,7 +199,7 @@ fn bridgeStdoutReader(ctx: *BridgeCtx) void {
                     line_buf.clearRetainingCapacity();
                 }
             } else {
-                line_buf.append(c) catch {};
+                line_buf.append(runtime.allocator, c) catch {};
             }
         }
     }
@@ -211,6 +214,7 @@ fn bridgeStdoutReader(ctx: *BridgeCtx) void {
 fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
     const trimmed = std.mem.trim(u8, line, " \t\r");
     if (trimmed.len == 0) return;
+    runtime.last_bridge_event_ms.store(std.time.milliTimestamp(), .release);
 
     var arena = std.heap.ArenaAllocator.init(runtime.allocator);
     defer arena.deinit();
@@ -244,6 +248,9 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
         notifyPoke(runtime, conn_id) catch |err| logAlways(ansi.red ++ "Notify Poke failed: {}" ++ ansi.reset, .{err});
         agents.startScheduler(runtime.allocator, runtime.verbose) catch |err|
             logAlways(ansi.red ++ "Agent scheduler error: {}" ++ ansi.reset, .{err});
+
+    } else if (std.mem.eql(u8, event_type, "heartbeat")) {
+        if (runtime.verbose) log(runtime.verbose, "Bridge heartbeat", .{});
 
     } else if (std.mem.eql(u8, event_type, "disconnected")) {
         logAlways(ansi.yellow ++ "Tunnel disconnected." ++ ansi.reset, .{});
@@ -290,13 +297,7 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
     }
 }
 
-fn reconnectAfterDelay(runtime: *AppRuntime) void {
-    std.Thread.sleep(RECONNECT_DELAY_MS * std.time.ns_per_ms);
-    if (runtime.stop_flag.load(.acquire)) return;
-
-    logAlways("Reconnecting bridge...", .{});
-
-    // Kill old bridge process if still alive
+fn restartBridge(runtime: *AppRuntime) void {
     if (runtime.bridge_process) |*p| {
         runtime.state.bridge_writer_mutex.lock();
         runtime.state.bridge_writer = null;
@@ -309,6 +310,32 @@ fn reconnectAfterDelay(runtime: *AppRuntime) void {
     startBridge(runtime) catch |err| {
         logAlways("Failed to restart bridge: {}", .{err});
     };
+}
+
+fn bridgeWatchdog(runtime: *AppRuntime) void {
+    while (!runtime.stop_flag.load(.acquire)) {
+        std.Thread.sleep(BRIDGE_HEARTBEAT_INTERVAL_MS * std.time.ns_per_ms);
+        if (runtime.stop_flag.load(.acquire)) break;
+
+        const now = std.time.milliTimestamp();
+        const last = runtime.last_bridge_event_ms.load(.acquire);
+        if (now - last > BRIDGE_STALE_MS) {
+            logAlways("Bridge heartbeat stale; restarting tunnel...", .{});
+            restartBridge(runtime);
+            runtime.last_bridge_event_ms.store(now, .release);
+            continue;
+        }
+
+        runtime.state.sendToBridge("{\"type\":\"status_update\",\"status\":\"alive\"}");
+    }
+}
+
+fn reconnectAfterDelay(runtime: *AppRuntime) void {
+    std.Thread.sleep(RECONNECT_DELAY_MS * std.time.ns_per_ms);
+    if (runtime.stop_flag.load(.acquire)) return;
+
+    logAlways("Reconnecting bridge...", .{});
+    restartBridge(runtime);
 }
 
 // ── Poke notification ─────────────────────────────────────────────────────────
@@ -340,19 +367,18 @@ fn notifyPoke(runtime: *AppRuntime, connection_id: []const u8) !void {
     );
     defer runtime.allocator.free(msg);
 
-    // JSON-encode the message for the bridge
-    var escaped_buf = std.array_list.Managed(u8).init(runtime.allocator);
-    defer escaped_buf.deinit();
-    try escaped_buf.writer().print("{f}", .{std.json.fmt(msg, .{})});
-
-    const cmd = try std.fmt.allocPrint(
+    // Use send-message directly (same as `poke-around notify` CLI).
+    // This avoids depending on the webhook being set up in the bridge.
+    var child = std.process.Child.init(
+        &.{ pickRuntime(runtime.bridge_path), runtime.bridge_path, "send-message", "--message", msg },
         runtime.allocator,
-        "{{\"type\":\"send_webhook\",\"message\":{s}}}",
-        .{escaped_buf.items},
     );
-    defer runtime.allocator.free(cmd);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Inherit;
+    child.stdin_behavior = .Ignore;
+    try child.spawn();
+    _ = child.wait() catch {};
 
-    runtime.state.sendToBridge(cmd);
     logAlways(ansi.dim ++ "Notified Poke agent about connection." ++ ansi.reset, .{});
 }
 
@@ -378,16 +404,16 @@ fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
     };
 
     // Read connection IDs to clean up
-    var ids = std.array_list.Managed([]const u8).init(allocator);
-    defer ids.deinit();
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
 
     if (obj.get("connectionId")) |v| {
-        if (v == .string) ids.append(v.string) catch {};
+        if (v == .string) ids.append(allocator, v.string) catch {};
     }
     if (obj.get("connectionHistory")) |v| {
         if (v == .array) {
             for (v.array.items) |item| {
-                if (item == .string) ids.append(item.string) catch {};
+                if (item == .string) ids.append(allocator, item.string) catch {};
             }
         }
     }
@@ -476,10 +502,13 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
         .bridge_path = bridge_path,
         .reconnect_timer = null,
         .stop_flag = std.atomic.Value(bool).init(false),
+        .last_bridge_event_ms = std.atomic.Value(i64).init(std.time.milliTimestamp()),
     };
 
     // Start bridge
     try startBridge(runtime);
+    const watchdog = try std.Thread.spawn(.{}, bridgeWatchdog, .{runtime});
+    watchdog.detach();
 
     global_runtime = runtime;
 

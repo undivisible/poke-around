@@ -13,6 +13,7 @@
 import { PokeTunnel, isLoggedIn, login, getToken, Poke } from "poke";
 import * as readline from "node:readline";
 import * as os from "node:os";
+import { randomUUID } from "node:crypto";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,10 @@ function getArg(flag: string): string | null {
 }
 
 const mode = argv[0] ?? "tunnel";
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const RECONNECT_MIN_MS = 5_000;
+const RECONNECT_MAX_MS = 60_000;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // ── tunnel mode ─────────────────────────────────────────────────────────────
 
@@ -57,43 +62,88 @@ async function runTunnel(): Promise<void> {
   const token = await ensureAuth();
   const poke = new Poke({ token });
 
-  // Use hostname to allow multiple machine instances (swarm mode)
-  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+  // Use hostname plus a session suffix to avoid stale-name collisions on reconnects.
+  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}-${randomUUID().slice(0, 8)}`;
 
-  // Create or reuse webhook
-  let webhookUrl: string | null = null;
-  let webhookToken: string | null = null;
-  try {
-    const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
-    webhookUrl = wh.webhookUrl;
-    webhookToken = wh.webhookToken;
-    emit({ type: "webhook_ready", webhookUrl, webhookToken });
-  } catch (err) {
-    emit({ type: "webhook_error", message: String(err) });
-  }
+  let stopRequested = false;
+  let activeTunnel: PokeTunnel | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let activeWebhookUrl: string | null = null;
+  let activeWebhookToken: string | null = null;
+  let retryDelay = RECONNECT_MIN_MS;
 
-  const tunnel = new PokeTunnel({
-    url: mcpUrl,
-    name: tunnelName,
-    token,
-    cleanupOnStop: true,
-  });
+  const clearHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
 
-  tunnel.on("connected", (info) => {
-    emit({ type: "connected", connectionId: info.connectionId });
-  });
-  tunnel.on("disconnected", () => {
-    emit({ type: "disconnected" });
-  });
-  tunnel.on("error", (err) => {
-    emit({ type: "error", message: err.message });
-  });
-  tunnel.on("toolsSynced", ({ toolCount }) => {
-    emit({ type: "tools_synced", count: toolCount });
-  });
+  const cleanupTunnel = async () => {
+    clearHeartbeat();
+    if (activeTunnel) {
+      try {
+        await activeTunnel.stop();
+      } catch {}
+      activeTunnel = null;
+    }
+    activeWebhookUrl = null;
+    activeWebhookToken = null;
+  };
 
-  await tunnel.start();
-  log(`Tunnel started → ${mcpUrl}`);
+  const maintainTunnel = async () => {
+    while (!stopRequested) {
+      let tunnel: PokeTunnel | null = null;
+      try {
+        const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
+        activeWebhookUrl = wh.webhookUrl;
+        activeWebhookToken = wh.webhookToken;
+        emit({ type: "webhook_ready", webhookUrl: activeWebhookUrl, webhookToken: activeWebhookToken });
+
+        tunnel = new PokeTunnel({
+          url: mcpUrl,
+          name: tunnelName,
+          token,
+          cleanupOnStop: true,
+        });
+        activeTunnel = tunnel;
+
+        const sessionLost = new Promise<void>((_resolve, reject) => {
+          tunnel!.on("connected", (info) => {
+            emit({ type: "connected", connectionId: info.connectionId });
+            retryDelay = RECONNECT_MIN_MS;
+            clearHeartbeat();
+            heartbeatTimer = setInterval(() => {
+              emit({ type: "heartbeat", tunnelName, ts: Date.now() });
+            }, HEARTBEAT_INTERVAL_MS);
+          });
+          tunnel!.on("disconnected", () => {
+            reject(new Error("tunnel disconnected"));
+          });
+          tunnel!.on("error", (err) => {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+          tunnel!.on("toolsSynced", ({ toolCount }) => {
+            emit({ type: "tools_synced", count: toolCount });
+          });
+        });
+
+        await tunnel.start();
+        log(`Tunnel started → ${mcpUrl}`);
+        await sessionLost;
+      } catch (err) {
+        emit({ type: "error", message: String(err) });
+      } finally {
+        await cleanupTunnel();
+      }
+
+      if (stopRequested) break;
+      await sleep(retryDelay);
+      retryDelay = Math.min(retryDelay * 2, RECONNECT_MAX_MS);
+    }
+  };
+
+  void maintainTunnel();
 
   // Read commands from parent (Zig) on stdin
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
@@ -105,14 +155,14 @@ async function runTunnel(): Promise<void> {
       const cmd = JSON.parse(trimmed) as Record<string, unknown>;
 
       if (cmd.type === "send_webhook") {
-        if (!webhookUrl || !webhookToken) {
+        if (!activeWebhookUrl || !activeWebhookToken) {
           emit({ type: "webhook_error", message: "No webhook configured." });
           return;
         }
         try {
           await poke.sendWebhook({
-            webhookUrl,
-            webhookToken,
+            webhookUrl: activeWebhookUrl,
+            webhookToken: activeWebhookToken,
             data: { message: cmd.message as string },
           });
           emit({ type: "webhook_sent" });
@@ -122,7 +172,8 @@ async function runTunnel(): Promise<void> {
 
       } else if (cmd.type === "stop") {
         log("Stop requested.");
-        await tunnel.stop();
+        stopRequested = true;
+        await cleanupTunnel();
         process.exit(0);
       }
     } catch {
@@ -132,7 +183,8 @@ async function runTunnel(): Promise<void> {
 
   rl.on("close", () => {
     // parent closed stdin → shut down
-    tunnel.stop().finally(() => process.exit(0));
+    stopRequested = true;
+    cleanupTunnel().finally(() => process.exit(0));
   });
 }
 

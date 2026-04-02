@@ -128,7 +128,7 @@ fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool)
     if (@import("builtin").os.tag != .windows) {
         const sa = std.posix.Sigaction{
             .handler = .{ .handler = handleSignal },
-            .mask = std.mem.zeroes(std.posix.sigset_t),
+            .mask = std.posix.sigemptyset(),
             .flags = 0,
         };
         std.posix.sigaction(std.posix.SIG.INT, &sa, null);
@@ -173,8 +173,8 @@ fn runAgentCreate(allocator: std.mem.Allocator, prompt: ?[]const u8) !void {
 
     const description = if (prompt) |p| p else blk: {
         std.debug.print("\n  Describe the agent you want to create:\n  > ", .{});
-        var r_buf: [1024]u8 = undefined;
-        var stdin = std.fs.File.stdin().reader(&r_buf);
+        var stdin_buf: [1024]u8 = undefined;
+        var stdin = std.fs.File.stdin().reader(&stdin_buf);
         const line = (try stdin.interface.takeDelimiter('\n')) orelse return error.NoInput;
         break :blk std.mem.trim(u8, line, " \t\r\n");
     };
@@ -251,7 +251,7 @@ fn runTakeScreenshot(allocator: std.mem.Allocator) !void {
 fn pickRuntime(bridge_path: []const u8) []const u8 {
     const is_ts = std.mem.endsWith(u8, bridge_path, ".ts");
     if (is_ts) return "bun";
-    const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
+    const bun_paths = [_][]const u8{ "/home/undivisible/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
     for (bun_paths) |p| {
         std.fs.accessAbsolute(p, .{}) catch continue;
         return p;

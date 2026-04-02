@@ -23,7 +23,7 @@ pub const PermissionService = struct {
     allocator: std.mem.Allocator,
     secret: []u8,
     pending: std.StringHashMap(Approval),
-    whitelist: std.StringHashMap(std.array_list.Managed([]u8)),
+    whitelist: std.StringHashMap(std.ArrayList([]u8)),
     mutex: std.Thread.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, secret: []const u8) !PermissionService {
@@ -31,7 +31,7 @@ pub const PermissionService = struct {
             .allocator = allocator,
             .secret = try allocator.dupe(u8, secret),
             .pending = std.StringHashMap(Approval).init(allocator),
-            .whitelist = std.StringHashMap(std.array_list.Managed([]u8)).init(allocator),
+            .whitelist = std.StringHashMap(std.ArrayList([]u8)).init(allocator),
             .mutex = .{},
         };
     }
@@ -50,7 +50,7 @@ pub const PermissionService = struct {
         while (wit.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             for (entry.value_ptr.items) |pat| self.allocator.free(pat);
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.whitelist.deinit();
     }
@@ -159,11 +159,11 @@ pub const PermissionService = struct {
 
         if (!self.whitelist.contains(session_id)) {
             const key = try self.allocator.dupe(u8, session_id);
-            try self.whitelist.put(key, std.array_list.Managed([]u8).init(self.allocator));
+            try self.whitelist.put(key, std.ArrayList([]u8).empty);
         }
         const list = self.whitelist.getPtr(session_id).?;
         const pat_copy = try self.allocator.dupe(u8, pattern);
-        try list.append(pat_copy);
+        try list.append(self.allocator, pat_copy);
     }
 
     /// Check if a command matches any allowed pattern for the session. Thread-safe.
@@ -191,17 +191,17 @@ pub const PermissionService = struct {
             self.allocator.free(entry.key);
             var list = entry.value;
             for (list.items) |pat| self.allocator.free(pat);
-            list.deinit();
+            list.deinit(self.allocator);
         }
 
         // Remove pending approvals for this session
-        var to_remove = std.array_list.Managed([]const u8).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove = std.ArrayList([]const u8).empty;
+        defer to_remove.deinit(self.allocator);
 
         var it = self.pending.iterator();
         while (it.next()) |kv| {
             if (std.mem.eql(u8, kv.value_ptr.session_id, session_id)) {
-                to_remove.append(kv.key_ptr.*) catch {};
+                to_remove.append(self.allocator, kv.key_ptr.*) catch {};
             }
         }
         for (to_remove.items) |key| {
