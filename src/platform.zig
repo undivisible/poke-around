@@ -117,17 +117,17 @@ fn buildMacosSandboxProfile(allocator: std.mem.Allocator, home: []const u8) ![]u
 
 fn singleQuote(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     // Replace every ' with '"'"' for shell-safe single quoting
-    var buf = std.ArrayList(u8).init(allocator);
-    try buf.append('\'');
+    var buf = std.ArrayList(u8).empty;
+    try buf.append(allocator, '\'');
     for (s) |c| {
         if (c == '\'') {
-            try buf.appendSlice("'\"'\"'");
+            try buf.appendSlice(allocator, "'\"'\"'");
         } else {
-            try buf.append(c);
+            try buf.append(allocator, c);
         }
     }
-    try buf.append('\'');
-    return buf.toOwnedSlice();
+    try buf.append(allocator, '\'');
+    return buf.toOwnedSlice(allocator);
 }
 
 fn findExecutable(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
@@ -282,13 +282,13 @@ pub fn extractExecutable(allocator: std.mem.Allocator, segment: []const u8) ![]u
 
 /// Split a command into segments on &&, ||, ;, newline.
 pub fn splitCommandSegments(allocator: std.mem.Allocator, command: []const u8) ![][]const u8 {
-    var segments = std.ArrayList([]const u8).init(allocator);
+    var segments = std.ArrayList([]const u8).empty;
     var i: usize = 0;
     var start: usize = 0;
     while (i < command.len) {
         if (command[i] == '\n' or command[i] == ';') {
             const seg = std.mem.trim(u8, command[start..i], " \t");
-            if (seg.len > 0) try segments.append(seg);
+            if (seg.len > 0) try segments.append(allocator, seg);
             start = i + 1;
             i = start;
         } else if (i + 1 < command.len and
@@ -296,7 +296,7 @@ pub fn splitCommandSegments(allocator: std.mem.Allocator, command: []const u8) !
             std.mem.eql(u8, command[i .. i + 2], "||")))
         {
             const seg = std.mem.trim(u8, command[start..i], " \t");
-            if (seg.len > 0) try segments.append(seg);
+            if (seg.len > 0) try segments.append(allocator, seg);
             start = i + 2;
             i = start;
         } else {
@@ -305,7 +305,7 @@ pub fn splitCommandSegments(allocator: std.mem.Allocator, command: []const u8) !
     }
     if (start < command.len) {
         const seg = std.mem.trim(u8, command[start..], " \t");
-        if (seg.len > 0) try segments.append(seg);
+        if (seg.len > 0) try segments.append(allocator, seg);
     }
-    return segments.toOwnedSlice();
+    return segments.toOwnedSlice(allocator);
 }

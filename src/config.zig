@@ -132,10 +132,9 @@ pub fn setStateField(allocator: std.mem.Allocator, field: []const u8, value: []c
     };
     try obj.put(field, std.json.Value{ .string = value });
 
-    var buf = std.ArrayList(u8).init(allocator);
-    defer buf.deinit();
-    try std.json.stringify(std.json.Value{ .object = obj }, .{}, buf.writer());
-    try writeStateJson(allocator, buf.items);
+    const json = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
+    defer allocator.free(json);
+    try writeStateJson(allocator, json);
 }
 
 /// Reads config.json; returns "{}" if missing (caller must free).
@@ -188,11 +187,10 @@ pub fn savePermissionMode(allocator: std.mem.Allocator, mode: []const u8) !void 
     defer obj.deinit();
     try obj.put("permissionMode", std.json.Value{ .string = mode });
 
-    var buf = std.ArrayList(u8).init(allocator);
-    defer buf.deinit();
-    try std.json.stringify(std.json.Value{ .object = obj }, .{}, buf.writer());
+    const json = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
+    defer allocator.free(json);
 
     const file = try std.fs.createFileAbsolute(path, .{});
     defer file.close();
-    try file.writeAll(buf.items);
+    try file.writeAll(json);
 }

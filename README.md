@@ -1,194 +1,136 @@
-Let Poke around your computer.
+# Poke Around
 
-Run Poke Around on your machine, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
+Poke Around exposes your machine to your Poke assistant over an MCP tunnel so you can run commands, inspect files, take screenshots, and launch scheduled agents on your own computer.
 
-## Install
+## Current status
 
-**Install via Wax** (recommended)
+- The current checkout is on feature/computer-use-integration.
+- zig test src/main.zig currently passes locally.
 
-We recommend [Wax](https://github.com/semitechnological/wax), a Homebrew-compatible package manager. Install it via Cargo:
+## Requirements
+
+- Zig 0.15+
+- Bun 1.0+
+- Node.js (used for agent scripts and the bridge runtime when Bun is unavailable)
+
+## Build
 
 ```bash
-cargo install waxpkg
+zig build
 ```
 
-Then tap and install:
+That builds the native Zig daemon and installs the bridge script into `zig-out/bin/`.
+
+To build the bridge bundle directly:
 
 ```bash
-wax tap add undivisible/tap
-wax install poke-around
+bun run build:bridge
 ```
 
-**Install via Zig**
-
-If you prefer to build from source:
+To create release binaries for all supported targets:
 
 ```bash
-git clone https://github.com/undivisible/poke-around.git
-cd poke-around
-zig build -Doptimize=ReleaseSafe
+bun run release
+```
+
+## Run
+
+```bash
+zig build run
+# or
 ./zig-out/bin/poke-around
 ```
 
-**Manual download**
+On first launch, Poke OAuth opens in your browser and connects the tunnel.
 
-Download the latest binary for your platform (Linux, macOS, Windows) from [Releases](https://github.com/undivisible/poke-around/releases).
-
-Since the app is not notarized on macOS, you may need to run:
+Useful flags:
 
 ```bash
-xattr -cr poke-around
+./zig-out/bin/poke-around --verbose
+./zig-out/bin/poke-around --mode full
+./zig-out/bin/poke-around --mode limited
+./zig-out/bin/poke-around --mode sandbox
 ```
 
-## CLI usage
-
-Start the gate:
+## Commands
 
 ```bash
-./poke-around
+poke-around status
+poke-around notify
+poke-around restart
+poke-around take-screenshot
+poke-around set-mode <full|limited|sandbox>
+poke-around run-agent <name>
+poke-around agent get <name>
+poke-around agent create --prompt "..."
 ```
 
-On first run, Poke OAuth opens in your browser. Add `--verbose` to see tool calls in real time:
+## Configuration
+
+Config lives in:
 
 ```bash
-./poke-around --verbose
+~/.config/poke-around/
 ```
 
-Set the access mode with `--mode`:
+Key files:
 
-```bash
-./poke-around --mode limited
-./poke-around --mode sandbox
-```
-
-Config is stored at `~/.config/poke-around/config.json`.
-
+- `config.json` — saved permission mode
+- `state.json` — runtime state used by the tunnel and bridge
+- `agents/` — installed and custom agent scripts
 
 ## Agents
 
-<p align="center">
-  <img src="assets/screenshots/agents-editor.png" width="600" alt="Agents Editor">
-</p>
+Agents are JavaScript files stored in `~/.config/poke-around/agents/` and named:
 
-Agents are scheduled scripts that run automatically in the background. They live in `~/.config/poke-around/agents/` and follow a simple naming convention:
-
-```
+```text
 <name>.<interval>.js
 ```
 
-| File | Runs |
-|------|------|
-| `beeper.1h.js` | Every hour |
-| `backup.2h.js` | Every 2 hours |
-| `health.10m.js` | Every 10 minutes |
-| `cleanup.30m.js` | Every 30 minutes |
+Examples:
 
-Intervals: `Nm` (minutes) or `Nh` (hours). Minimum is 10 minutes.
+- `beeper.1h.js`
+- `backup.2h.js`
+- `cleanup.30m.js`
 
-### Install an agent
+Intervals use minutes or hours, and the minimum supported interval is 10 minutes.
 
-Download a community agent from the repository:
+Each agent can have a matching env file:
 
 ```bash
-./poke-around agent get beeper
+~/.config/poke-around/agents/.env.<name>
 ```
 
-This downloads `beeper.1h.js` and `.env.beeper` to `~/.config/poke-around/agents/`. Edit the env file with your credentials and test it:
-
-```bash
-nano ~/.config/poke-around/agents/.env.beeper
-./poke-around run-agent beeper
-```
-
-### Per-agent env files
-
-Each agent can have a `.env.<name>` file for secrets:
-
-```
-~/.config/poke-around/agents/.env.beeper
-```
-
-```env
-BEEPER_TOKEN=your_token_here
-```
-
-Variables are injected into the agent process automatically.
-
-### Agent frontmatter
-
-Each agent file starts with a JSDoc-style frontmatter block:
+Example frontmatter:
 
 ```javascript
 /**
  * @agent beeper
  * @name Beeper Message Digest
- * @description Fetches messages from the last hour and sends a summary to Poke.
+ * @description Fetches messages and sends a summary to Poke.
  * @interval 1h
- * @env BEEPER_TOKEN - Beeper Desktop local API token
- * @author f
+ * @author you
  */
 ```
-
-### Creating your own agent
-
-An agent is just a JS file that runs with Node.js. It has access to:
-
-- `process.env` — variables from `.env.<name>`
-- `poke` package — `import { Poke, getToken } from "poke"`
-- Any npm package installed globally or via npx
-
-```javascript
-/**
- * @agent my-agent
- * @name My Custom Agent
- * @description Does something useful every 30 minutes.
- * @interval 30m
- */
-
-import { Poke, getToken } from "poke";
-
-const poke = new Poke({ apiKey: getToken() });
-await poke.sendMessage("Hello from my agent!");
-```
-
-Save as `~/.config/poke-around/agents/my-agent.30m.js` and it runs automatically when poke-around is connected.
-
-Agents start running when poke-around connects and run once immediately on startup.
 
 ## Access modes
 
-Poke Around supports three access modes that control what your agent can do:
-
 | Mode | Description |
-|------|-------------|
-| **Full** (default) | All tools available with no approval required. The agent can run commands, write files, and take screenshots directly. |
-| **Limited** | Read-only tools plus a curated set of safe commands (`ls`, `cat`, `grep`, `curl`, etc.). `write_file` and `take_screenshot` are disabled. |
-| **Sandbox** | Broader command support than Limited, but writes are restricted to `~/Downloads` and `/tmp` via macOS `sandbox-exec`. |
-
-Set the mode via CLI flag, environment variable, or the macOS app Settings:
-
-```bash
-./poke-around --mode sandbox
-# or
-POKE_GATE_PERMISSION_MODE=limited ./poke-around
-```
+| --- | --- |
+| full | Full shell access. Risky actions require approval. |
+| limited | Read-only tools plus a small safe command allowlist. |
+| sandbox | Command execution is broader, but writes are restricted to temporary locations. |
 
 ## Security
 
-**In full mode, Poke Around grants full shell access to your Poke agent.** This means:
+Poke Around grants your Poke agent shell access through a tunnel on your machine. Only run it on machines and networks you trust.
 
-- Any command can be run with your user's permissions
-- Files can be read and written anywhere your user has access
-- Risky tools require approval in chat before execution
-- Only your Poke agent (authenticated via Poke OAuth) can reach the tunnel
+## Project layout
 
-Only run Poke Around on machines and networks you trust. Use `limited` or `sandbox` mode if you want tighter restrictions.
-
-## Credits
-
-- This project is a native Zig rewrite and continuation of the original [f/poke-gate](https://github.com/f/poke-gate) repository.
-- [Poke](https://poke.com) by [The Interaction Company of California](https://interaction.co)
-- [Poke SDK](https://www.npmjs.com/package/poke)
+- `src/` — Zig daemon, HTTP/MCP server, permissions, platform helpers
+- `bridge/` — Poke bridge bundle and source
+- `docs/` — user-facing documentation
+- `examples/agents/` — sample scheduled agents
 
 ## License
 

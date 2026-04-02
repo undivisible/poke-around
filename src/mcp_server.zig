@@ -104,7 +104,11 @@ pub const AppState = struct {
         var rand_secret: [32]u8 = undefined;
         std.crypto.random.bytes(&rand_secret);
         var secret_hex: [64]u8 = undefined;
-        _ = std.fmt.bufPrint(&secret_hex, "{}", .{std.fmt.fmtSliceHexLower(&rand_secret)}) catch unreachable;
+        const hex_chars = "0123456789abcdef";
+        for (rand_secret, 0..) |b, i| {
+            secret_hex[i * 2] = hex_chars[b >> 4];
+            secret_hex[i * 2 + 1] = hex_chars[b & 0x0f];
+        }
 
         // Override from env if set
         const final_secret = if (std.process.getEnvVarOwned(allocator, "POKE_GATE_HMAC_SECRET")) |s| blk: {
@@ -228,11 +232,12 @@ fn handleConnection(conn: std.net.Server.Connection, state: *AppState) void {
 }
 
 fn parseHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream) !HttpRequest {
-    var reader = stream.reader();
-    var line_buf: [4096]u8 = undefined;
+    var recv_buf: [8192]u8 = undefined;
+    var reader = stream.reader(&recv_buf);
+    const br = reader.interface();
 
     // Request line
-    const req_line = (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) orelse return error.EmptyRequest;
+    const req_line = (try br.takeDelimiter('\n')) orelse return error.EmptyRequest;
     const req_trimmed = std.mem.trimRight(u8, req_line, "\r");
     var parts = std.mem.splitScalar(u8, req_trimmed, ' ');
     const method = try allocator.dupe(u8, parts.next() orelse "");
@@ -248,16 +253,8 @@ fn parseHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream) !HttpR
     // Headers — 8 KiB covers Authorization: Bearer <jwt> and any realistic header
     var content_length: usize = 0;
     var session_id: []const u8 = "default";
-    var header_buf: [8192]u8 = undefined;
     while (true) {
-        const hline = reader.readUntilDelimiterOrEof(&header_buf, '\n') catch |err| {
-            if (err == error.StreamTooLong) {
-                // Header line exceeded buffer — drain the rest and skip it
-                reader.skipUntilDelimiterOrEof('\n') catch {};
-                continue;
-            }
-            return err;
-        } orelse break;
+        const hline = (try br.takeDelimiter('\n')) orelse break;
         const ht = std.mem.trimRight(u8, hline, "\r");
         if (ht.len == 0) break;
         const colon = std.mem.indexOfScalar(u8, ht, ':') orelse continue;
@@ -266,7 +263,7 @@ fn parseHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream) !HttpR
         if (std.ascii.eqlIgnoreCase(hname, "content-length")) {
             content_length = std.fmt.parseInt(usize, hval, 10) catch 0;
         } else if (std.ascii.eqlIgnoreCase(hname, "mcp-session-id")) {
-            const s = std.mem.trim(u8, hval, " \t\r");
+            const s = std.mem.trim(u8, hval, &std.ascii.whitespace);
             if (s.len > 0) session_id = try allocator.dupe(u8, s);
         }
     }
@@ -274,7 +271,7 @@ fn parseHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream) !HttpR
     // Body
     const body = try allocator.alloc(u8, content_length);
     if (content_length > 0) {
-        try reader.readNoEof(body);
+        try br.readSliceAll(body);
     }
 
     return .{
@@ -319,8 +316,9 @@ fn writeHttpResponse(stream: std.net.Stream, status: u16, body: []const u8) !voi
         500 => "Internal Server Error",
         else => "OK",
     };
-    const writer = stream.writer();
-    try writer.print(
+    var write_buf: [4096]u8 = undefined;
+    var writer = stream.writer(&write_buf);
+    try writer.interface.print(
         "HTTP/1.1 {d} {s}\r\n" ++
             "Content-Type: application/json\r\n" ++
             "Connection: close\r\n" ++
@@ -331,7 +329,7 @@ fn writeHttpResponse(stream: std.net.Stream, status: u16, body: []const u8) !voi
             "Content-Length: {d}\r\n\r\n",
         .{ status, status_text, body.len },
     );
-    if (body.len > 0) try writer.writeAll(body);
+    if (body.len > 0) try writer.interface.writeAll(body);
 }
 
 // ── JSON-RPC dispatch ───────────────────────────────────────────────────────
@@ -347,18 +345,18 @@ fn handleJsonRpcBody(
 
     switch (parsed.value) {
         .array => |arr| {
-            var results = std.ArrayList(u8).init(allocator);
-            try results.appendSlice("[");
+            var results = std.ArrayList(u8).empty;
+            try results.appendSlice(allocator, "[");
             var first = true;
             for (arr.items) |msg| {
                 const r = handleSingleRpc(allocator, msg, session_id, state) catch continue;
                 if (r == null) continue;
-                if (!first) try results.appendSlice(",");
-                try results.appendSlice(r.?);
+                if (!first) try results.appendSlice(allocator, ",");
+                try results.appendSlice(allocator, r.?);
                 first = false;
             }
-            try results.appendSlice("]");
-            return results.toOwnedSlice();
+            try results.appendSlice(allocator, "]");
+            return results.toOwnedSlice(allocator);
         },
         else => {
             const r = try handleSingleRpc(allocator, parsed.value, session_id, state);
@@ -446,9 +444,7 @@ fn encodeId(allocator: std.mem.Allocator, id: ?std.json.Value) ![]const u8 {
     return switch (v) {
         .integer => |n| std.fmt.allocPrint(allocator, "{d}", .{n}),
         .string => |s| blk: {
-            var buf = std.ArrayList(u8).init(allocator);
-            try std.json.stringify(s, .{}, buf.writer());
-            break :blk buf.toOwnedSlice();
+            break :blk try std.json.Stringify.valueAlloc(allocator, s, .{});
         },
         .null => allocator.dupe(u8, "null"),
         else => allocator.dupe(u8, "null"),
@@ -715,7 +711,7 @@ const TimeoutCtx = struct {
 fn timeoutThread(ctx: *TimeoutCtx, timeout_ms: u64) void {
     // ctx is owned by this thread — free it on exit regardless of outcome
     defer ctx.allocator.destroy(ctx);
-    std.time.sleep(timeout_ms * std.time.ns_per_ms);
+    std.Thread.sleep(timeout_ms * std.time.ns_per_ms);
     if (!ctx.done.load(.acquire)) {
         _ = ctx.child.kill() catch std.process.Child.Term{ .Signal = 15 };
     }
@@ -879,8 +875,10 @@ fn toolWriteFile(allocator: std.mem.Allocator, args: std.json.Value, state: *App
     defer allocator.free(expanded);
     const abs = blk: {
         const parent = std.fs.path.dirname(expanded) orelse ".";
-        const pabs = std.fs.realpathAlloc(allocator, parent) catch expanded;
-        defer if (!std.mem.eql(u8, pabs, expanded)) allocator.free(pabs);
+        const pabs = std.fs.realpathAlloc(allocator, parent) catch {
+            break :blk try allocator.dupe(u8, expanded);
+        };
+        defer allocator.free(pabs);
         break :blk try std.fs.path.join(allocator, &.{ pabs, std.fs.path.basename(expanded) });
     };
     defer allocator.free(abs);
@@ -909,14 +907,14 @@ fn toolListDirectory(allocator: std.mem.Allocator, args: std.json.Value, state: 
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Error: {}", .{err}));
     defer dir.close();
 
-    var lines = std.ArrayList(u8).init(allocator);
+    var lines = std.ArrayList(u8).empty;
     var it = dir.iterate();
     var first = true;
     while (try it.next()) |entry| {
-        if (!first) try lines.appendSlice("\n");
+        if (!first) try lines.appendSlice(allocator, "\n");
         first = false;
         const prefix: u8 = if (entry.kind == .directory) 'd' else '-';
-        try lines.writer().print("{c} {s}", .{ prefix, entry.name });
+        try lines.writer(allocator).print("{c} {s}", .{ prefix, entry.name });
     }
 
     const escaped = try jsonEscapeStr(allocator, lines.items);
@@ -1030,40 +1028,41 @@ fn toolNetworkSpeed(allocator: std.mem.Allocator, args: std.json.Value, state: *
     const run_dl = std.mem.eql(u8, test_sel, "download") or std.mem.eql(u8, test_sel, "both");
     const run_ul = std.mem.eql(u8, test_sel, "upload") or std.mem.eql(u8, test_sel, "both");
 
-    var parts = std.ArrayList(u8).init(allocator);
-    defer parts.deinit();
+    var parts = std.ArrayList(u8).empty;
+    defer parts.deinit(allocator);
 
-    if (run_dl) try parts.appendSlice("DL=$(curl -s -o /dev/null -w '%{time_total}' 'https://speed.cloudflare.com/__down?bytes=26214400')");
+    if (run_dl) try parts.appendSlice(allocator, "DL=$(curl -s -o /dev/null -w '%{time_total}' 'https://speed.cloudflare.com/__down?bytes=26214400')");
     if (run_ul) {
-        if (run_dl) try parts.appendSlice(" && ");
-        try parts.appendSlice("TMP=$(mktemp /tmp/poke-speed.XXXXXX) && dd if=/dev/zero of=\"$TMP\" bs=1m count=10 2>/dev/null && UL=$(curl -s -o /dev/null -w '%{time_total}' -X POST --data-binary @\"$TMP\" 'https://speed.cloudflare.com/__up') && rm -f \"$TMP\"");
+        if (run_dl) try parts.appendSlice(allocator, " && ");
+        try parts.appendSlice(allocator, "TMP=$(mktemp /tmp/poke-speed.XXXXXX) && dd if=/dev/zero of=\"$TMP\" bs=1m count=10 2>/dev/null && UL=$(curl -s -o /dev/null -w '%{time_total}' -X POST --data-binary @\"$TMP\" 'https://speed.cloudflare.com/__up') && rm -f \"$TMP\"");
     }
-    try parts.appendSlice(" && printf 'DL=%s\\nUL=%s\\n' \"${DL:-}\" \"${UL:-}\"");
+    try parts.appendSlice(allocator, " && printf 'DL=%s\\nUL=%s\\n' \"${DL:-}\" \"${UL:-}\"");
 
     const result = runCommandInternal(allocator, state.allocator, parts.items, null, .full, state.home_dir) catch |err|
         return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Speed test error: {}", .{err}));
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    var lines = std.ArrayList(u8).init(allocator);
-    try lines.appendSlice("Network Speed Test");
+    var lines = std.ArrayList(u8).empty;
+    defer lines.deinit(allocator);
+    try lines.appendSlice(allocator, "Network Speed Test");
 
     if (run_dl) {
         const dl_secs = parseSpeedField(result.stdout, "DL=");
         if (dl_secs > 0) {
             const mbps = (26_214_400.0 * 8.0) / dl_secs / 1_000_000.0;
-            try lines.writer().print("\n- Download: {d:.2} Mbps ({d:.2}s for 25 MiB)", .{ mbps, dl_secs });
+            try lines.writer(allocator).print("\n- Download: {d:.2} Mbps ({d:.2}s for 25 MiB)", .{ mbps, dl_secs });
         } else {
-            try lines.appendSlice("\n- Download: unavailable");
+            try lines.appendSlice(allocator, "\n- Download: unavailable");
         }
     }
     if (run_ul) {
         const ul_secs = parseSpeedField(result.stdout, "UL=");
         if (ul_secs > 0) {
             const mbps = (10_485_760.0 * 8.0) / ul_secs / 1_000_000.0;
-            try lines.writer().print("\n- Upload: {d:.2} Mbps ({d:.2}s for 10 MiB)", .{ mbps, ul_secs });
+            try lines.writer(allocator).print("\n- Upload: {d:.2} Mbps ({d:.2}s for 10 MiB)", .{ mbps, ul_secs });
         } else {
-            try lines.appendSlice("\n- Upload: unavailable");
+            try lines.appendSlice(allocator, "\n- Upload: unavailable");
         }
     }
 
@@ -1178,11 +1177,11 @@ fn toolHttpRequest(allocator: std.mem.Allocator, args: std.json.Value, state: *A
     const body_arg = getStringArg(args, "body");
 
     // Build curl command
-    var parts = std.ArrayList(u8).init(allocator);
-    defer parts.deinit();
-    try parts.appendSlice("curl -fsSL -i --max-time 30 -X ");
-    try parts.appendSlice(method);
-    try parts.append(' ');
+    var parts = std.ArrayList(u8).empty;
+    defer parts.deinit(allocator);
+    try parts.appendSlice(allocator, "curl -fsSL -i --max-time 30 -X ");
+    try parts.appendSlice(allocator, method);
+    try parts.append(allocator, ' ');
 
     // Add headers
     const obj = switch (args) {
@@ -1193,37 +1192,37 @@ fn toolHttpRequest(allocator: std.mem.Allocator, args: std.json.Value, state: *A
         if (hv == .object) {
             var hit = hv.object.iterator();
             while (hit.next()) |hentry| {
-                try parts.appendSlice("-H '");
-                try parts.appendSlice(hentry.key_ptr.*);
-                try parts.appendSlice(": ");
+                try parts.appendSlice(allocator, "-H '");
+                try parts.appendSlice(allocator, hentry.key_ptr.*);
+                try parts.appendSlice(allocator, ": ");
                 const hval = switch (hentry.value_ptr.*) {
                     .string => |s| s,
                     else => continue,
                 };
-                try parts.appendSlice(hval);
-                try parts.appendSlice("' ");
+                try parts.appendSlice(allocator, hval);
+                try parts.appendSlice(allocator, "' ");
             }
         }
     }
 
     if (body_arg) |b| {
-        try parts.appendSlice("--data-raw '");
+        try parts.appendSlice(allocator, "--data-raw '");
         // Escape single quotes in body
         for (b) |c| {
             if (c == '\'') {
-                try parts.appendSlice("'\\''");
+                try parts.appendSlice(allocator, "'\\''");
             } else {
-                try parts.append(c);
+                try parts.append(allocator, c);
             }
         }
-        try parts.appendSlice("' ");
+        try parts.appendSlice(allocator, "' ");
     }
 
-    try parts.append('\'');
-    try parts.appendSlice(url);
-    try parts.append('\'');
+    try parts.append(allocator, '\'');
+    try parts.appendSlice(allocator, url);
+    try parts.append(allocator, '\'');
 
-    const cmd = try parts.toOwnedSlice();
+    const cmd = try parts.toOwnedSlice(allocator);
     defer allocator.free(cmd);
 
     const res = runCommandInternal(allocator, state.allocator, cmd, null, state.permission_mode, state.home_dir) catch |err| {
@@ -1243,10 +1242,10 @@ fn toolGitOperations(allocator: std.mem.Allocator, args: std.json.Value, state: 
     const cwd_arg = getStringArg(args, "cwd");
 
     // Build argv: git <op> [args...]
-    var argv = std.ArrayList([]const u8).init(allocator);
-    defer argv.deinit();
-    try argv.append("git");
-    try argv.append(op);
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "git");
+    try argv.append(allocator, op);
 
     const obj = switch (args) {
         .object => |o| o,
@@ -1255,7 +1254,7 @@ fn toolGitOperations(allocator: std.mem.Allocator, args: std.json.Value, state: 
     if (obj.get("args")) |av| {
         if (av == .array) {
             for (av.array.items) |item| {
-                if (item == .string) try argv.append(item.string);
+                if (item == .string) try argv.append(allocator, item.string);
             }
         }
     }
@@ -1331,9 +1330,7 @@ fn makeTextResponse(allocator: std.mem.Allocator, msg: []const u8, is_error: boo
 
 /// JSON-encode a string (with surrounding quotes and proper escaping).
 fn jsonEscapeStr(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    try std.json.stringify(s, .{}, buf.writer());
-    return buf.toOwnedSlice();
+    return std.json.Stringify.valueAlloc(allocator, s, .{});
 }
 
 /// Build a JSON object of args, excluding approval-control fields.
@@ -1344,9 +1341,7 @@ fn buildCleanArgsJson(allocator: std.mem.Allocator, args: std.json.Value) ![]u8 
     const src = switch (args) {
         .object => |o| o,
         else => {
-            var buf = std.ArrayList(u8).init(allocator);
-            try std.json.stringify(args, .{}, buf.writer());
-            return buf.toOwnedSlice();
+            return std.json.Stringify.valueAlloc(allocator, args, .{});
         },
     };
     var it = src.iterator();
@@ -1355,9 +1350,7 @@ fn buildCleanArgsJson(allocator: std.mem.Allocator, args: std.json.Value) ![]u8 
         for (skip) |s| if (std.mem.eql(u8, entry.key_ptr.*, s)) { skip_it = true; break; };
         if (!skip_it) try obj.put(entry.key_ptr.*, entry.value_ptr.*);
     }
-    var buf = std.ArrayList(u8).init(allocator);
-    try std.json.stringify(std.json.Value{ .object = obj }, .{}, buf.writer());
-    return buf.toOwnedSlice();
+    return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
 }
 
 fn expandHome(allocator: std.mem.Allocator, path: []const u8, home: []const u8) ![]u8 {

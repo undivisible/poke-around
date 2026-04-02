@@ -115,7 +115,7 @@ fn pickRuntime(bridge_path: []const u8) []const u8 {
     const is_ts = std.mem.endsWith(u8, bridge_path, ".ts");
     if (is_ts) {
         // Only bun can run .ts directly
-        const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun", "bun" };
+        const bun_paths = [_][]const u8{ "/home/undivisible/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun", "bun" };
         for (bun_paths) |p| {
             std.fs.accessAbsolute(p, .{}) catch continue;
             return p;
@@ -123,7 +123,7 @@ fn pickRuntime(bridge_path: []const u8) []const u8 {
         return "bun";
     }
     // For .js: try bun first, then node
-    const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
+    const bun_paths = [_][]const u8{ "/home/undivisible/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
     for (bun_paths) |p| {
         std.fs.accessAbsolute(p, .{}) catch continue;
         return p;
@@ -180,8 +180,8 @@ fn bridgeStdoutReader(ctx: *BridgeCtx) void {
 
     const stdout = runtime.bridge_process.?.stdout orelse return;
     var buf: [4096]u8 = undefined;
-    var line_buf = std.ArrayList(u8).init(runtime.allocator);
-    defer line_buf.deinit();
+    var line_buf = std.ArrayList(u8).empty;
+    defer line_buf.deinit(runtime.allocator);
 
     while (!runtime.stop_flag.load(.acquire)) {
         const n = stdout.read(&buf) catch break;
@@ -196,7 +196,7 @@ fn bridgeStdoutReader(ctx: *BridgeCtx) void {
                     line_buf.clearRetainingCapacity();
                 }
             } else {
-                line_buf.append(c) catch {};
+                line_buf.append(runtime.allocator, c) catch {};
             }
         }
     }
@@ -291,7 +291,7 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
 }
 
 fn reconnectAfterDelay(runtime: *AppRuntime) void {
-    std.time.sleep(RECONNECT_DELAY_MS * std.time.ns_per_ms);
+    std.Thread.sleep(RECONNECT_DELAY_MS * std.time.ns_per_ms);
     if (runtime.stop_flag.load(.acquire)) return;
 
     logAlways("Reconnecting bridge...", .{});
@@ -370,16 +370,16 @@ fn cleanupStaleConnections(allocator: std.mem.Allocator) void {
     };
 
     // Read connection IDs to clean up
-    var ids = std.ArrayList([]const u8).init(allocator);
-    defer ids.deinit();
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
 
     if (obj.get("connectionId")) |v| {
-        if (v == .string) ids.append(v.string) catch {};
+        if (v == .string) ids.append(allocator, v.string) catch {};
     }
     if (obj.get("connectionHistory")) |v| {
         if (v == .array) {
             for (v.array.items) |item| {
-                if (item == .string) ids.append(item.string) catch {};
+                if (item == .string) ids.append(allocator, item.string) catch {};
             }
         }
     }
@@ -522,7 +522,7 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
 
     // Block main thread (signal handling)
     while (!runtime.stop_flag.load(.acquire)) {
-        std.time.sleep(1 * std.time.ns_per_s);
+        std.Thread.sleep(1 * std.time.ns_per_s);
     }
 
     logAlways(ansi.blue ++ ansi.bold ++ "Shutting down..." ++ ansi.reset, .{});
