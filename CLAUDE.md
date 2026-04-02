@@ -8,9 +8,8 @@ Poke Around is a native Zig rewrite of the Poke tunnel/daemon. It starts a local
 
 ## Current status
 
-- feature/computer-use-integration is the active branch in this checkout.
 - Validate with zig test src/main.zig before merging or pushing.
-- Build bridge copies systray2 traybin via a dynamic package lookup so CI does not depend on a fixed node_modules path.
+- Tray icon is implemented natively in src/menubar.zig (Linux: menubar_linux.py; macOS: AppKit via zig-objc).
 
 ## Main flow
 
