@@ -9,8 +9,23 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // Read version from package.json; fall back to "dev" if unavailable.
+    const version: []const u8 = blk: {
+        const content = std.fs.cwd().readFileAlloc(b.allocator, "package.json", 8192) catch break :blk "dev";
+        defer b.allocator.free(content);
+        const parsed = std.json.parseFromSlice(std.json.Value, b.allocator, content, .{}) catch break :blk "dev";
+        defer parsed.deinit();
+        const ver = switch (parsed.value) {
+            .object => |obj| obj.get("version") orelse break :blk "dev",
+            else => break :blk "dev",
+        };
+        break :blk switch (ver) {
+            .string => |s| b.dupe(s),
+            else => "dev",
+        };
+    };
     const options = b.addOptions();
-    options.addOption([]const u8, "version", b.option([]const u8, "version", "0.3.2") orelse "0.3.2");
+    options.addOption([]const u8, "version", b.option([]const u8, "version", version) orelse version);
     main_module.addOptions("build_options", options);
 
     // ── Main executable ──────────────────────────────────────────────────────

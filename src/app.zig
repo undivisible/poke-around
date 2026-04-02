@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const platform = @import("platform.zig");
 const mcp_server = @import("mcp_server.zig");
 const agents = @import("agents.zig");
+const build_options = @import("build_options");
 
 // ── Bridge process management ───────────────────────────────────────────────
 
@@ -455,7 +456,7 @@ pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: b
         break :blk mcp_server.PermissionMode.full;
     };
 
-    logAlways(ansi.blue ++ ansi.bold ++ "▶ poke-around starting..." ++ ansi.reset, .{});
+    logAlways(ansi.blue ++ ansi.bold ++ "▶ poke-around v{s} starting..." ++ ansi.reset, .{build_options.version});
     logAlways(ansi.dim ++ "Access mode: {s}" ++ ansi.reset, .{@tagName(mode)});
 
     // Resolve bridge path

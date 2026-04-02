@@ -287,7 +287,7 @@ fn indexOfFlag(argv: []const []const u8, flag: []const u8) ?usize {
 
 fn printHelp() void {
     std.debug.print(
-        \\poke-around — expose your machine to your Poke AI assistant
+        \\poke-around v{s} — expose your machine to your Poke AI assistant
         \\
         \\USAGE:
         \\  poke-around [--mode <mode>] [--verbose]
@@ -310,7 +310,7 @@ fn printHelp() void {
         \\  limited   Read-only tools + safe commands (ls, cat, grep, curl, jq...)
         \\  sandbox   Broader commands; file writes restricted to ~/Downloads and /tmp
         \\
-    , .{});
+    , .{build_options.version});
 }
 
 fn printAgentUsage() void {
