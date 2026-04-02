@@ -13,7 +13,8 @@
 import { PokeTunnel, isLoggedIn, login, getToken, Poke } from "poke";
 import * as readline from "node:readline";
 import * as os from "node:os";
-
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,34 @@ async function ensureAuth(): Promise<string> {
   return token;
 }
 
+// ── state.json helpers ───────────────────────────────────────────────────────
+// Mirror the Zig daemon's state.json so webhook credentials survive restarts.
+
+function getStatePath(): string {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const base = xdg || path.join(os.homedir(), ".config");
+  return path.join(base, "poke-around", "state.json");
+}
+
+function readState(): Record<string, unknown> {
+  try {
+    return JSON.parse(fs.readFileSync(getStatePath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function patchState(updates: Record<string, unknown>): void {
+  try {
+    const merged = { ...readState(), ...updates };
+    const p = getStatePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(merged, null, 2));
+  } catch (err) {
+    log(`state write failed: ${err}`);
+  }
+}
+
 // ── arg parsing ─────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
@@ -48,6 +77,7 @@ const mode = argv[0] ?? "tunnel";
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
+const MAX_CONN_HISTORY = 10;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // ── tunnel mode ─────────────────────────────────────────────────────────────
@@ -66,13 +96,28 @@ async function runTunnel(): Promise<void> {
   // gets the same tunnel identity in Poke.
   const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
 
+  // ── Webhook: create once, cache forever ─────────────────────────────────
+  // poke-gate pattern: read from state.json; only call createWebhook if missing.
+  let { webhookUrl, webhookToken } = readState() as {
+    webhookUrl?: string;
+    webhookToken?: string;
+  };
 
+  if (!webhookUrl || !webhookToken) {
+    log("Creating webhook (first run)…");
+    const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
+    webhookUrl = wh.webhookUrl;
+    webhookToken = wh.webhookToken;
+    patchState({ webhookUrl, webhookToken });
+  } else {
+    log("Reusing cached webhook.");
+  }
+
+  emit({ type: "webhook_ready", webhookUrl, webhookToken });
 
   let stopRequested = false;
   let activeTunnel: PokeTunnel | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let activeWebhookUrl: string | null = null;
-  let activeWebhookToken: string | null = null;
   let retryDelay = RECONNECT_MIN_MS;
 
   const clearHeartbeat = () => {
@@ -85,25 +130,25 @@ async function runTunnel(): Promise<void> {
   const cleanupTunnel = async () => {
     clearHeartbeat();
     if (activeTunnel) {
-      try {
-        await activeTunnel.stop();
-      } catch {}
+      try { await activeTunnel.stop(); } catch {}
       activeTunnel = null;
     }
-    activeWebhookUrl = null;
-    activeWebhookToken = null;
+  };
+
+  const recordConnection = (connectionId: string) => {
+    const state = readState() as { connectionHistory?: string[] };
+    const history: string[] = state.connectionHistory ?? [];
+    if (!history.includes(connectionId)) history.unshift(connectionId);
+    patchState({
+      connectionId,
+      connectionHistory: history.slice(0, MAX_CONN_HISTORY),
+    });
   };
 
   const maintainTunnel = async () => {
     while (!stopRequested) {
-      let tunnel: PokeTunnel | null = null;
       try {
-        const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
-        activeWebhookUrl = wh.webhookUrl;
-        activeWebhookToken = wh.webhookToken;
-        emit({ type: "webhook_ready", webhookUrl: activeWebhookUrl, webhookToken: activeWebhookToken });
-
-        tunnel = new PokeTunnel({
+        const tunnel = new PokeTunnel({
           url: mcpUrl,
           name: tunnelName,
           token,
@@ -112,21 +157,22 @@ async function runTunnel(): Promise<void> {
         activeTunnel = tunnel;
 
         const sessionLost = new Promise<void>((_resolve, reject) => {
-          tunnel!.on("connected", (info) => {
+          tunnel.on("connected", (info) => {
             emit({ type: "connected", connectionId: info.connectionId });
+            recordConnection(info.connectionId);
             retryDelay = RECONNECT_MIN_MS;
             clearHeartbeat();
             heartbeatTimer = setInterval(() => {
               emit({ type: "heartbeat", tunnelName, ts: Date.now() });
             }, HEARTBEAT_INTERVAL_MS);
           });
-          tunnel!.on("disconnected", () => {
+          tunnel.on("disconnected", () => {
             reject(new Error("tunnel disconnected"));
           });
-          tunnel!.on("error", (err) => {
+          tunnel.on("error", (err) => {
             reject(err instanceof Error ? err : new Error(String(err)));
           });
-          tunnel!.on("toolsSynced", ({ toolCount }) => {
+          tunnel.on("toolsSynced", ({ toolCount }) => {
             emit({ type: "tools_synced", count: toolCount });
           });
         });
@@ -161,14 +207,14 @@ async function runTunnel(): Promise<void> {
       const cmd = JSON.parse(trimmed) as Record<string, unknown>;
 
       if (cmd.type === "send_webhook") {
-        if (!activeWebhookUrl || !activeWebhookToken) {
+        if (!webhookUrl || !webhookToken) {
           emit({ type: "webhook_error", message: "No webhook configured." });
           return;
         }
         try {
           await poke.sendWebhook({
-            webhookUrl: activeWebhookUrl,
-            webhookToken: activeWebhookToken,
+            webhookUrl,
+            webhookToken,
             data: { message: cmd.message as string },
           });
           emit({ type: "webhook_sent" });
