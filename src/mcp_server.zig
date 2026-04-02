@@ -705,14 +705,20 @@ const CommandResult = struct {
 const TimeoutCtx = struct {
     child: *std.process.Child,
     done: std.atomic.Value(bool),
-    allocator: std.mem.Allocator,
+    timed_out: std.atomic.Value(bool),
 };
 
 fn timeoutThread(ctx: *TimeoutCtx, timeout_ms: u64) void {
-    // ctx is owned by this thread — free it on exit regardless of outcome
-    defer ctx.allocator.destroy(ctx);
-    std.Thread.sleep(timeout_ms * std.time.ns_per_ms);
+    var waited_ms: u64 = 0;
+    while (waited_ms < timeout_ms) {
+        if (ctx.done.load(.acquire)) return;
+        const slice_ms = @min(100, timeout_ms - waited_ms);
+        std.Thread.sleep(@as(u64, slice_ms) * @as(u64, std.time.ns_per_ms));
+        waited_ms += slice_ms;
+    }
+
     if (!ctx.done.load(.acquire)) {
+        ctx.timed_out.store(true, .release);
         _ = ctx.child.kill() catch std.process.Child.Term{ .Signal = 15 };
     }
 }
@@ -743,17 +749,15 @@ fn runCommandInternal(
     const start_ms = std.time.milliTimestamp();
     try child.spawn();
 
-    // Allocate from the long-lived timeout_allocator so the watchdog thread
-    // can safely access ctx after the arena (allocator) is freed.
-    // Ownership transfers to the thread; it frees ctx on exit.
+    // Keep the watchdog context alive until the thread has been joined.
     const timeout_ctx = try timeout_allocator.create(TimeoutCtx);
     timeout_ctx.* = .{
         .child = &child,
         .done = std.atomic.Value(bool).init(false),
-        .allocator = timeout_allocator,
+        .timed_out = std.atomic.Value(bool).init(false),
     };
+
     const watchdog = std.Thread.spawn(.{}, timeoutThread, .{ timeout_ctx, 30_000 }) catch blk: {
-        // Spawn failed — we still own ctx, free it now.
         timeout_allocator.destroy(timeout_ctx);
         break :blk null;
     };
@@ -761,8 +765,6 @@ fn runCommandInternal(
     const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch try allocator.dupe(u8, "");
     const stderr_raw = child.stderr.?.readToEndAlloc(allocator, 10 * 1024) catch try allocator.dupe(u8, "");
 
-    const timed_out = timeout_ctx.done.load(.acquire) == false;
-    // Signal the thread that the command is done; thread frees ctx on its own.
     timeout_ctx.done.store(true, .release);
 
     const wait_result = child.wait() catch std.process.Child.Term{ .Exited = 1 };
@@ -771,8 +773,9 @@ fn runCommandInternal(
         else => 1,
     };
 
-    if (watchdog) |t| t.detach();
-    // Do NOT free timeout_ctx here — thread owns it now.
+    if (watchdog) |t| t.join();
+    const timed_out = timeout_ctx.timed_out.load(.acquire);
+    timeout_allocator.destroy(timeout_ctx);
 
     const stderr = if (sandbox_note) |note|
         try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ stderr_raw, note })
