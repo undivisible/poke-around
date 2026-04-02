@@ -13,7 +13,7 @@
 import { PokeTunnel, isLoggedIn, login, getToken, Poke } from "poke";
 import * as readline from "node:readline";
 import * as os from "node:os";
-import { randomUUID } from "node:crypto";
+
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -62,8 +62,9 @@ async function runTunnel(): Promise<void> {
   const token = await ensureAuth();
   const poke = new Poke({ token });
 
-  // Use hostname plus a session suffix to avoid stale-name collisions on reconnects.
-  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  // Stable, deterministic name derived from hostname so the same machine always
+  // gets the same tunnel identity in Poke.
+  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
 
 
 
