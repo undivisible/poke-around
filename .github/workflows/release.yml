@@ -48,7 +48,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v1
         with:
-          version: "0.15.0"
+          version: "0.15.2"
 
       - uses: actions/download-artifact@v4
         with:
@@ -94,64 +94,3 @@ jobs:
             --title "poke-around ${{ github.ref_name }}" \
             --generate-notes \
             release-assets/*.tar.gz
-
-      - name: Compute SHAs and update tap
-        env:
-          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ github.ref_name }}"
-          REPO="undivisible/poke-around"
-          BASE="https://github.com/${REPO}/releases/download/${VERSION}"
-
-          SHA_MACOS_ARM=$(sha256sum release-assets/poke-around-macos-aarch64.tar.gz | cut -d' ' -f1)
-          SHA_MACOS_X86=$(sha256sum release-assets/poke-around-macos-x86_64.tar.gz  | cut -d' ' -f1)
-          SHA_LINUX_X86=$(sha256sum release-assets/poke-around-linux-x86_64.tar.gz  | cut -d' ' -f1)
-          VER="${VERSION#v}"
-
-          cat > formula.rb <<EOF
-          class PokeAround < Formula
-            desc "Expose your machine to your Poke AI assistant via an MCP tunnel"
-            homepage "https://github.com/undivisible/poke-around"
-            license "MPL-2.0"
-            version "${VER}"
-
-            on_macos do
-              on_arm do
-                url "${BASE}/poke-around-macos-aarch64.tar.gz"
-                sha256 "${SHA_MACOS_ARM}"
-              end
-              on_intel do
-                url "${BASE}/poke-around-macos-x86_64.tar.gz"
-                sha256 "${SHA_MACOS_X86}"
-              end
-            end
-
-            on_linux do
-              on_intel do
-                url "${BASE}/poke-around-linux-x86_64.tar.gz"
-                sha256 "${SHA_LINUX_X86}"
-              end
-            end
-
-            depends_on "node"
-
-            def install
-              bin.install "poke-around"
-              bin.install "poke-around-bridge.js"
-              bin.install "menubar_linux.py" if File.exist?("menubar_linux.py")
-            end
-
-            test do
-              assert_match "poke-around", shell_output("\#{bin}/poke-around --help")
-            end
-          end
-          EOF
-
-          git clone https://x-access-token:${GH_TOKEN}@github.com/undivisible/homebrew-tap.git tap
-          cp formula.rb tap/Formula/poke-around.rb
-          cd tap
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/poke-around.rb
-          git commit -m "chore: update poke-around to ${VERSION}"
-          git push
