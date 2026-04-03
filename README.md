@@ -1,19 +1,12 @@
-<p align="center">
-  <img src="assets/logo.png" width="128" height="128" alt="Poke Around icon">
-</p>
+# Poke Around
 
-<h1 align="center">Poke Around</h1>
+Let your [Poke](https://poke.com) AI assistant access your machine.
 
-<p align="center">
-  Let your <a href="https://poke.com">Poke</a> AI assistant access your machine.<br>
-  <sub>A community project — not affiliated with Poke or The Interaction Company.</sub>
-</p>
+<sub>A community project — not affiliated with Poke or The Interaction Company.</sub>
 
-<p align="center">
-  <a href="https://github.com/undivisible/poke-around/releases/latest"><img src="https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square" alt="Latest Release"></a>
-  <a href="https://github.com/undivisible/poke-around/blob/main/LICENSE"><img src="https://img.shields.io/github/license/undivisible/poke-around?style=flat-square" alt="License"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%2015%2B-blue?style=flat-square" alt="Platform">
-</p>
+[![Latest Release](https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/releases/latest)
+[![License](https://img.shields.io/github/license/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/blob/main/LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-blue?style=flat-square)
 
 ---
 
@@ -130,10 +123,6 @@ systemctl --user start poke-around
 
 
 ## Agents
-
-<p align="center">
-  <img src="assets/screenshots/agents-editor.png" width="600" alt="Agents Editor">
-</p>
 
 Agents are scheduled scripts that run automatically in the background. They live in `~/.config/poke-around/agents/` and follow a simple naming convention:
 

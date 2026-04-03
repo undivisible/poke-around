@@ -494,10 +494,7 @@ const TOOLS_JSON =
     \\  {"name":"web_fetch","description":"Fetch the text content of a URL and return it (uses curl). Optionally truncate to max_chars.","inputSchema":{"type":"object","properties":{"url":{"type":"string"},"max_chars":{"type":"integer"}},"required":["url"]}},
     \\  {"name":"http_request","description":"Make an HTTP request with custom method, headers and body. Returns status code and response body.","inputSchema":{"type":"object","properties":{"method":{"type":"string","enum":["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"]},"url":{"type":"string"},"headers":{"type":"object"},"body":{"type":"string"}},"required":["method","url"]}},
     \\  {"name":"git_operations","description":"Run a git operation in the current directory or cwd. Read operations (status, diff, log, show) are always allowed; write operations (commit, add, checkout, stash, reset) require approval in full mode.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","show","commit","add","checkout","branch","stash","reset","rev-parse"]},"args":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"},"approval_token":{"type":"string"},"approve":{"type":"boolean"},"remember_all_risky":{"type":"boolean"}},"required":["operation"]}},
-    \\  {"name":"search_files","description":"Search for files by name pattern or grep for text content inside files. Returns matching paths and lines.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"pattern":{"type":"string"},"type":{"type":"string","enum":["name","content"]}},"required":["pattern"]}},
-    \\  {"name":"create_directory","description":"Create a directory (and any missing parents) at the given path.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
-    \\  {"name":"delete_file","description":"Delete a file or empty directory. Requires approval for non-empty directories.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"},"approval_token":{"type":"string"},"approve":{"type":"boolean"},"remember_all_risky":{"type":"boolean"}},"required":["path"]}},
-    \\  {"name":"open_file","description":"Open a file, directory, or URL in the default application (like double-clicking it).","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}
+    \\  {"name":"delete_file","description":"Delete a file or empty directory. Requires approval for non-empty directories.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"},"approval_token":{"type":"string"},"approve":{"type":"boolean"},"remember_all_risky":{"type":"boolean"}},"required":["path"]}}
     \\]
 ;
 
@@ -519,7 +516,7 @@ const SANDBOX_COMMANDS = [_][]const u8{
     "uname",   "sw_vers",   "whoami",
 };
 
-const SAFE_TOOLS = [_][]const u8{ "read_file", "read_image", "list_directory", "system_info", "network_speed", "web_fetch", "http_request", "search_files", "create_directory", "open_file" };
+const SAFE_TOOLS = [_][]const u8{ "read_file", "read_image", "list_directory", "system_info", "network_speed", "web_fetch", "http_request" };
 const RISKY_TOOLS = [_][]const u8{ "run_command", "write_file", "take_screenshot", "edit_file", "delete_file" };
 const GIT_READ_OPS = [_][]const u8{ "status", "diff", "log", "show", "branch", "rev-parse" };
 
@@ -723,10 +720,7 @@ fn executeTool(
     if (std.mem.eql(u8, tool_name, "web_fetch")) return toolWebFetch(allocator, args, state);
     if (std.mem.eql(u8, tool_name, "http_request")) return toolHttpRequest(allocator, args, state);
     if (std.mem.eql(u8, tool_name, "git_operations")) return toolGitOperations(allocator, args, state);
-    if (std.mem.eql(u8, tool_name, "search_files")) return toolSearchFiles(allocator, args, state);
-    if (std.mem.eql(u8, tool_name, "create_directory")) return toolCreateDirectory(allocator, args, state);
     if (std.mem.eql(u8, tool_name, "delete_file")) return toolDeleteFile(allocator, args, state);
-    if (std.mem.eql(u8, tool_name, "open_file")) return toolOpenFile(allocator, args, state);
     return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Unknown tool: {s}", .{tool_name}));
 }
 
@@ -1357,51 +1351,6 @@ fn toolGitOperations(allocator: std.mem.Allocator, args: std.json.Value, state: 
     return makeTextResponse(allocator, try std.fmt.allocPrint(allocator, "exit={d}\n{s}", .{ exit_code, combined }), exit_code != 0);
 }
 
-// ── New tools ─────────────────────────────────────────────────────────────────
-
-fn toolSearchFiles(allocator: std.mem.Allocator, args: std.json.Value, state: *AppState) ![]const u8 {
-    const pattern = getStringArg(args, "pattern") orelse
-        return makeErrorResponse(allocator, "Missing 'pattern' argument.");
-    const raw_path = getStringArg(args, "path") orelse "~";
-    const search_type = getStringArg(args, "type") orelse "name";
-
-    const expanded = try expandHome(allocator, raw_path, state.home_dir);
-    defer allocator.free(expanded);
-
-    const cmd = if (std.mem.eql(u8, search_type, "content"))
-        try std.fmt.allocPrint(allocator, "grep -r -l --include='*' -m 1 {s} {s} 2>/dev/null | head -50", .{ pattern, expanded })
-    else
-        try std.fmt.allocPrint(allocator, "find {s} -name '{s}' 2>/dev/null | head -50", .{ expanded, pattern });
-    defer allocator.free(cmd);
-
-    const result = runCommandInternal(allocator, state.allocator, cmd, null, .full, state.home_dir) catch |err|
-        return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "search error: {}", .{err}));
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    const out = std.mem.trim(u8, result.stdout, " \n\r\t");
-    if (out.len == 0) return makeTextResponse(allocator, try allocator.dupe(u8, "No matches found."), false);
-    return makeTextResponse(allocator, try allocator.dupe(u8, out), false);
-}
-
-fn toolCreateDirectory(allocator: std.mem.Allocator, args: std.json.Value, state: *AppState) ![]const u8 {
-    const raw_path = getStringArg(args, "path") orelse
-        return makeErrorResponse(allocator, "Missing 'path' argument.");
-    const expanded = try expandHome(allocator, raw_path, state.home_dir);
-    defer allocator.free(expanded);
-
-    std.fs.makeDirAbsolute(expanded) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        error.FileNotFound => {
-            // Create parents
-            try std.fs.cwd().makePath(expanded);
-        },
-        else => return makeErrorResponse(allocator, try std.fmt.allocPrint(allocator, "Error: {}", .{err})),
-    };
-
-    return makeTextResponse(allocator, try std.fmt.allocPrint(allocator, "Created: {s}", .{expanded}), false);
-}
-
 fn toolDeleteFile(allocator: std.mem.Allocator, args: std.json.Value, state: *AppState) ![]const u8 {
     const raw_path = getStringArg(args, "path") orelse
         return makeErrorResponse(allocator, "Missing 'path' argument.");
@@ -1432,35 +1381,6 @@ fn toolDeleteFile(allocator: std.mem.Allocator, args: std.json.Value, state: *Ap
     }
 
     return makeTextResponse(allocator, try std.fmt.allocPrint(allocator, "Deleted: {s}", .{expanded}), false);
-}
-
-fn toolOpenFile(allocator: std.mem.Allocator, args: std.json.Value, state: *AppState) ![]const u8 {
-    const raw_path = getStringArg(args, "path") orelse
-        return makeErrorResponse(allocator, "Missing 'path' argument.");
-
-    // URLs pass through as-is; file paths get expanded
-    const is_url = std.mem.startsWith(u8, raw_path, "http://") or
-        std.mem.startsWith(u8, raw_path, "https://") or
-        std.mem.startsWith(u8, raw_path, "mailto:");
-
-    const target = if (is_url)
-        try allocator.dupe(u8, raw_path)
-    else blk: {
-        const exp = try expandHome(allocator, raw_path, state.home_dir);
-        break :blk exp;
-    };
-    defer allocator.free(target);
-
-    const opener = switch (builtin.os.tag) {
-        .macos => "open",
-        .windows => "start",
-        else => "xdg-open",
-    };
-    const cmd = try std.fmt.allocPrint(allocator, "{s} '{s}'", .{ opener, target });
-    defer allocator.free(cmd);
-
-    _ = runCommandInternal(allocator, state.allocator, cmd, null, .full, state.home_dir) catch {};
-    return makeTextResponse(allocator, try std.fmt.allocPrint(allocator, "Opened: {s}", .{target}), false);
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
