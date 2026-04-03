@@ -6,101 +6,85 @@ Let your [Poke](https://poke.com) AI assistant access your machine.
 
 [![Latest Release](https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/releases/latest)
 [![License](https://img.shields.io/github/license/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/blob/main/LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square)
 
 ---
 
-Run Poke Around on your Mac, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
+Run Poke Around on your machine, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
 
 ## Install
 
-**Install via Wax** (recommended)
-
-We recommend using the [Wax package manager](https://github.com/semitechnological/wax) instead of Homebrew.
-
-First, install Wax either from GitHub or via Cargo:
+**Homebrew (macOS / Linux)**
 
 ```bash
-cargo install waxpkg
+brew tap undivisible/tap
+brew install poke-around
 ```
 
-Then install Poke Around using Wax:
+**Build from source**
 
-```bash
-wax install poke-around
-```
-
-**Install via Zig**
-
-If you prefer to build from source:
+Requires [Zig 0.15](https://ziglang.org/download/) and [Bun](https://bun.sh):
 
 ```bash
 git clone https://github.com/undivisible/poke-around.git
 cd poke-around
+bun run build:bridge
 zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/poke-around
 ```
 
 **Manual download**
 
-Download the latest binary for your platform (Linux, macOS, Windows) from [Releases](https://github.com/undivisible/poke-around/releases).
+Download the latest binary for your platform from [Releases](https://github.com/undivisible/poke-around/releases).
 
-Since the app is not notarized on macOS, you may need to run:
+On macOS, if the binary is blocked by Gatekeeper:
 
 ```bash
 xattr -cr poke-around
 ```
 
-## CLI usage
-
-Start the gate:
+## Usage
 
 ```bash
-./poke-around
-```
-
-On first run, Poke OAuth opens in your browser. Add `--verbose` to see tool calls in real time:
-
-```bash
-./poke-around --verbose
-```
-
-Set the access mode with `--mode`:
-
-```bash
-./poke-around --mode limited
-./poke-around --mode sandbox
+poke-around          # start the daemon (opens browser for OAuth on first run)
+poke-around --verbose  # show tool calls in real time
+poke-around --mode limited
+poke-around --mode sandbox
 ```
 
 Config is stored at `~/.config/poke-around/config.json`.
 
-## System Tray
+## Access modes
 
-Poke Around features a system tray (menu bar) icon on all platforms:
+| Mode | Description |
+|------|-------------|
+| **full** (default) | All tools, no approval required. |
+| **limited** | Read-only tools plus a curated set of safe commands (`ls`, `cat`, `grep`, `curl`, etc.). |
+| **sandbox** | Broader command support, but writes restricted to `~/Downloads` and `/tmp`. |
 
-- **macOS:** Native menu bar icon with "Quit" option.
-- **Windows:** System tray icon in the overflow menu.
-- **Linux:** AppIndicator tray icon (requires `python3-gi` and `libayatana-appindicator3-0.1`).
+```bash
+poke-around --mode sandbox
+# or
+POKE_GATE_PERMISSION_MODE=limited poke-around
+```
 
-The tray icon provides a quick way to see if the daemon is running and to shut it down gracefully.
+## System tray
 
-## Running as a Service
+- **macOS** — native menu bar icon (AppKit)
+- **Linux** — AppIndicator tray icon via `menubar_linux.py` (requires `python3-gi` and `libayatana-appindicator3-0.1`)
 
-### macOS (Homebrew)
+## Running as a service
 
-If installed via Homebrew, you can manage the service with:
+**macOS (Homebrew)**
 
 ```bash
 brew services start poke-around
-brew services restart poke-around
-brew services stop poke-around
 ```
 
-### Linux (Systemd)
-
-Create a user unit file at `~/.config/systemd/user/poke-around.service`:
+**Linux (systemd)**
 
 ```ini
+# ~/.config/systemd/user/poke-around.service
 [Unit]
 Description=Poke Around Daemon
 After=network.target
@@ -113,137 +97,41 @@ Restart=always
 WantedBy=default.target
 ```
 
-Then run:
-
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable poke-around
-systemctl --user start poke-around
+systemctl --user enable --now poke-around
 ```
-
 
 ## Agents
 
-Agents are scheduled scripts that run automatically in the background. They live in `~/.config/poke-around/agents/` and follow a simple naming convention:
-
-```
-<name>.<interval>.js
-```
+Agents are scheduled JS scripts in `~/.config/poke-around/agents/` named `<name>.<interval>.js`:
 
 | File | Runs |
 |------|------|
-| `beeper.1h.js` | Every hour |
-| `backup.2h.js` | Every 2 hours |
-| `health.10m.js` | Every 10 minutes |
-| `cleanup.30m.js` | Every 30 minutes |
+| `beeper.1h.js` | every hour |
+| `health.10m.js` | every 10 minutes |
 
-Intervals: `Nm` (minutes) or `Nh` (hours). Minimum is 10 minutes.
-
-### Install an agent
-
-Download a community agent from the repository:
-
-```bash
-./poke-around agent get beeper
-```
-
-This downloads `beeper.1h.js` and `.env.beeper` to `~/.config/poke-around/agents/`. Edit the env file with your credentials and test it:
-
-```bash
-nano ~/.config/poke-around/agents/.env.beeper
-./poke-around run-agent beeper
-```
-
-### Per-agent env files
-
-Each agent can have a `.env.<name>` file for secrets:
-
-```
-~/.config/poke-around/agents/.env.beeper
-```
-
-```env
-BEEPER_TOKEN=your_token_here
-```
-
-Variables are injected into the agent process automatically.
-
-### Agent frontmatter
-
-Each agent file starts with a JSDoc-style frontmatter block:
+Minimum interval is 10 minutes. Agents can import the `poke` SDK and send messages back via `poke.sendMessage(...)`.
 
 ```javascript
-/**
- * @agent beeper
- * @name Beeper Message Digest
- * @description Fetches messages from the last hour and sends a summary to Poke.
- * @interval 1h
- * @env BEEPER_TOKEN - Beeper Desktop local API token
- * @author f
- */
-```
-
-### Creating your own agent
-
-An agent is just a JS file that runs with Node.js. It has access to:
-
-- `process.env` — variables from `.env.<name>`
-- `poke` package — `import { Poke, getToken } from "poke"`
-- Any npm package installed globally or via npx
-
-```javascript
-/**
- * @agent my-agent
- * @name My Custom Agent
- * @description Does something useful every 30 minutes.
- * @interval 30m
- */
-
 import { Poke, getToken } from "poke";
-
 const poke = new Poke({ apiKey: getToken() });
 await poke.sendMessage("Hello from my agent!");
 ```
 
-Save as `~/.config/poke-around/agents/my-agent.30m.js` and it runs automatically when poke-around is connected.
-
-Agents start running when poke-around connects and run once immediately on startup.
-
-## Access modes
-
-Poke Around supports three access modes that control what your agent can do:
-
-| Mode | Description |
-|------|-------------|
-| **Full** (default) | All tools available with no approval required. The agent can run commands, write files, and take screenshots directly. |
-| **Limited** | Read-only tools plus a curated set of safe commands (`ls`, `cat`, `grep`, `curl`, etc.). `write_file` and `take_screenshot` are disabled. |
-| **Sandbox** | Broader command support than Limited, but writes are restricted to `~/Downloads` and `/tmp` via macOS `sandbox-exec`. |
-
-Set the mode via CLI flag, environment variable, or the macOS app Settings:
-
-```bash
-./poke-around --mode sandbox
-# or
-POKE_GATE_PERMISSION_MODE=limited ./poke-around
-```
+Per-agent secrets go in `~/.config/poke-around/agents/.env.<name>`.
 
 ## Security
 
-**In full mode, Poke Around grants full shell access to your Poke agent.** This means:
+In **full mode**, Poke Around grants full shell access to your Poke agent. Only run it on machines and networks you trust. Use `limited` or `sandbox` mode for tighter restrictions.
 
-- Any command can be run with your user's permissions
-- Files can be read and written anywhere your user has access
-- Risky tools require approval in chat before execution
-- Only your Poke agent (authenticated via Poke OAuth) can reach the tunnel
-
-Only run Poke Around on machines and networks you trust. Use `limited` or `sandbox` mode if you want tighter restrictions.
+See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy.
 
 ## Credits
 
-- This project is a native Zig rewrite and continuation of the original [f/poke-gate](https://github.com/f/poke-gate) repository.
-- [Poke](https://poke.com) by [The Interaction Company of California](https://interaction.co)
-- [Poke SDK](https://www.npmjs.com/package/poke)
+- Native Zig rewrite of [f/poke-gate](https://github.com/f/poke-gate)
+- [Poke](https://poke.com) by [The Interaction Company](https://interaction.co)
 
 ## License
 
-MIT
+MPL-2.0

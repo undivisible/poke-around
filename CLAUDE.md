@@ -4,74 +4,66 @@ This file provides guidance for working in this repository.
 
 ## Overview
 
-Poke Around is a native Zig rewrite of the Poke tunnel/daemon. It starts a local MCP server, launches the bridge process, and forwards tool calls from Poke to the user’s machine.
+Poke Around is a native Zig daemon that starts a local MCP server, launches the bridge process, and forwards tool calls from Poke to the user's machine.
 
-## Current status
+## Architecture
 
-- Validate with zig test src/main.zig before merging or pushing.
-- Tray icon is implemented natively in src/menubar.zig (Linux: menubar_linux.py; macOS: AppKit via zig-objc).
-
-## Main flow
-
-1. `src/main.zig` parses CLI flags and dispatches commands.
-2. `src/app.zig` resolves the bridge, starts the MCP server, and manages reconnects.
-3. `src/mcp_server.zig` handles JSON-RPC over HTTP and executes tools.
-4. `src/permission.zig` validates approvals and per-session permissions.
-5. `src/platform.zig` contains command parsing, platform helpers, and shell command filtering.
-6. `src/agents.zig` discovers and runs scheduled agent scripts.
+1. `src/main.zig` — CLI entry point, parses flags, dispatches commands
+2. `src/app.zig` — daemon and bridge lifecycle, reconnect loop
+3. `src/mcp_server.zig` — JSON-RPC over HTTP, tool dispatch and execution
+4. `src/permission.zig` — approval tokens and per-session permissions
+5. `src/platform.zig` — shell helpers, sandbox wrapping, command filtering
+6. `src/agents.zig` — discovers and runs scheduled agent scripts
+7. `src/menubar.zig` — native tray icon (macOS: AppKit via zig-objc; Linux: menubar_linux.py)
+8. `bridge/poke-bridge.ts` — TypeScript bridge bundled into `bridge/dist/poke-around-bridge.js`
 
 ## Commands
 
 ```bash
-zig build
-zig build run
-zig test src/main.zig
-zig build-exe src/main.zig
-bun run build:bridge
-bun run release
+zig build                  # build
+zig build run              # build and run
+zig test src/main.zig      # run tests
+bun run build:bridge       # bundle bridge/poke-bridge.ts → bridge/dist/poke-around-bridge.js
+bun run release            # build bridge + zig release-all
 ```
 
-## Zig 0.15 notes
+## Zig version
 
-This codebase is being ported to Zig 0.15, so keep an eye on API changes such as:
+The codebase targets **Zig 0.15.2**. Key API patterns in use:
 
-- `std.ArrayList` methods requiring an allocator argument
-- `toOwnedSlice(allocator)` instead of zero-argument `toOwnedSlice()`
-- `writer(allocator)` instead of zero-argument `writer()`
-- `std.Thread.sleep()` instead of `std.time.sleep()`
-
-If you touch older code, expect nearby call sites to need the same update.
+- `std.ArrayList` methods require an allocator argument
+- `toOwnedSlice(allocator)` not zero-argument
+- `std.Thread.sleep()` not `std.time.sleep()`
+- `std.atomic.Value(T)` for atomics
+- `b.createModule(...)` in build.zig
 
 ## Runtime notes
 
-- The bridge is bundled from `bridge/poke-bridge.ts` into `bridge/dist/poke-around-bridge.js`.
-- Native binaries are installed into `zig-out/bin/`.
-- The default config directory is `~/.config/poke-around/`.
-- Scheduled agents live in `~/.config/poke-around/agents/` and use the `<name>.<interval>.js` naming convention.
+- Bridge is bundled from `bridge/poke-bridge.ts`; `bridge/dist/` is gitignored (built by CI).
+- Binaries go to `zig-out/bin/`. The bridge JS must sit alongside the binary at runtime.
+- Config/state: `~/.config/poke-around/`
+- Agents: `~/.config/poke-around/agents/<name>.<interval>.js`
+- Webhook credentials are cached in `~/.config/poke-around/state.json` — not recreated on reconnect.
 
-## Stability expectations
+## Release
 
-- Preserve existing approvals and permission semantics.
-- Prefer small, mechanical fixes when porting APIs.
-- Avoid changing generated or release artifacts unless the build pipeline is regenerating them.
-- Do not overwrite unrelated user changes in the working tree.
-
-## Useful files
-
-- `src/main.zig` — CLI entrypoint
-- `src/app.zig` — daemon and bridge lifecycle
-- `src/mcp_server.zig` — tool dispatch and HTTP handling
-- `src/config.zig` — config/state paths and JSON helpers
-- `src/platform.zig` — command parsing and command execution helpers
-- `bridge/poke-bridge.ts` — bridge source before bundling
+Pushing a `v*.*.*` tag triggers `.github/workflows/release.yml`, which builds binaries for
+macOS (arm64, x86_64) and Linux (x86_64) and uploads them to a GitHub release.
+The homebrew-tap formula is updated automatically by its own workflow within ~1 hour.
 
 ## Validation
 
-Prefer validating changes with:
-
 ```bash
-zig build-exe src/main.zig
+zig build
 zig test src/main.zig
 ```
 
-If a change affects the bridge, rebuild it with `bun run build:bridge`.
+`zig build-exe src/main.zig` does **not** work standalone (requires `build_options` from build.zig).
+
+If a change affects the bridge, rebuild with `bun run build:bridge`.
+
+## Stability expectations
+
+- Preserve approval and permission semantics.
+- Prefer small, mechanical fixes.
+- Do not overwrite unrelated user changes in the working tree.
