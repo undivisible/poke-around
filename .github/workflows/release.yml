@@ -35,7 +35,7 @@ jobs:
           - os: macos-latest
             name: macos-aarch64
             zig_target: aarch64-macos
-          - os: macos-13
+          - os: macos-latest
             name: macos-x86_64
             zig_target: x86_64-macos
           - os: ubuntu-latest
