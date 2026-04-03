@@ -46,19 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Zig
-        run: |
-          ZIG_VERSION="0.15.2"
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            ARCH=$(uname -m | sed 's/arm64/aarch64/')
-            curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ARCH}-macos-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
-            tar xf zig.tar.xz
-            echo "$PWD/zig-${ARCH}-macos-${ZIG_VERSION}" >> $GITHUB_PATH
-          else
-            curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
-            tar xf zig.tar.xz
-            echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
-          fi
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
 
       - uses: actions/download-artifact@v4
         with:
