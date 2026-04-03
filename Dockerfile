@@ -3,8 +3,11 @@ WORKDIR /app
 COPY . .
 RUN bun install --cwd bridge && bun run build:bridge
 
-FROM ghcr.io/ziglang/zig:0.15.2 AS builder-zig
+FROM debian:bookworm-slim AS builder-zig
 WORKDIR /app
+RUN apt-get update && apt-get install -y curl xz-utils && \
+    curl -sfL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar xJ && \
+    mv zig-x86_64-linux-0.15.2/zig /usr/local/bin/zig
 COPY --from=builder-bun /app .
 RUN zig build -Doptimize=ReleaseSafe
 
