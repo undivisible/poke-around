@@ -15,7 +15,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.13.0
+          version: "0.15.0"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

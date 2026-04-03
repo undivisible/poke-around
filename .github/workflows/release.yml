@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  # Build the bridge JS once (platform-independent)
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install bridge deps
+        run: bun install
+        working-directory: bridge
+
+      - name: Bundle bridge
+        run: bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-js
+          path: bridge/dist/poke-around-bridge.js
+
+  # Build native binary per platform
+  build:
+    needs: bridge
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-aarch64
+            zig_target: aarch64-macos
+          - os: macos-13
+            name: macos-x86_64
+            zig_target: x86_64-macos
+          - os: ubuntu-latest
+            name: linux-x86_64
+            zig_target: x86_64-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.15.0"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-js
+          path: bridge/dist
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseSafe
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/poke-around dist/
+          cp bridge/dist/poke-around-bridge.js dist/
+          if [ -f src/menubar_linux.py ]; then cp src/menubar_linux.py dist/; fi
+          tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: poke-around-${{ matrix.name }}.tar.gz
+
+  # Create GitHub release and update homebrew tap
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "poke-around ${{ github.ref_name }}" \
+            --generate-notes \
+            release-assets/*.tar.gz
+
+      - name: Compute SHAs and update tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          REPO="undivisible/poke-around"
+          BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+
+          SHA_MACOS_ARM=$(sha256sum release-assets/poke-around-macos-aarch64.tar.gz | cut -d' ' -f1)
+          SHA_MACOS_X86=$(sha256sum release-assets/poke-around-macos-x86_64.tar.gz  | cut -d' ' -f1)
+          SHA_LINUX_X86=$(sha256sum release-assets/poke-around-linux-x86_64.tar.gz  | cut -d' ' -f1)
+          VER="${VERSION#v}"
+
+          cat > formula.rb <<EOF
+          class PokeAround < Formula
+            desc "Expose your machine to your Poke AI assistant via an MCP tunnel"
+            homepage "https://github.com/undivisible/poke-around"
+            license "MPL-2.0"
+            version "${VER}"
+
+            on_macos do
+              on_arm do
+                url "${BASE}/poke-around-macos-aarch64.tar.gz"
+                sha256 "${SHA_MACOS_ARM}"
+              end
+              on_intel do
+                url "${BASE}/poke-around-macos-x86_64.tar.gz"
+                sha256 "${SHA_MACOS_X86}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "${BASE}/poke-around-linux-x86_64.tar.gz"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            depends_on "node"
+
+            def install
+              bin.install "poke-around"
+              bin.install "poke-around-bridge.js"
+              bin.install "menubar_linux.py" if File.exist?("menubar_linux.py")
+            end
+
+            test do
+              assert_match "poke-around", shell_output("\#{bin}/poke-around --help")
+            end
+          end
+          EOF
+
+          git clone https://x-access-token:${GH_TOKEN}@github.com/undivisible/homebrew-tap.git tap
+          cp formula.rb tap/Formula/poke-around.rb
+          cd tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/poke-around.rb
+          git commit -m "chore: update poke-around to ${VERSION}"
+          git push
