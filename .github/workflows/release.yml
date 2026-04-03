@@ -51,13 +51,13 @@ jobs:
           ZIG_VERSION="0.15.2"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             ARCH=$(uname -m | sed 's/arm64/aarch64/')
-            curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-macos-${ARCH}-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+            curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ARCH}-macos-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
             tar xf zig.tar.xz
-            echo "$PWD/zig-macos-${ARCH}-${ZIG_VERSION}" >> $GITHUB_PATH
+            echo "$PWD/zig-${ARCH}-macos-${ZIG_VERSION}" >> $GITHUB_PATH
           else
-            curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+            curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
             tar xf zig.tar.xz
-            echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
+            echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
           fi
 
       - uses: actions/download-artifact@v4
