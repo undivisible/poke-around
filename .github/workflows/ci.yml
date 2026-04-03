@@ -5,26 +5,32 @@ on:
     branches: [ main ]
   pull_request:
 
+env:
+  ZIG_VERSION: "0.15.2"
+
 jobs:
   build_and_test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: "0.15.2"
+        run: |
+          curl -sfL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+          tar xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
 
       - name: Install bridge dependencies
-        run: bun install --cwd bridge
+        run: bun install
+        working-directory: bridge
 
       - name: Build bridge
         run: bun run build:bridge
 
-      - name: Build project
+      - name: Build
         run: zig build -Doptimize=ReleaseSafe
+
+      - name: Test
+        run: zig test src/main.zig
