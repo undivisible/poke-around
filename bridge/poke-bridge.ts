@@ -135,6 +135,16 @@ async function runTunnel(): Promise<void> {
     }
   };
 
+  // Handle SIGTERM/SIGINT from the Zig parent (or user) by cleaning up the
+  // active PokeTunnel before exiting, so the integration is deregistered from
+  // Poke's backend and doesn't accumulate stale instances across restarts.
+  const sigHandler = () => {
+    stopRequested = true;
+    cleanupTunnel().finally(() => process.exit(0));
+  };
+  process.once("SIGTERM", sigHandler);
+  process.once("SIGINT", sigHandler);
+
   const recordConnection = (connectionId: string) => {
     const state = readState() as { connectionHistory?: string[] };
     const history: string[] = state.connectionHistory ?? [];

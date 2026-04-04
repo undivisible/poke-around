@@ -21,33 +21,47 @@ except ImportError:
 
 APPINDICATOR_ID = 'poke-around'
 
+startup_enabled = '--startup-enabled' in sys.argv
+
 def main():
     indicator = appindicator.Indicator.new(APPINDICATOR_ID, 'system-run', appindicator.IndicatorCategory.SYSTEM_SERVICES)
     indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
     indicator.set_menu(build_menu())
-    
-    # Handle signals
+
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     gtk.main()
 
 def build_menu():
     menu = gtk.Menu()
-    
+
     item_status = gtk.MenuItem(label='poke-around is running')
     item_status.set_sensitive(False)
     menu.append(item_status)
-    
+
     menu.append(gtk.SeparatorMenuItem())
-    
+
+    item_startup = gtk.CheckMenuItem(label='Launch at Login')
+    item_startup.set_active(startup_enabled)
+    item_startup.connect('toggled', toggle_startup)
+    menu.append(item_startup)
+
+    menu.append(gtk.SeparatorMenuItem())
+
     item_quit = gtk.MenuItem(label='Quit')
-    item_quit.connect('activate', quit)
+    item_quit.connect('activate', quit_app)
     menu.append(item_quit)
-    
+
     menu.show_all()
     return menu
 
-def quit(_):
-    # Notify parent
+def toggle_startup(item):
+    if item.get_active():
+        print("STARTUP_ENABLE")
+    else:
+        print("STARTUP_DISABLE")
+    sys.stdout.flush()
+
+def quit_app(_):
     print("QUIT_REQUESTED")
     sys.stdout.flush()
     gtk.main_quit()

@@ -1,6 +1,6 @@
 .{
     .name = .poke_around,
-    .version = "0.3.2",
+    .version = "0.3.3",
     .fingerprint = 0xe68d55cca2ea6d76,
     .minimum_zig_version = "0.13.0",
     .paths = .{"."},

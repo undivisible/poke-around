@@ -137,6 +137,27 @@ pub fn setStateField(allocator: std.mem.Allocator, field: []const u8, value: []c
     try writeStateJson(allocator, json);
 }
 
+/// Removes a field from state.json if present, preserving other keys.
+pub fn removeStateField(allocator: std.mem.Allocator, field: []const u8) !void {
+    const raw = try readStateJson(allocator);
+    defer allocator.free(raw);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch {
+        return;
+    };
+    defer parsed.deinit();
+
+    switch (parsed.value) {
+        .object => |*map| {
+            _ = map.orderedRemove(field);
+            const json = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+            defer allocator.free(json);
+            try writeStateJson(allocator, json);
+        },
+        else => {},
+    }
+}
+
 /// Reads config.json; returns "{}" if missing (caller must free).
 pub fn readConfigJson(allocator: std.mem.Allocator) ![]u8 {
     const cfg = try getConfigDir(allocator);

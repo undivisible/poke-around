@@ -23,16 +23,22 @@ pub const Menubar = struct {
     // ...
 
     fn runLinux() !void {
-        // Look for the python helper alongside the executable or in src
+        const startup = @import("startup.zig");
         const allocator = std.heap.page_allocator;
         const exe_path = try std.fs.selfExePathAlloc(allocator);
         defer allocator.free(exe_path);
         const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
-        
+
         const helper_path = try std.fs.path.join(allocator, &.{ exe_dir, "menubar_linux.py" });
         defer allocator.free(helper_path);
 
-        var child = std.process.Child.init(&.{ "python3", helper_path }, allocator);
+        // Pass current startup state so Python can show the correct checkmark.
+        const argv: []const []const u8 = if (startup.isEnabled(allocator))
+            &.{ "python3", helper_path, "--startup-enabled" }
+        else
+            &.{ "python3", helper_path };
+
+        var child = std.process.Child.init(argv, allocator);
         child.stdout_behavior = .Pipe;
         try child.spawn();
 
@@ -42,16 +48,24 @@ pub const Menubar = struct {
             if (std.mem.eql(u8, line, "QUIT_REQUESTED")) {
                 app.initiateShutdown();
                 break;
+            } else if (std.mem.eql(u8, line, "STARTUP_ENABLE")) {
+                startup.enable(allocator) catch {};
+            } else if (std.mem.eql(u8, line, "STARTUP_DISABLE")) {
+                startup.disable(allocator) catch {};
             }
         }
         _ = try child.wait();
     }
 
     fn runMacos() !void {
+        const startup = @import("startup.zig");
+
         const NSApplication = objc.getClass("NSApplication").?;
         const NSStatusBar = objc.getClass("NSStatusBar").?;
         const NSMenu = objc.getClass("NSMenu").?;
+        const NSMenuItem = objc.getClass("NSMenuItem").?;
         const NSString = objc.getClass("NSString").?;
+        const NSObject = objc.getClass("NSObject").?;
 
         const sharedApp = NSApplication.msgSend(objc.Object, "sharedApplication", .{});
         _ = sharedApp.msgSend(void, "setActivationPolicy:", .{ @as(isize, 1) }); // NSApplicationActivationPolicyAccessory
@@ -64,10 +78,51 @@ pub const Menubar = struct {
         button.msgSend(void, "setTitle:", .{ title });
 
         menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
-        
+
+        // ── Delegate for "Launch at Login" toggle ─────────────────────────────
+        const delegate_class = objc.allocateClassPair(NSObject, "PokeAroundMenuDelegate").?;
+        _ = delegate_class.addMethod("toggleStartup:", struct {
+            fn imp(self: objc.c.id, sel: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
+                _ = self;
+                _ = sel;
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const alloc = arena.allocator();
+                const item = objc.Object{ .value = sender };
+                // NSControlStateValueOn = 1, NSControlStateValueOff = 0
+                const state = item.msgSend(isize, "state", .{});
+                if (state == 0) {
+                    startup.enable(alloc) catch {};
+                    item.msgSend(void, "setState:", .{@as(isize, 1)});
+                } else {
+                    startup.disable(alloc) catch {};
+                    item.msgSend(void, "setState:", .{@as(isize, 0)});
+                }
+            }
+        }.imp);
+        objc.registerClassPair(delegate_class);
+        const delegate = delegate_class.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+
+        // "Launch at Login" menu item
+        const loginTitle = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*c]const u8, "Launch at Login")});
+        const emptyKey = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*c]const u8, "")});
+        const loginItem = menu.msgSend(objc.Object, "addItemWithTitle:action:keyEquivalent:", .{
+            loginTitle,
+            objc.sel("toggleStartup:"),
+            emptyKey,
+        });
+        loginItem.msgSend(void, "setTarget:", .{delegate});
+        const login_state: isize = if (startup.isEnabled(std.heap.page_allocator)) 1 else 0;
+        loginItem.msgSend(void, "setState:", .{login_state});
+
+        // Separator
+        const sep = NSMenuItem.msgSend(objc.Object, "separatorItem", .{});
+        menu.msgSend(void, "addItem:", .{sep});
+
+        // "Quit" item
         const quitTitle = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{ @as([*c]const u8, "Quit") });
         const quitKey = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{ @as([*c]const u8, "q") });
-        
         _ = menu.msgSend(objc.Object, "addItemWithTitle:action:keyEquivalent:", .{
             quitTitle,
             objc.sel("terminate:"),
@@ -75,7 +130,69 @@ pub const Menubar = struct {
         });
 
         statusItem.msgSend(void, "setMenu:", .{ menu });
-        
+
+        const DaemonFailureAlert = struct {
+            fn show(err: anyerror) void {
+                const NSStringLocal = objc.getClass("NSString").?;
+                const NSAlertLocal = objc.getClass("NSAlert").?;
+                const alert_local = NSAlertLocal.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
+                const title_local = NSStringLocal.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*c]const u8, @ptrCast("Poke Around failed to start"))});
+                alert_local.msgSend(void, "setMessageText:", .{title_local});
+
+                var detail_buf: [512]u8 = undefined;
+                const detail_z = std.fmt.bufPrintZ(
+                    &detail_buf,
+                    "The background service could not start ({s}). Try poke-around --foreground in Terminal for details.",
+                    .{@errorName(err)},
+                ) catch {
+                    const fallback = NSStringLocal.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*c]const u8, @ptrCast(
+                        "The background service could not start. Try poke-around --foreground in Terminal for details.",
+                    ))});
+                    alert_local.msgSend(void, "setInformativeText:", .{fallback});
+                    _ = alert_local.msgSend(isize, "runModal", .{});
+                    return;
+                };
+                const detail_ns = NSStringLocal.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*c]const u8, @ptrCast(detail_z.ptr))});
+                alert_local.msgSend(void, "setInformativeText:", .{detail_ns});
+                _ = alert_local.msgSend(isize, "runModal", .{});
+            }
+        };
+
+        const watchdog_class = objc.allocateClassPair(NSObject, "PokeAroundDaemonWatchdog").?;
+        _ = watchdog_class.addMethod("tick:", struct {
+            fn imp(_: objc.c.id, _: objc.c.SEL, timer: objc.c.id) callconv(.c) void {
+                const state = app.macos_menubar_daemon_state.load(.acquire);
+                if (state == 1) {
+                    const timer_obj = objc.Object{ .value = timer };
+                    timer_obj.msgSend(void, "invalidate", .{});
+                    return;
+                }
+                if (state == 2) {
+                    const timer_obj = objc.Object{ .value = timer };
+                    timer_obj.msgSend(void, "invalidate", .{});
+                    app.macos_menubar_daemon_err_mutex.lock();
+                    const err = app.macos_menubar_daemon_startup_err;
+                    app.macos_menubar_daemon_err_mutex.unlock();
+                    DaemonFailureAlert.show(err orelse error.Unexpected);
+                    const NSApplicationClass = objc.getClass("NSApplication").?;
+                    const shared = NSApplicationClass.msgSend(objc.Object, "sharedApplication", .{});
+                    shared.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
+                }
+            }
+        }.imp);
+        objc.registerClassPair(watchdog_class);
+        const daemon_watchdog = watchdog_class.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+
+        const NSTimer = objc.getClass("NSTimer").?;
+        _ = NSTimer.msgSend(objc.Object, "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:", .{
+            @as(f64, 0.25),
+            daemon_watchdog,
+            objc.sel("tick:"),
+            @as(?*anyopaque, null),
+            true,
+        });
+
         _ = sharedApp.msgSend(void, "finishLaunching", .{});
         sharedApp.msgSend(void, "run", .{});
     }
@@ -170,22 +287,39 @@ pub const Menubar = struct {
         const MY_WM_TRAYICON = WM_USER + 1;
         const WM_RBUTTONUP = 0x0205;
         const WM_DESTROY = 0x0002;
+        const MF_CHECKED: u32 = 0x00000008;
+        const MF_SEPARATOR: u32 = 0x00000800;
 
         switch (msg) {
             MY_WM_TRAYICON => {
                 if (lParam == WM_RBUTTONUP) {
-                    // Show a simple context menu
+                    const startup = @import("startup.zig");
+                    const alloc = std.heap.page_allocator;
+
                     const hmenu = win.user32.CreatePopupMenu() orelse return 0;
+                    const startup_flags: u32 = if (startup.isEnabled(alloc)) MF_CHECKED else 0;
+                    _ = win.user32.AppendMenuW(hmenu, startup_flags, 2, win.L("Launch at Login"));
+                    _ = win.user32.AppendMenuW(hmenu, MF_SEPARATOR, 0, win.L(""));
                     _ = win.user32.AppendMenuW(hmenu, 0, 1, win.L("Quit"));
-                    
+
                     var pt: win.POINT = undefined;
                     _ = win.user32.GetCursorPos(&pt);
-                    
+
                     _ = win.user32.SetForegroundWindow(hwnd);
                     const id = win.user32.TrackPopupMenu(hmenu, 0x0100, pt.x, pt.y, 0, hwnd, null);
-                    if (id == 1) {
-                        app.initiateShutdown();
-                        win.user32.PostQuitMessage(0);
+                    switch (id) {
+                        1 => {
+                            app.initiateShutdown();
+                            win.user32.PostQuitMessage(0);
+                        },
+                        2 => {
+                            if (startup.isEnabled(alloc)) {
+                                startup.disable(alloc) catch {};
+                            } else {
+                                startup.enable(alloc) catch {};
+                            }
+                        },
+                        else => {},
                     }
                     _ = win.user32.DestroyMenu(hmenu);
                 }

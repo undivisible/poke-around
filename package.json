@@ -1,6 +1,6 @@
 {
   "name": "poke-around",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Expose your machine to your Poke AI assistant via MCP tunnel",
   "type": "module",
   "scripts": {

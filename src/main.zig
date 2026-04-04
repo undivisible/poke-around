@@ -1,5 +1,6 @@
 /// CLI entry point — subcommand dispatch for poke-around.
 const std = @import("std");
+const builtin = @import("builtin");
 
 const app = @import("app.zig");
 const agents = @import("agents.zig");
@@ -175,8 +176,8 @@ fn runDaemonBootstrap(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbo
 
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
     try child.spawn();
 
     const child_pid_text = try std.fmt.allocPrint(allocator, "{d}", .{child.id});
@@ -184,6 +185,9 @@ fn runDaemonBootstrap(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbo
 
     const deadline_ms = std.time.milliTimestamp() + 90_000;
     while (std.time.milliTimestamp() < deadline_ms) {
+        if (try daemonBootstrapChildExitedEarly(&child)) {
+            return error.DaemonProcessExitedEarly;
+        }
         if (workerReady(allocator, child_pid_text) catch false) {
             return;
         }
@@ -193,6 +197,44 @@ fn runDaemonBootstrap(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbo
     _ = child.kill() catch {};
     _ = child.wait() catch {};
     return error.DaemonStartupTimedOut;
+}
+
+fn daemonBootstrapChildExitedEarly(child: *std.process.Child) !bool {
+    if (builtin.os.tag == .windows) {
+        const w = std.os.windows;
+        w.WaitForSingleObjectEx(child.id, 0, false) catch |err| switch (err) {
+            error.WaitTimeOut => return false,
+            else => |e| return e,
+        };
+        const term = try child.wait();
+        logDaemonBootstrapChildExit(term);
+        return true;
+    } else {
+        const res = std.posix.waitpid(child.id, std.posix.W.NOHANG);
+        if (res.pid == 0) return false;
+        logDaemonBootstrapChildExit(waitStatusToTerm(res.status));
+        return true;
+    }
+}
+
+fn waitStatusToTerm(status: u32) std.process.Child.Term {
+    if (std.posix.W.IFEXITED(status)) {
+        return .{ .Exited = std.posix.W.EXITSTATUS(status) };
+    } else if (std.posix.W.IFSIGNALED(status)) {
+        return .{ .Signal = std.posix.W.TERMSIG(status) };
+    } else if (std.posix.W.IFSTOPPED(status)) {
+        return .{ .Stopped = std.posix.W.STOPSIG(status) };
+    }
+    return .{ .Unknown = status };
+}
+
+fn logDaemonBootstrapChildExit(term: std.process.Child.Term) void {
+    switch (term) {
+        .Exited => |code| std.debug.print("poke-around: daemon worker exited during startup (exit code {d}).\n", .{code}),
+        .Signal => |sig| std.debug.print("poke-around: daemon worker ended during startup (signal {d}).\n", .{sig}),
+        .Stopped => |sig| std.debug.print("poke-around: daemon worker stopped during startup (signal {d}).\n", .{sig}),
+        .Unknown => |c| std.debug.print("poke-around: daemon worker ended during startup (status {d}).\n", .{c}),
+    }
 }
 
 fn workerReady(allocator: std.mem.Allocator, child_pid_text: []const u8) !bool {
@@ -217,12 +259,25 @@ fn runDaemonWorker(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose:
         std.posix.sigaction(std.posix.SIG.TERM, &sa, null);
     }
 
-    if (@import("builtin").os.tag == .macos) {
+    if (builtin.os.tag == .macos) {
         const menubar = @import("menubar.zig");
-        // Start daemon in a separate thread
-        const t = try std.Thread.spawn(.{}, app.runDaemon, .{ allocator, mode_str, verbose, false });
+        app.resetMacosMenubarDaemonState();
+        const WorkerCtx = struct {
+            allocator: std.mem.Allocator,
+            mode_str: ?[]const u8,
+            verbose: bool,
+            fn run(self: @This()) void {
+                app.runDaemon(self.allocator, self.mode_str, self.verbose, false) catch |err| {
+                    app.markMacosMenubarDaemonFailed(err);
+                };
+            }
+        };
+        const t = try std.Thread.spawn(.{}, WorkerCtx.run, .{WorkerCtx{
+            .allocator = allocator,
+            .mode_str = mode_str,
+            .verbose = verbose,
+        }});
         t.detach();
-        // Run menubar event loop on main thread
         try menubar.Menubar.run();
     } else {
         try app.runDaemon(allocator, mode_str, verbose, false);

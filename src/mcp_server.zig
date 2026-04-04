@@ -427,7 +427,7 @@ fn handleSingleRpc(
         };
         _ = proto;
         const result =
-            \\{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"poke-around","version":"0.3.2"},"instructions":"This server gives you access to the user's machine. Use tools to help the user with OS-level tasks."}
+            \\{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"poke-around","version":"0.3.3"},"instructions":"This server gives you access to the user's machine. Use tools to help the user with OS-level tasks."}
         ;
         return try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}", .{ id_json, result });
     }

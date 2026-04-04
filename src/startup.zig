@@ -40,11 +40,14 @@ pub fn disable(allocator: std.mem.Allocator) !void {
 
 /// On macOS, ensure the LaunchAgent is installed and prompt the permissions the
 /// app uses at runtime.
-pub fn ensureMacosPersistenceAndPermissions(allocator: std.mem.Allocator) void {
+pub fn ensureMacosPersistenceAndPermissions(allocator: std.mem.Allocator) !void {
     if (comptime builtin.os.tag != .macos) return;
 
     if (!isMacosEnabled(allocator)) {
-        enable(allocator) catch {};
+        enable(allocator) catch |err| {
+            std.debug.print("poke-around: could not install launch at login (LaunchAgent): {}\n", .{err});
+            return err;
+        };
     }
     requestMacPermissions();
 }
@@ -160,10 +163,19 @@ fn enableMacos(allocator: std.mem.Allocator, exe: []const u8) !void {
 
     // load -w registers the job and starts it immediately; the daemon's
     // singleton guard handles any overlap with an already-running instance.
-    _ = std.process.Child.run(.{
+    const load_result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{ "launchctl", "load", "-w", path },
-    }) catch {};
+    });
+    defer allocator.free(load_result.stdout);
+    defer allocator.free(load_result.stderr);
+    if (load_result.term.Exited != 0) {
+        if (load_result.stderr.len > 0) {
+            std.debug.print("{s}", .{load_result.stderr});
+            if (!std.mem.endsWith(u8, load_result.stderr, "\n")) std.debug.print("\n", .{});
+        }
+        return error.LaunchctlLoadFailed;
+    }
 }
 
 fn disableMacos(allocator: std.mem.Allocator) !void {

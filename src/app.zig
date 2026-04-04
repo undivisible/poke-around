@@ -25,6 +25,29 @@ pub const ansi = struct {
     pub const bold = "\x1b[1m";
 };
 
+/// macOS menubar + background daemon: 0 = starting, 1 = running, 2 = failed (see startup_err).
+pub var macos_menubar_daemon_state: std.atomic.Value(u8) = .init(0);
+pub var macos_menubar_daemon_startup_err: ?anyerror = null;
+pub var macos_menubar_daemon_err_mutex: std.Thread.Mutex = .{};
+
+pub fn resetMacosMenubarDaemonState() void {
+    macos_menubar_daemon_state.store(0, .monotonic);
+    macos_menubar_daemon_err_mutex.lock();
+    macos_menubar_daemon_startup_err = null;
+    macos_menubar_daemon_err_mutex.unlock();
+}
+
+pub fn markMacosMenubarDaemonRunning() void {
+    macos_menubar_daemon_state.store(1, .release);
+}
+
+pub fn markMacosMenubarDaemonFailed(err: anyerror) void {
+    macos_menubar_daemon_err_mutex.lock();
+    macos_menubar_daemon_startup_err = err;
+    macos_menubar_daemon_err_mutex.unlock();
+    macos_menubar_daemon_state.store(2, .release);
+}
+
 pub const AppRuntime = struct {
     allocator: std.mem.Allocator,
     state: *mcp_server.AppState,
@@ -473,7 +496,7 @@ pub fn runDaemon(
     logAlways(ansi.dim ++ "Access mode: {s}" ++ ansi.reset, .{@tagName(mode)});
 
     if (builtin.os.tag == .macos) {
-        startup.ensureMacosPersistenceAndPermissions(allocator);
+        try startup.ensureMacosPersistenceAndPermissions(allocator);
     }
 
     // Resolve bridge path
@@ -503,6 +526,9 @@ pub fn runDaemon(
     defer allocator.free(pid_text);
     const port_text = try std.fmt.allocPrint(allocator, "{d}", .{port});
     defer allocator.free(port_text);
+    // Drop tunnel identity from any previous run before publishing a new pid so bootstrap readiness
+    // cannot see a stale connectionId that matches an old tunnel.
+    config.removeStateField(allocator, "connectionId") catch {};
     config.setStateField(allocator, "pid", pid_text) catch {};
     config.setStateField(allocator, "port", port_text) catch {};
 
@@ -529,6 +555,10 @@ pub fn runDaemon(
     watchdog.detach();
 
     global_runtime = runtime;
+
+    if (builtin.os.tag == .macos) {
+        markMacosMenubarDaemonRunning();
+    }
 
     // Block main thread (signal handling)
     while (!runtime.stop_flag.load(.acquire)) {
