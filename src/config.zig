@@ -111,7 +111,7 @@ pub fn readStateField(allocator: std.mem.Allocator, field: []const u8) !?[]u8 {
         .string => |s| s,
         else => return null,
     };
-    return allocator.dupe(u8, s);
+    return try allocator.dupe(u8, s);
 }
 
 /// Sets a string field in state.json, preserving other fields.

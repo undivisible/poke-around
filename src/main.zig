@@ -5,6 +5,7 @@ const app = @import("app.zig");
 const agents = @import("agents.zig");
 const config = @import("config.zig");
 const mcp_server = @import("mcp_server.zig");
+const platform = @import("platform.zig");
 const build_options = @import("build_options");
 
 pub fn main() !void {
@@ -19,27 +20,32 @@ pub fn main() !void {
 
     // Global flags
     const verbose = hasFlag(argv, "--verbose") or hasFlag(argv, "-v");
+    const foreground_flag = hasFlag(argv, "--foreground");
     const mode_str = getFlagValue(argv, "--mode");
     const version_flag = hasFlag(argv, "--version") or hasFlag(argv, "-V");
+    const daemon_worker_flag = hasFlag(argv, "--daemon-worker");
 
     if (version_flag) {
         std.debug.print("poke-around {s}\n", .{build_options.version});
         return;
     }
 
-    if (argv.len == 0 or (argv.len == 1 and (std.mem.eql(u8, argv[0], "--verbose") or std.mem.eql(u8, argv[0], "-v")))) {
-        // Default: daemon mode
-        try runDaemon(allocator, mode_str, verbose);
+    if (daemon_worker_flag) {
+        try runDaemonWorker(allocator, mode_str, verbose);
+        return;
+    }
+
+    if (isDaemonInvocation(argv)) {
+        if (foreground_flag) {
+            try app.runDaemon(allocator, mode_str, verbose, true);
+        } else {
+            // Default: launch a background worker and exit once it is ready.
+            try runDaemonBootstrap(allocator, mode_str, verbose);
+        }
         return;
     }
 
     const subcmd = argv[0];
-
-    if (std.mem.eql(u8, subcmd, "--mode")) {
-        // poke-around --mode <mode> [--verbose]
-        try runDaemon(allocator, mode_str, verbose);
-        return;
-    }
 
     if (std.mem.eql(u8, subcmd, "run-agent")) {
         const name = if (argv.len > 1) argv[1] else {
@@ -119,6 +125,25 @@ pub fn main() !void {
         return;
     }
 
+    if (std.mem.eql(u8, subcmd, "login-item")) {
+        if (argv.len < 2) {
+            printLoginItemUsage();
+            std.process.exit(1);
+        }
+        const action = argv[1];
+        if (std.mem.eql(u8, action, "enable")) {
+            try runLoginItemEnable(allocator);
+        } else if (std.mem.eql(u8, action, "disable")) {
+            try runLoginItemDisable(allocator);
+        } else if (std.mem.eql(u8, action, "status")) {
+            runLoginItemStatus(allocator);
+        } else {
+            printLoginItemUsage();
+            std.process.exit(1);
+        }
+        return;
+    }
+
     if (std.mem.eql(u8, subcmd, "--help") or std.mem.eql(u8, subcmd, "-h") or std.mem.eql(u8, subcmd, "help")) {
         printHelp();
         return;
@@ -130,7 +155,57 @@ pub fn main() !void {
 
 // ── Subcommand implementations ─────────────────────────────────────────────
 
-fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
+fn runDaemonBootstrap(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
+    platform.killExistingInstances(allocator);
+
+    const exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe);
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, exe);
+    try argv.append(allocator, "--daemon-worker");
+    if (mode_str) |mode| {
+        try argv.append(allocator, "--mode");
+        try argv.append(allocator, mode);
+    }
+    if (verbose) {
+        try argv.append(allocator, "--verbose");
+    }
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    const child_pid_text = try std.fmt.allocPrint(allocator, "{d}", .{child.id});
+    defer allocator.free(child_pid_text);
+
+    const deadline_ms = std.time.milliTimestamp() + 90_000;
+    while (std.time.milliTimestamp() < deadline_ms) {
+        if (workerReady(allocator, child_pid_text) catch false) {
+            return;
+        }
+        std.Thread.sleep(250 * std.time.ns_per_ms);
+    }
+
+    _ = child.kill() catch {};
+    _ = child.wait() catch {};
+    return error.DaemonStartupTimedOut;
+}
+
+fn workerReady(allocator: std.mem.Allocator, child_pid_text: []const u8) !bool {
+    const pid = config.readStateField(allocator, "pid") catch return false;
+    defer if (pid) |p| allocator.free(p);
+    if (pid == null or !std.mem.eql(u8, pid.?, child_pid_text)) return false;
+
+    const conn = config.readStateField(allocator, "connectionId") catch return false;
+    defer if (conn) |c| allocator.free(c);
+    return conn != null and conn.?.len > 0;
+}
+
+fn runDaemonWorker(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
     // Signal handling
     if (@import("builtin").os.tag != .windows) {
         const sa = std.posix.Sigaction{
@@ -145,12 +220,12 @@ fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool)
     if (@import("builtin").os.tag == .macos) {
         const menubar = @import("menubar.zig");
         // Start daemon in a separate thread
-        const t = try std.Thread.spawn(.{}, app.runDaemon, .{ allocator, mode_str, verbose });
+        const t = try std.Thread.spawn(.{}, app.runDaemon, .{ allocator, mode_str, verbose, false });
         t.detach();
         // Run menubar event loop on main thread
         try menubar.Menubar.run();
     } else {
-        try app.runDaemon(allocator, mode_str, verbose);
+        try app.runDaemon(allocator, mode_str, verbose, false);
     }
 }
 
@@ -285,6 +360,29 @@ fn indexOfFlag(argv: []const []const u8, flag: []const u8) ?usize {
     return null;
 }
 
+fn isDaemonInvocation(argv: []const []const u8) bool {
+    var i: usize = 0;
+    while (i < argv.len) {
+        const arg = argv[i];
+        if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v") or
+            std.mem.eql(u8, arg, "--foreground") or
+            std.mem.eql(u8, arg, "--daemon-worker") or
+            std.mem.eql(u8, arg, "--version") or
+            std.mem.eql(u8, arg, "-V"))
+        {
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--mode")) {
+            if (i + 1 >= argv.len) return false;
+            i += 2;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 fn printHelp() void {
     std.debug.print(
         \\poke-around v{s} — expose your machine to your Poke AI assistant
@@ -294,6 +392,7 @@ fn printHelp() void {
         \\  poke-around status
         \\  poke-around notify
         \\  poke-around restart
+        \\  poke-around login-item <enable|disable|status>
         \\  poke-around run-agent <name>
         \\  poke-around agent get <name>
         \\  poke-around agent create [--prompt "<description>"]
@@ -303,6 +402,7 @@ fn printHelp() void {
         \\OPTIONS:
         \\  --mode <full|limited|sandbox>   Set access permission mode
         \\  --verbose, -v                    Enable verbose logging
+        \\  --foreground                     Run the daemon in the foreground
         \\  --version, -V                    Show version and exit
         \\
         \\ACCESS MODES:
@@ -310,7 +410,58 @@ fn printHelp() void {
         \\  limited   Read-only tools + safe commands (ls, cat, grep, curl, jq...)
         \\  sandbox   Broader commands; file writes restricted to ~/Downloads and /tmp
         \\
+        \\LOGIN ITEM:
+        \\  enable    Register poke-around to launch at login
+        \\  disable   Remove poke-around from login items
+        \\  status    Show whether launch-at-login is enabled
+        \\
     , .{build_options.version});
+}
+
+fn printLoginItemUsage() void {
+    std.debug.print(
+        \\Usage:
+        \\  poke-around login-item enable    Register poke-around to launch at login
+        \\  poke-around login-item disable   Remove poke-around from login items
+        \\  poke-around login-item status    Show current login-item state
+        \\
+    , .{});
+}
+
+fn runLoginItemEnable(allocator: std.mem.Allocator) !void {
+    const startup = @import("startup.zig");
+    if (startup.isEnabled(allocator)) {
+        std.debug.print("Launch at login is already enabled.\n", .{});
+        return;
+    }
+    try startup.enable(allocator);
+    std.debug.print("✔ poke-around will now launch at login.\n", .{});
+    if (comptime @import("builtin").os.tag == .macos) {
+        std.debug.print("  LaunchAgent: ~/Library/LaunchAgents/com.poke-around.plist\n", .{});
+    } else if (comptime @import("builtin").os.tag == .linux) {
+        std.debug.print("  Service: ~/.config/systemd/user/poke-around.service\n", .{});
+    } else if (comptime @import("builtin").os.tag == .windows) {
+        std.debug.print("  Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n", .{});
+    }
+}
+
+fn runLoginItemDisable(allocator: std.mem.Allocator) !void {
+    const startup = @import("startup.zig");
+    if (!startup.isEnabled(allocator)) {
+        std.debug.print("Launch at login is not currently enabled.\n", .{});
+        return;
+    }
+    try startup.disable(allocator);
+    std.debug.print("✔ poke-around removed from login items.\n", .{});
+}
+
+fn runLoginItemStatus(allocator: std.mem.Allocator) void {
+    const startup = @import("startup.zig");
+    if (startup.isEnabled(allocator)) {
+        std.debug.print("Launch at login: enabled\n", .{});
+    } else {
+        std.debug.print("Launch at login: disabled\n", .{});
+    }
 }
 
 fn printAgentUsage() void {
@@ -391,6 +542,10 @@ fn runStatus(allocator: std.mem.Allocator) !void {
     const mode = config.readPermissionMode(allocator) catch null;
     defer if (mode) |owned_mode| allocator.free(owned_mode);
     std.debug.print("  Access mode:   {s}{s}{s}\n", .{ app.ansi.dim, mode orelse "full", app.ansi.reset });
+
+    const startup = @import("startup.zig");
+    const startup_str = if (startup.isEnabled(allocator)) "enabled" else "disabled";
+    std.debug.print("  Login item:    {s}{s}{s}\n", .{ app.ansi.dim, startup_str, app.ansi.reset });
 
     if (obj.get("port")) |port_val| {
         const port = switch (port_val) {

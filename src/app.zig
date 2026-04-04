@@ -300,11 +300,20 @@ fn handleBridgeEvent(runtime: *AppRuntime, line: []const u8) !void {
 
 fn restartBridge(runtime: *AppRuntime) void {
     if (runtime.bridge_process) |*p| {
+        // Close the bridge's stdin so its readline "close" handler fires,
+        // which calls cleanupTunnel() and deregisters the Poke integration
+        // before the new bridge creates a replacement.
         runtime.state.bridge_writer_mutex.lock();
+        if (runtime.state.bridge_writer) |w| w.close();
         runtime.state.bridge_writer = null;
         runtime.state.bridge_writer_mutex.unlock();
-        _ = p.kill() catch std.process.Child.Term{ .Signal = 15 };
-        _ = p.wait() catch std.process.Child.Term{ .Exited = 0 };
+
+        // Give the bridge up to 5 s to clean up and exit on its own.
+        std.Thread.sleep(5 * std.time.ns_per_s);
+
+        // Force-kill anything still running, then reap.
+        _ = p.kill() catch {};
+        _ = p.wait() catch {};
         runtime.bridge_process = null;
     }
 
@@ -435,9 +444,17 @@ pub fn initiateShutdown() void {
     }
 }
 
-pub fn runDaemon(allocator: std.mem.Allocator, mode_str: ?[]const u8, verbose: bool) !void {
-    // Kill existing instances on this machine
-    platform.killExistingInstances(allocator);
+pub fn runDaemon(
+    allocator: std.mem.Allocator,
+    mode_str: ?[]const u8,
+    verbose: bool,
+    kill_existing_instances: bool,
+) !void {
+    // The background worker owns cleanup; the foreground bootstrapper can
+    // skip it after handing off.
+    if (kill_existing_instances) {
+        platform.killExistingInstances(allocator);
+    }
 
     // Determine permission mode (env > CLI arg > config file)
     const mode = blk: {
