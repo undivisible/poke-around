@@ -6,6 +6,7 @@ const config = @import("config.zig");
 const platform = @import("platform.zig");
 const mcp_server = @import("mcp_server.zig");
 const agents = @import("agents.zig");
+const startup = @import("startup.zig");
 const build_options = @import("build_options");
 
 // ── Bridge process management ───────────────────────────────────────────────
@@ -470,6 +471,10 @@ pub fn runDaemon(
 
     logAlways(ansi.blue ++ ansi.bold ++ "▶ poke-around v{s} starting..." ++ ansi.reset, .{build_options.version});
     logAlways(ansi.dim ++ "Access mode: {s}" ++ ansi.reset, .{@tagName(mode)});
+
+    if (builtin.os.tag == .macos) {
+        startup.ensureMacosPersistenceAndPermissions(allocator);
+    }
 
     // Resolve bridge path
     const bridge_path = resolveBridgePath(allocator) catch |err| {

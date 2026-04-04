@@ -6,6 +6,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config.zig");
+const mac = if (builtin.os.tag == .macos) @cImport({
+    @cInclude("CoreFoundation/CoreFoundation.h");
+    @cInclude("ApplicationServices/ApplicationServices.h");
+    @cInclude("CoreGraphics/CoreGraphics.h");
+}) else struct {};
 
 /// Returns true when poke-around is registered to start at login.
 pub fn isEnabled(allocator: std.mem.Allocator) bool {
@@ -31,6 +36,17 @@ pub fn disable(allocator: std.mem.Allocator) !void {
     if (comptime builtin.os.tag == .macos) return disableMacos(allocator);
     if (comptime builtin.os.tag == .linux) return disableLinux(allocator);
     if (comptime builtin.os.tag == .windows) return disableWindows(allocator);
+}
+
+/// On macOS, ensure the LaunchAgent is installed and prompt the permissions the
+/// app uses at runtime.
+pub fn ensureMacosPersistenceAndPermissions(allocator: std.mem.Allocator) void {
+    if (comptime builtin.os.tag != .macos) return;
+
+    if (!isMacosEnabled(allocator)) {
+        enable(allocator) catch {};
+    }
+    requestMacPermissions();
 }
 
 // ── path helpers ──────────────────────────────────────────────────────────────
@@ -72,6 +88,31 @@ fn isMacosEnabled(allocator: std.mem.Allocator) bool {
     defer allocator.free(path);
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
+}
+
+fn requestMacPermissions() void {
+    if (!mac.CGPreflightScreenCaptureAccess()) {
+        _ = mac.CGRequestScreenCaptureAccess();
+    }
+
+    if (mac.AXIsProcessTrusted() == 0) {
+        const key = @as(mac.CFTypeRef, @ptrCast(mac.kAXTrustedCheckOptionPrompt));
+        const value = @as(mac.CFTypeRef, @ptrCast(mac.kCFBooleanTrue));
+        const keys = [1]mac.CFTypeRef{key};
+        const values = [1]mac.CFTypeRef{value};
+        const opts = mac.CFDictionaryCreate(
+            mac.kCFAllocatorDefault,
+            @ptrCast(@constCast(&keys)),
+            @ptrCast(@constCast(&values)),
+            1,
+            &mac.kCFTypeDictionaryKeyCallBacks,
+            &mac.kCFTypeDictionaryValueCallBacks,
+        );
+        if (opts != null) {
+            defer mac.CFRelease(opts);
+            _ = mac.AXIsProcessTrustedWithOptions(opts);
+        }
+    }
 }
 
 const PLIST_TEMPLATE =

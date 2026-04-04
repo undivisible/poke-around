@@ -42,6 +42,8 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("objc", objc_dep.module("objc"));
         exe.linkFramework("AppKit");
         exe.linkFramework("Foundation");
+        exe.linkFramework("ApplicationServices");
+        exe.linkFramework("CoreGraphics");
         exe.linkSystemLibrary("objc");
         exe.linkLibC();
     }
