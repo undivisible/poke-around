@@ -21,6 +21,15 @@ brew tap undivisible/tap
 brew install poke-around
 ```
 
+If install fails at **`brew link`** for **`simdjson`** (a dependency of Homebrew **node**), your prefix still has an older simdjson linked. Unlink it, then retry:
+
+```bash
+brew unlink simdjson
+brew install poke-around
+```
+
+If Brew already poured a newer simdjson but could not link it, either run `brew link --overwrite simdjson` and retry, or `brew reinstall simdjson` after `brew unlink simdjson`.
+
 **Build from source**
 
 Requires [Zig 0.15](https://ziglang.org/download/) and [Bun](https://bun.sh):
