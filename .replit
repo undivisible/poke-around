@@ -1,0 +1,37 @@
+modules = ["nodejs-20", "python-3.12"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Build poke-around"
+
+[[workflows.workflow]]
+name = "Build poke-around"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = """
+export PATH=\"/home/runner/zig/zig-x86_64-linux-0.15.2:$PATH\" && bun run build:bridge && zig build && echo '
+✅ Build complete. Binary at zig-out/bin/poke-around' && ./zig-out/bin/poke-around --version"""
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[deployment]
+deploymentTarget = "vm"
+run = ["./zig-out/bin/poke-around", "--foreground"]
+build = ["bash", "-c", "export PATH=\"/home/runner/zig/zig-x86_64-linux-0.15.2:$PATH\" && bun run build:bridge && zig build"]
