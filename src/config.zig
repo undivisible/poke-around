@@ -177,7 +177,12 @@ pub fn readConfigJson(allocator: std.mem.Allocator) ![]u8 {
 pub fn readPermissionMode(allocator: std.mem.Allocator) ![]u8 {
     const raw = try readConfigJson(allocator);
     defer allocator.free(raw);
+    return permissionModeFromJson(allocator, raw);
+}
 
+/// Pure helper: parse the permission mode from a JSON string.
+/// Returns an allocated copy of "full", "limited", or "sandbox" (caller must free).
+fn permissionModeFromJson(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch
         return allocator.dupe(u8, "full");
     defer parsed.deinit();
@@ -214,4 +219,77 @@ pub fn savePermissionMode(allocator: std.mem.Allocator, mode: []const u8) !void 
     const file = try std.fs.createFileAbsolute(path, .{});
     defer file.close();
     try file.writeAll(json);
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+test "getHomeDir returns non-empty string" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const home = try getHomeDir(arena.allocator());
+    try std.testing.expect(home.len > 0);
+}
+
+test "getConfigDir ends with poke-around" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dir = try getConfigDir(arena.allocator());
+    try std.testing.expect(std.mem.endsWith(u8, dir, "poke-around"));
+}
+
+test "getAgentsDir ends with agents" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dir = try getAgentsDir(arena.allocator());
+    try std.testing.expect(std.mem.endsWith(u8, dir, "agents"));
+}
+
+test "getAgentsDir is a subdirectory of getConfigDir" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try getConfigDir(arena.allocator());
+    const agents = try getAgentsDir(arena.allocator());
+    try std.testing.expect(std.mem.startsWith(u8, agents, cfg));
+}
+
+test "permissionModeFromJson: missing key defaults to full" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "{}");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("full", mode);
+}
+
+test "permissionModeFromJson: invalid JSON defaults to full" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "not json");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("full", mode);
+}
+
+test "permissionModeFromJson: parses limited" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "{\"permissionMode\":\"limited\"}");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("limited", mode);
+}
+
+test "permissionModeFromJson: parses sandbox" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "{\"permissionMode\":\"sandbox\"}");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("sandbox", mode);
+}
+
+test "permissionModeFromJson: unknown value falls back to full" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "{\"permissionMode\":\"superuser\"}");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("full", mode);
+}
+
+test "permissionModeFromJson: non-string value falls back to full" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "{\"permissionMode\":42}");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("full", mode);
+}
+
+test "permissionModeFromJson: non-object JSON falls back to full" {
+    const mode = try permissionModeFromJson(std.testing.allocator, "\"limited\"");
+    defer std.testing.allocator.free(mode);
+    try std.testing.expectEqualStrings("full", mode);
 }

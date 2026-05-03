@@ -256,6 +256,156 @@ fn uuidFromBytes(bytes: [16]u8, out: *[36]u8) void {
     }
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+test "PermissionService init and deinit" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    svc.deinit();
+}
+
+test "requestApproval returns UUID-shaped request ID" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const result = try svc.requestApproval("sess-1", "run_shell", "{\"cmd\":\"ls\"}");
+    const id = &result.approval_request_id;
+    try std.testing.expectEqual(@as(usize, 36), id.len);
+    try std.testing.expectEqual(@as(u8, '-'), id[8]);
+    try std.testing.expectEqual(@as(u8, '-'), id[13]);
+    try std.testing.expectEqual(@as(u8, '-'), id[18]);
+    try std.testing.expectEqual(@as(u8, '-'), id[23]);
+}
+
+test "validateToken accepts a valid token" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const args = "{\"cmd\":\"ls -la\"}";
+    const result = try svc.requestApproval("sess-1", "run_shell", args);
+    const ok = svc.validateToken("sess-1", &result.token_hex, "run_shell", args);
+    try std.testing.expect(ok);
+}
+
+test "validateToken rejects wrong session" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const args = "{\"cmd\":\"ls\"}";
+    const result = try svc.requestApproval("sess-1", "run_shell", args);
+    const ok = svc.validateToken("sess-WRONG", &result.token_hex, "run_shell", args);
+    try std.testing.expect(!ok);
+}
+
+test "validateToken rejects wrong tool" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const args = "{\"cmd\":\"ls\"}";
+    const result = try svc.requestApproval("sess-1", "run_shell", args);
+    const ok = svc.validateToken("sess-1", &result.token_hex, "write_file", args);
+    try std.testing.expect(!ok);
+}
+
+test "validateToken rejects wrong args" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const result = try svc.requestApproval("sess-1", "run_shell", "{\"cmd\":\"ls\"}");
+    const ok = svc.validateToken("sess-1", &result.token_hex, "run_shell", "{\"cmd\":\"rm -rf /\"}");
+    try std.testing.expect(!ok);
+}
+
+test "validateToken rejects replayed (already-consumed) token" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const args = "{\"cmd\":\"ls\"}";
+    const result = try svc.requestApproval("sess-1", "run_shell", args);
+    _ = svc.validateToken("sess-1", &result.token_hex, "run_shell", args);
+    const second = svc.validateToken("sess-1", &result.token_hex, "run_shell", args);
+    try std.testing.expect(!second);
+}
+
+test "validateToken rejects unknown token" {
+    var svc = try PermissionService.init(std.testing.allocator, "test-secret");
+    defer svc.deinit();
+    const fake_token = "0" ** 64;
+    const ok = svc.validateToken("sess-1", fake_token, "run_shell", "{}");
+    try std.testing.expect(!ok);
+}
+
+test "isAllowedByPattern exact match" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try svc.allowPattern("sess-1", "ls");
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "ls"));
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "ls -la"));
+}
+
+test "isAllowedByPattern wildcard suffix" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try svc.allowPattern("sess-1", "ls*");
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "ls"));
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "ls -la"));
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "rm -rf /"));
+}
+
+test "isAllowedByPattern wildcard prefix and suffix" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try svc.allowPattern("sess-1", "*cat*");
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "cat foo.txt"));
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "scat"));
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "concatenate args"));
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "ls foo.txt"));
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "bat"));
+}
+
+test "isAllowedByPattern returns false with no patterns" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "ls"));
+}
+
+test "isAllowedByPattern is per-session" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try svc.allowPattern("sess-A", "ls");
+    try std.testing.expect(svc.isAllowedByPattern("sess-A", "ls"));
+    try std.testing.expect(!svc.isAllowedByPattern("sess-B", "ls"));
+}
+
+test "clearSession removes whitelist" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try svc.allowPattern("sess-1", "ls*");
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "ls -la"));
+    svc.clearSession("sess-1");
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "ls -la"));
+}
+
+test "clearSession removes pending approvals" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    const args = "{}";
+    const result = try svc.requestApproval("sess-1", "run_shell", args);
+    svc.clearSession("sess-1");
+    // token should no longer be valid
+    const ok = svc.validateToken("sess-1", &result.token_hex, "run_shell", args);
+    try std.testing.expect(!ok);
+}
+
+test "clearSession on unknown session is a no-op" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    svc.clearSession("nobody"); // must not crash
+}
+
+test "multiple patterns per session — any match allows" {
+    var svc = try PermissionService.init(std.testing.allocator, "s");
+    defer svc.deinit();
+    try svc.allowPattern("sess-1", "ls*");
+    try svc.allowPattern("sess-1", "cat *");
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "ls -la"));
+    try std.testing.expect(svc.isAllowedByPattern("sess-1", "cat README.md"));
+    try std.testing.expect(!svc.isAllowedByPattern("sess-1", "rm -rf /"));
+}
+
 /// Simple glob match: pattern can contain '*' wildcards.
 fn globMatch(pattern: []const u8, text: []const u8) bool {
     var p: usize = 0;
