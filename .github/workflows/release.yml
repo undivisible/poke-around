@@ -6,8 +6,31 @@ on:
       - 'v*.*.*'
 
 jobs:
+  # Run tests before anything else — block the release if they fail
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install bridge dependencies
+        run: bun install
+        working-directory: bridge
+
+      - name: Build bridge
+        run: bun run build:bridge
+
+      - name: Run tests
+        run: zig build test
+
   # Build the bridge JS once (platform-independent)
   bridge:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
