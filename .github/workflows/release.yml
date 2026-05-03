@@ -41,6 +41,12 @@ jobs:
           - os: ubuntu-latest
             name: linux-x86_64
             zig_target: x86_64-linux-gnu
+          - os: ubuntu-latest
+            name: linux-aarch64
+            zig_target: aarch64-linux-gnu
+          - os: ubuntu-latest
+            name: windows-x86_64
+            zig_target: x86_64-windows-gnu
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -61,7 +67,11 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp zig-out/bin/poke-around dist/
+          if [ -f zig-out/bin/poke-around.exe ]; then
+            cp zig-out/bin/poke-around.exe dist/
+          else
+            cp zig-out/bin/poke-around dist/
+          fi
           cp bridge/dist/poke-around-bridge.js dist/
           if [ -f src/menubar_linux.py ]; then cp src/menubar_linux.py dist/; fi
           tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .

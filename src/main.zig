@@ -388,7 +388,7 @@ fn runTakeScreenshot(allocator: std.mem.Allocator) !void {
 fn pickRuntime(bridge_path: []const u8) []const u8 {
     const is_ts = std.mem.endsWith(u8, bridge_path, ".ts");
     if (is_ts) return "bun";
-    const bun_paths = [_][]const u8{ "/home/undivisible/.bun/bin/bun", "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
+    const bun_paths = [_][]const u8{ "/usr/local/bin/bun", "/opt/homebrew/bin/bun" };
     for (bun_paths) |p| {
         std.fs.accessAbsolute(p, .{}) catch continue;
         return p;

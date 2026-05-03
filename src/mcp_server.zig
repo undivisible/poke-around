@@ -2,6 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const build_options = @import("build_options");
 const config = @import("config.zig");
 const platform = @import("platform.zig");
 const permission = @import("permission.zig");
@@ -426,9 +427,11 @@ fn handleSingleRpc(
             };
         };
         _ = proto;
-        const result =
-            \\{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"poke-around","version":"0.3.3"},"instructions":"This server gives you access to the user's machine. Use tools to help the user with OS-level tasks."}
-        ;
+        const result = try std.fmt.allocPrint(
+            allocator,
+            "{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"poke-around\",\"version\":\"{s}\"}},\"instructions\":\"This server gives you access to the user's machine. Use tools to help the user with OS-level tasks.\"}}",
+            .{build_options.version},
+        );
         return try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}", .{ id_json, result });
     }
 

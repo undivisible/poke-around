@@ -45,9 +45,7 @@ pub const PokeClient = struct {
         const auth_hdr = try std.fmt.allocPrint(self.allocator, "Authorization: Bearer {s}", .{webhook_token});
         defer self.allocator.free(auth_hdr);
 
-        // JSON payload: {"message": "..."}
-        // We'll use a simple escaped string for now to avoid full JSON stringify if it's just a message
-        const payload = try std.fmt.allocPrint(self.allocator, "{{\"message\":\"{s}\"}}", .{message});
+        const payload = try std.json.stringifyAlloc(self.allocator, .{ .message = message }, .{});
         defer self.allocator.free(payload);
 
         const argv = [_][]const u8{ "curl", "-fsSL", "-X", "POST", "-H", auth_hdr, "-H", "Content-Type: application/json", "-d", payload, webhook_url };

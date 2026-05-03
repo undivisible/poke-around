@@ -72,13 +72,6 @@ fn captureMacos(allocator: std.mem.Allocator, path: []const u8) !void {
 
 // ── Linux ──────────────────────────────────────────────────────────────────
 
-const linux_tools = [_]struct { name: []const u8, args: []const []const u8 }{
-    .{ .name = "scrot", .args = &.{ "scrot", "{}", "--" } }, // placeholder, built below
-    .{ .name = "gnome-screenshot", .args = &.{ "gnome-screenshot", "-f", "{}" } },
-    .{ .name = "import", .args = &.{ "import", "-window", "root", "{}" } },
-    .{ .name = "spectacle", .args = &.{ "spectacle", "-b", "-n", "-o", "{}" } },
-};
-
 fn captureLinux(allocator: std.mem.Allocator, path: []const u8) !void {
     // Detect available screenshot tool
     const search_dirs = [_][]const u8{

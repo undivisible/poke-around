@@ -31,4 +31,4 @@ jobs:
         run: zig build -Doptimize=ReleaseSafe
 
       - name: Test
-        run: zig test src/main.zig
+        run: zig build test
