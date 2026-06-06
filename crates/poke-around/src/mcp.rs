@@ -76,9 +76,11 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         .get("mcp-session-id")
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    let response = if request.method == "GET" && matches!(path.as_str(), "/health" | "/mcp") {
+    let response = if request.method == "OPTIONS" {
+        None
+    } else if request.method == "GET" && matches!(path.as_str(), "/" | "/health" | "/mcp") {
         Some(json!({ "ok": true }))
-    } else if request.method == "POST" && path == "/mcp" {
+    } else if request.method == "POST" && matches!(path.as_str(), "/" | "/mcp") {
         handle_json_rpc(&request.body, &session_id, state)?
     } else {
         write_http_response(
@@ -96,15 +98,20 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
 }
 
 fn normalized_path(raw: &str) -> String {
-    if raw.starts_with('/') {
-        return raw.to_string();
-    }
-    if let Some((_, rest)) = raw.split_once("://")
+    let path = if raw.starts_with('/') {
+        raw.to_string()
+    } else if let Some((_, rest)) = raw.split_once("://")
         && let Some(path_start) = rest.find('/')
     {
-        return rest[path_start..].to_string();
+        rest[path_start..].to_string()
+    } else {
+        raw.to_string()
+    };
+    if path.ends_with("/mcp") {
+        "/mcp".to_string()
+    } else {
+        path
     }
-    raw.to_string()
 }
 
 struct HttpRequest {
@@ -178,7 +185,7 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> Resul
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, Accept\r\nAccess-Control-Expose-Headers: Mcp-Session-Id\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     )?;

@@ -70,3 +70,31 @@ fn mcp_absolute_form_request_target_should_return_tools() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
     assert!(response.contains(r#""name":"run_command""#));
 }
+
+#[test]
+fn mcp_root_request_target_should_return_tools() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json_path(
+        port,
+        "/",
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.contains(r#""name":"run_command""#));
+}
+
+#[test]
+fn mcp_prefixed_request_target_should_return_tools() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json_path(
+        port,
+        "/b92095cb-bf54/mcp",
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.contains(r#""name":"run_command""#));
+}
