@@ -20,6 +20,7 @@ fn run() -> Result<()> {
     if args.is_empty()
         || has_flag(&args, "--foreground")
         || args.first().is_some_and(|arg| arg == "daemon")
+        || only_daemon_flags(&args)
     {
         return daemon::run(mode.as_deref(), verbose);
     }
@@ -101,8 +102,45 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+fn only_daemon_flags(args: &[String]) -> bool {
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--verbose" | "-v" => index += 1,
+            "--mode" if args.get(index + 1).is_some() => index += 2,
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn print_help() {
     println!(
         "Usage: poke-around [--verbose] [--mode full|limited|sandbox]\n       poke-around run-agent <name>\n       poke-around agent get <name>\n       poke-around agent create [--prompt text]\n       poke-around take-screenshot\n       poke-around notify <message>\n       poke-around set-mode <full|limited|sandbox>\n       poke-around status"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::only_daemon_flags;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn mode_only_invokes_daemon() {
+        assert!(only_daemon_flags(&args(&["--mode", "full"])));
+        assert!(only_daemon_flags(&args(&[
+            "--verbose",
+            "--mode",
+            "sandbox"
+        ])));
+    }
+
+    #[test]
+    fn command_after_mode_does_not_invoke_daemon() {
+        assert!(!only_daemon_flags(&args(&["--mode", "full", "status"])));
+        assert!(!only_daemon_flags(&args(&["--mode"])));
+    }
 }
