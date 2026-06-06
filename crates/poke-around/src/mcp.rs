@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use rs_peekaboo::automation::{Target, parse_point};
-use rs_peekaboo::{Bounds, Direction, ImageMode, Peekaboo};
+use rs_peekaboo::{Bounds, Direction, ImageMode, Peekaboo, Snapshot};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -488,12 +488,13 @@ fn image(args: &Value, _state: &AppState) -> Result<Value> {
     let path = str_arg(args, "path").map(PathBuf::from);
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
     let capture = Peekaboo::new().image(mode, path, retina)?;
-    Ok(ok_json(json!({
+    let metadata = json!({
         "path": capture.path,
         "mode": capture.mode,
         "bytes": capture.bytes,
         "mime_type": capture.mime_type,
-    })))
+    });
+    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
 }
 
 fn see(args: &Value, _state: &AppState) -> Result<Value> {
@@ -501,11 +502,25 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
     let mode = ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
     let path = str_arg(args, "path").map(PathBuf::from);
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let snapshot = Peekaboo::new().see(app, mode, path, retina)?;
-    Ok(ok_json(json!({
+    let peekaboo = Peekaboo::new();
+    let capture = peekaboo.image(mode, path, retina)?;
+    let snapshot_id = rs_peekaboo::cache::new_snapshot_id();
+    let snapshot = Snapshot {
+        snapshot_id,
+        elements: peekaboo.ui_elements(app)?,
+    };
+    rs_peekaboo::cache::save_snapshot(&snapshot)?;
+    let metadata = json!({
         "snapshot_id": snapshot.snapshot_id,
         "elements": snapshot.elements,
-    })))
+        "image": {
+            "path": capture.path,
+            "mode": capture.mode,
+            "bytes": capture.bytes,
+            "mime_type": capture.mime_type,
+        }
+    });
+    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
 }
 
 fn list_screens(_args: &Value) -> Result<Value> {
@@ -786,6 +801,22 @@ fn ok_json(value: Value) -> Value {
     })
 }
 
+fn ok_json_with_image(value: Value, image_path: &Path, mime_type: &str) -> Result<Value> {
+    let data = fs::read(image_path)?;
+    let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    Ok(json!({
+        "content": [
+            { "type": "text", "text": text },
+            {
+                "type": "image",
+                "data": base64::engine::general_purpose::STANDARD.encode(data),
+                "mimeType": mime_type
+            }
+        ],
+        "structuredContent": value
+    }))
+}
+
 fn error_result(text: impl Into<String>) -> Value {
     json!({ "content": [{ "type": "text", "text": text.into() }], "isError": true })
 }
@@ -962,11 +993,12 @@ fn run_agent(args: &Value) -> Result<Value> {
 fn take_screenshot(args: &Value) -> Result<Value> {
     let path = args.get("path").and_then(Value::as_str).map(PathBuf::from);
     let capture = rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, path, true)?;
-    Ok(ok_json(json!({
+    let metadata = json!({
         "path": capture.path,
         "bytes": capture.bytes,
         "mime_type": capture.mime_type
-    })))
+    });
+    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
 }
 
 fn edit_file(args: &Value, state: &AppState) -> Result<Value> {
@@ -1065,4 +1097,33 @@ fn delete_file(args: &Value, state: &AppState) -> Result<Value> {
         fs::remove_file(&path)?;
     }
     Ok(ok_json(json!({ "path": path, "deleted": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ok_json_with_image_should_embed_mcp_image_content() {
+        let path = std::env::temp_dir().join(format!(
+            "poke-around-image-result-{}.png",
+            std::process::id()
+        ));
+        fs::write(&path, [1_u8, 2, 3, 4]).unwrap();
+
+        let response = ok_json_with_image(json!({ "path": path }), &path, "image/png").unwrap();
+        let content = response["content"].as_array().unwrap();
+
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["mimeType"], "image/png");
+        assert_eq!(content[1]["data"], "AQIDBA==");
+        assert_eq!(
+            response["structuredContent"]["path"].as_str().unwrap(),
+            path.to_string_lossy()
+        );
+
+        let _ = fs::remove_file(path);
+    }
 }
