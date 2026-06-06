@@ -33,7 +33,7 @@ require_literal 'TMP_DIR="$(mktemp -d'
 require_literal 'trap '\''rm -f "$TMP_ARCHIVE" "$TMP_INSTALL"; rm -rf "$TMP_DIR"'\'' EXIT'
 require_regex 'curl -fsSL -o "\$TMP_ARCHIVE" "\$URL"'
 require_literal 'sha256_for_asset()'
-require_literal 'v0.3.14:poke-around-linux-aarch64.tar.gz'
+require_literal 'v0.3.15:poke-around-linux-aarch64.tar.gz'
 require_literal 'file_sha256()'
 require_literal 'Checksum mismatch for $ASSET'
 require_literal 'URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"'
@@ -88,7 +88,7 @@ chmod +x "$MOCK_BIN/curl"
 cat > "$MOCK_BIN/shasum" <<'MOCK'
 #!/bin/bash
 set -euo pipefail
-printf '%s  %s\n' "01af7fa785cdc606527eb5d536c7ba339db756322aa2ec9c7b6df7e342b446d3" "${@: -1}"
+printf '%s  %s\n' "883505dfcb25df27580af0abb30d25b52209faa9e47275e5f6a31365deaf850a" "${@: -1}"
 MOCK
 chmod +x "$MOCK_BIN/shasum"
 
