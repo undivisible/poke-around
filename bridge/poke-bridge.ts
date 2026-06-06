@@ -26,6 +26,11 @@ function log(msg: string): void {
   process.stderr.write(`\x1b[2m[bridge] ${msg}\x1b[0m\n`);
 }
 
+function integrationName(base: string): string {
+  const suffix = os.hostname().trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return suffix ? `${base}-${suffix}` : base;
+}
+
 async function ensureAuth(): Promise<string> {
   if (!isLoggedIn()) {
     emit({ type: "auth_required", message: "Opening browser for Poke login…" });
@@ -125,7 +130,7 @@ async function runTunnel(): Promise<void> {
   const token = await ensureAuth();
   const poke = new Poke({ apiKey: token });
 
-  const tunnelName = "poke-around";
+  const tunnelName = integrationName("poke-around");
 
   // ── Webhook: create once, cache forever ─────────────────────────────────
   // poke-gate pattern: read from state.json; only call createWebhook if missing.
@@ -187,14 +192,14 @@ async function runTunnel(): Promise<void> {
         webhookToken,
         data: {
           message:
-            `Poke Around is connected to this computer (tunnel: ${connectionId}). ` +
+            `Poke Around is connected to ${tunnelName} (tunnel: ${connectionId}). ` +
             `${tunnelUrl ? `Tunnel URL: ${tunnelUrl}. ` : ""}` +
             `${buildAccessModeMessage()} ` +
             `Use the Poke Around MCP tools whenever I ask you to do something on this machine.`,
           connectionId,
           tunnelUrl,
           mode: permissionMode,
-          integration: "poke-around",
+          integration: tunnelName,
         },
       });
       emit({ type: "webhook_sent" });

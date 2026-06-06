@@ -22,6 +22,7 @@ describe("bridge tunnel lifecycle", () => {
   });
 
   test("recreates cached webhook when tunnel name changes", () => {
+    expect(source).toContain('integrationName("poke-around")');
     expect(source).toContain("webhookName !== tunnelName");
     expect(source).toContain("webhookName: tunnelName");
   });
