@@ -24,4 +24,9 @@ describe("bridge tunnel lifecycle", () => {
   test("emits tunnel url with connection events", () => {
     expect(source).toContain('tunnelUrl: info.tunnelUrl');
   });
+
+  test("syncs tools immediately after tunnel start", () => {
+    expect(source).toContain('syncTools(): Promise<void>');
+    expect(source).toContain(".syncTools();");
+  });
 });

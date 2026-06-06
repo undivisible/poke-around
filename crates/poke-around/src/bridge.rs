@@ -105,6 +105,7 @@ fn print_bridge_event(line: &str) {
             log_status(message);
         }
         "webhook_sent" => log_status("Notified Poke agent about connection."),
+        "heartbeat" => {}
         "webhook_error" | "error" => {
             let message = value
                 .get("message")

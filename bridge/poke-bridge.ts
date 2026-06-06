@@ -121,9 +121,7 @@ async function runTunnel(): Promise<void> {
   const token = await ensureAuth();
   const poke = new Poke({ apiKey: token });
 
-  // Stable, deterministic name derived from hostname so the same machine always
-  // gets the same tunnel identity in Poke.
-  const tunnelName = `poke-around-${os.hostname().toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+  const tunnelName = "poke-around";
 
   // ── Webhook: create once, cache forever ─────────────────────────────────
   // poke-gate pattern: read from state.json; only call createWebhook if missing.
@@ -285,6 +283,7 @@ async function runTunnel(): Promise<void> {
       });
 
       await tunnel.start();
+      await (tunnel as unknown as { syncTools(): Promise<void> }).syncTools();
       log(`Tunnel started → ${mcpUrl}`);
     } catch (err) {
       emit({ type: "error", message: String(err) });

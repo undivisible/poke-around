@@ -67,14 +67,18 @@ pub fn start_server(state: AppState) -> Result<u16> {
 
 fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
     let request = read_http_request(&mut stream)?;
+    let path = normalized_path(&request.path);
+    if state.inner.verbose {
+        eprintln!("http: {} {} -> {}", request.method, request.path, path);
+    }
     let session_id = request
         .headers
         .get("mcp-session-id")
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    let body = if request.method == "GET" && matches!(request.path.as_str(), "/health" | "/mcp") {
-        json!({ "ok": true })
-    } else if request.method == "POST" && request.path == "/mcp" {
+    let response = if request.method == "GET" && matches!(path.as_str(), "/health" | "/mcp") {
+        Some(json!({ "ok": true }))
+    } else if request.method == "POST" && path == "/mcp" {
         handle_json_rpc(&request.body, &session_id, state)?
     } else {
         write_http_response(
@@ -84,8 +88,23 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         )?;
         return Ok(());
     };
-    write_http_response(&mut stream, 200, &body.to_string())?;
+    match response {
+        Some(body) => write_http_response(&mut stream, 200, &body.to_string())?,
+        None => write_http_response(&mut stream, 204, "")?,
+    }
     Ok(())
+}
+
+fn normalized_path(raw: &str) -> String {
+    if raw.starts_with('/') {
+        return raw.to_string();
+    }
+    if let Some((_, rest)) = raw.split_once("://")
+        && let Some(path_start) = rest.find('/')
+    {
+        return rest[path_start..].to_string();
+    }
+    raw.to_string()
 }
 
 struct HttpRequest {
@@ -152,7 +171,11 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
 }
 
 fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<()> {
-    let reason = if status == 200 { "OK" } else { "Error" };
+    let reason = match status {
+        200 => "OK",
+        204 => "No Content",
+        _ => "Error",
+    };
     write!(
         stream,
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -162,15 +185,43 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> Resul
     Ok(())
 }
 
-fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Value> {
+fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Option<Value>> {
     let request: Value = serde_json::from_str(body)?;
+    if let Some(items) = request.as_array() {
+        let mut responses = Vec::new();
+        for item in items {
+            if let Some(response) = handle_json_rpc_message(item, session_id, state.clone())? {
+                responses.push(response);
+            }
+        }
+        return Ok(Some(Value::Array(responses)));
+    }
+    handle_json_rpc_message(&request, session_id, state)
+}
+
+fn handle_json_rpc_message(
+    request: &Value,
+    session_id: &str,
+    state: AppState,
+) -> Result<Option<Value>> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    if state.inner.verbose {
+        eprintln!("rpc: {method} id={id}");
+    }
+    if method == "notifications/initialized" {
+        return Ok(None);
+    }
     let result = match method {
         "initialize" => json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": request
+                .get("params")
+                .and_then(|params| params.get("protocolVersion"))
+                .and_then(Value::as_str)
+                .unwrap_or("2024-11-05"),
             "serverInfo": { "name": "poke-around", "version": env!("CARGO_PKG_VERSION") },
-            "capabilities": { "tools": {} }
+            "capabilities": { "tools": { "listChanged": false } },
+            "instructions": "This server gives you access to the user's machine. You can run shell commands, read/write files, list directories, use browser-style fetch tools, take screenshots, and get system info. Use these tools to help the user with OS-level tasks."
         }),
         "tools/list" => {
             let tools_value: Value = serde_json::from_str(tools::tools_json())?;
@@ -187,14 +238,19 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Valu
         }
         "ping" => json!({}),
         _ => {
-            return Ok(json!({
+            if id.is_null() {
+                return Ok(None);
+            }
+            return Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "error": { "code": -32601, "message": format!("Unknown method: {method}") }
-            }));
+            })));
         }
     };
-    Ok(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+    Ok(Some(
+        json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+    ))
 }
 
 fn handle_tool_call(
