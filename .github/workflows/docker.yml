@@ -38,4 +38,4 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/undivisible/poke-around
             org.opencontainers.image.description=Expose your machine to your Poke AI assistant via MCP tunnel
-            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.licenses=MPL-2.0

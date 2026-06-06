@@ -12,11 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: "0.15.2"
-
       - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install bridge dependencies
         run: bun install
@@ -25,8 +25,14 @@ jobs:
       - name: Build bridge
         run: bun run build:bridge
 
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
       - name: Run tests
-        run: zig build test
+        run: cargo test --workspace --all-features
 
   # Build the bridge JS once (platform-independent)
   bridge:
@@ -57,27 +63,21 @@ jobs:
         include:
           - os: macos-latest
             name: macos-aarch64
-            zig_target: aarch64-macos
-          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+          - os: macos-13
             name: macos-x86_64
-            zig_target: x86_64-macos
+            rust_target: x86_64-apple-darwin
           - os: ubuntu-latest
             name: linux-x86_64
-            zig_target: x86_64-linux-gnu
-          - os: ubuntu-latest
-            name: linux-aarch64
-            zig_target: aarch64-linux-gnu
-          - os: ubuntu-latest
-            name: windows-x86_64
-            zig_target: x86_64-windows-gnu
+            rust_target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          version: "0.15.2"
+          targets: ${{ matrix.rust_target }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -85,16 +85,12 @@ jobs:
           path: bridge/dist
 
       - name: Build
-        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseSafe
+        run: cargo build --workspace --release --target ${{ matrix.rust_target }}
 
       - name: Package
         run: |
           mkdir -p dist
-          if [ -f zig-out/bin/poke-around.exe ]; then
-            cp zig-out/bin/poke-around.exe dist/
-          else
-            cp zig-out/bin/poke-around dist/
-          fi
+          cp target/${{ matrix.rust_target }}/release/poke-around dist/
           cp bridge/dist/poke-around-bridge.js dist/
           if [ -f src/menubar_linux.py ]; then cp src/menubar_linux.py dist/; fi
           tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .

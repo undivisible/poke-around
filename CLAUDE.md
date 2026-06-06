@@ -4,43 +4,37 @@ This file provides guidance for working in this repository.
 
 ## Overview
 
-Poke Around is a native Zig daemon that starts a local MCP server, launches the bridge process, and forwards tool calls from Poke to the user's machine.
+Poke Around is a Rust daemon that starts a local MCP server, launches the bridge process, and forwards tool calls from Poke to the user's machine. The bridge remains TypeScript and uses the Poke SDK.
 
 ## Architecture
 
-1. `src/main.zig` — CLI entry point, parses flags, dispatches commands
-2. `src/app.zig` — daemon and bridge lifecycle, reconnect loop
-3. `src/mcp_server.zig` — JSON-RPC over HTTP, tool dispatch and execution
-4. `src/permission.zig` — approval tokens and per-session permissions
-5. `src/platform.zig` — shell helpers, sandbox wrapping, command filtering
-6. `src/agents.zig` — discovers and runs scheduled agent scripts
-7. `src/menubar.zig` — native tray icon (macOS: AppKit via zig-objc; Linux: menubar_linux.py)
-8. `bridge/poke-bridge.ts` — TypeScript bridge bundled into `bridge/dist/poke-around-bridge.js`
+1. `crates/poke-around/src/main.rs` — CLI entry point, parses flags, dispatches commands
+2. `crates/poke-around/src/daemon.rs` — daemon startup and bridge lifecycle
+3. `crates/poke-around/src/mcp.rs` — JSON-RPC over HTTP, tool dispatch and execution
+4. `crates/poke-around/src/policy.rs` — access modes, command filtering, approval classification
+5. `crates/poke-around/src/agents.rs` — discovers and runs scheduled agent scripts
+6. `crates/poke-around/src/bridge.rs` — launches the Poke SDK bridge process
+7. `bridge/poke-bridge.ts` — TypeScript bridge bundled into `bridge/dist/poke-around-bridge.js`
+8. `src/*.zig` — archived legacy source retained for reference only
 
 ## Commands
 
 ```bash
-zig build                  # build
-zig build run              # build and run
-zig test src/main.zig      # run tests
+cargo build --workspace    # build
+cargo run --bin poke-around # build and run
+cargo test --workspace     # run tests
 bun run build:bridge       # bundle bridge/poke-bridge.ts → bridge/dist/poke-around-bridge.js
-bun run release            # build bridge + zig release-all
+bun run release            # build bridge + Rust release binary
 ```
 
-## Zig version
+## Rust version
 
-The codebase targets **Zig 0.15.2**. Key API patterns in use:
-
-- `std.ArrayList` methods require an allocator argument
-- `toOwnedSlice(allocator)` not zero-argument
-- `std.Thread.sleep()` not `std.time.sleep()`
-- `std.atomic.Value(T)` for atomics
-- `b.createModule(...)` in build.zig
+The active daemon targets stable Rust with edition 2024.
 
 ## Runtime notes
 
 - Bridge is bundled from `bridge/poke-bridge.ts`; `bridge/dist/` is gitignored (built by CI).
-- Binaries go to `zig-out/bin/`. The bridge JS must sit alongside the binary at runtime.
+- Binaries go to `target/release/`. The bridge JS must sit alongside the binary at runtime.
 - Config/state: `~/.config/poke-around/`
 - Agents: `~/.config/poke-around/agents/<name>.<interval>.js`
 - Webhook credentials are cached in `~/.config/poke-around/state.json` — not recreated on reconnect.
@@ -54,11 +48,11 @@ The homebrew-tap formula is updated automatically by its own workflow within ~1 
 ## Validation
 
 ```bash
-zig build
-zig test src/main.zig
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo build --workspace --release
 ```
-
-`zig build-exe src/main.zig` does **not** work standalone (requires `build_options` from build.zig).
 
 If a change affects the bridge, rebuild with `bun run build:bridge`.
 

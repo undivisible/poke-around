@@ -6,6 +6,7 @@ docs/.vitepress/cache/
 xcuserdata/
 superpowers/
 zig-out/
+target/
 .zig-cache/root
 libapp.a
 root

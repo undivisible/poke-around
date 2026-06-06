@@ -1,0 +1,26 @@
+[package]
+name = "poke-around"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Expose your machine to Poke through a Rust MCP daemon"
+keywords = ["poke", "mcp", "tunnel", "automation", "remote"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "poke-around"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+dirs.workspace = true
+rand.workspace = true
+rs_peekaboo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"

@@ -32,14 +32,14 @@ If Brew already poured a newer simdjson but could not link it, either run `brew 
 
 **Build from source**
 
-Requires [Zig 0.15](https://ziglang.org/download/) and [Bun](https://bun.sh):
+Requires stable [Rust](https://www.rust-lang.org/tools/install) and [Bun](https://bun.sh):
 
 ```bash
 git clone https://github.com/undivisible/poke-around.git
 cd poke-around
 bun run build:bridge
-zig build -Doptimize=ReleaseSafe
-./zig-out/bin/poke-around
+cargo build --release
+./target/release/poke-around
 ```
 
 **Manual download**
@@ -138,7 +138,8 @@ See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy.
 
 ## Credits
 
-- Native Zig rewrite of [f/poke-gate](https://github.com/f/poke-gate)
+- Rust rewrite of [f/poke-gate](https://github.com/f/poke-gate)
+- macOS computer-use primitives through [rs_peekaboo](https://github.com/undivisible/rs_peekaboo)
 - [Poke](https://poke.com) by [The Interaction Company](https://interaction.co)
 
 ## License

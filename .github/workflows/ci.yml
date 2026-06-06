@@ -6,7 +6,7 @@ on:
   pull_request:
 
 env:
-  ZIG_VERSION: "0.15.2"
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   build_and_test:
@@ -14,11 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
       - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install bridge dependencies
         run: bun install
@@ -27,8 +27,14 @@ jobs:
       - name: Build bridge
         run: bun run build:bridge
 
-      - name: Build
-        run: zig build -Doptimize=ReleaseSafe
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: zig build test
+        run: cargo test --workspace --all-features
+
+      - name: Build
+        run: cargo build --workspace --release
