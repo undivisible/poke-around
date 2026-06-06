@@ -38,6 +38,9 @@ const SAFE_TOOLS: &[&str] = &[
     "network_speed",
     "web_fetch",
     "http_request",
+    "clipboard_read",
+    "list_screens",
+    "permissions",
 ];
 
 const LIMITED_COMMANDS: &[&str] = &[
