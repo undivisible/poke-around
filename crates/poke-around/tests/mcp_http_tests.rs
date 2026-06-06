@@ -58,6 +58,32 @@ fn mcp_batch_should_return_tools_after_initialized_notification() {
 }
 
 #[test]
+fn initialized_notification_without_id_should_return_no_content() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json(
+        port,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    );
+
+    assert!(response.starts_with("HTTP/1.1 204 No Content"));
+}
+
+#[test]
+fn initialized_request_with_id_should_return_json_rpc_response() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json(
+        port,
+        r#"{"jsonrpc":"2.0","id":3,"method":"notifications/initialized"}"#,
+    );
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.contains(r#""id":3"#));
+    assert!(response.contains(r#""result":{}"#));
+}
+
+#[test]
 fn mcp_absolute_form_request_target_should_return_tools() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");

@@ -201,7 +201,7 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Opti
                 responses.push(response);
             }
         }
-        return Ok(Some(Value::Array(responses)));
+        return Ok((!responses.is_empty()).then_some(Value::Array(responses)));
     }
     handle_json_rpc_message(&request, session_id, state)
 }
@@ -211,15 +211,17 @@ fn handle_json_rpc_message(
     session_id: &str,
     state: AppState,
 ) -> Result<Option<Value>> {
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let id = request.get("id").cloned();
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     if state.inner.verbose {
-        eprintln!("rpc: {method} id={id}");
+        let logged_id = id.as_ref().unwrap_or(&Value::Null);
+        eprintln!("rpc: {method} id={logged_id}");
     }
-    if method == "notifications/initialized" {
+    if method == "notifications/initialized" && id.is_none() {
         return Ok(None);
     }
     let result = match method {
+        "notifications/initialized" => json!({}),
         "initialize" => json!({
             "protocolVersion": request
                 .get("params")
@@ -245,15 +247,18 @@ fn handle_json_rpc_message(
         }
         "ping" => json!({}),
         _ => {
-            if id.is_null() {
+            let Some(id) = id else {
                 return Ok(None);
-            }
+            };
             return Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "error": { "code": -32601, "message": format!("Unknown method: {method}") }
             })));
         }
+    };
+    let Some(id) = id else {
+        return Ok(None);
     };
     Ok(Some(
         json!({ "jsonrpc": "2.0", "id": id, "result": result }),
