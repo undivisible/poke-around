@@ -69,7 +69,14 @@ pub fn start_server(state: AppState) -> Result<u16> {
 }
 
 fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
-    let request = read_http_request(&mut stream)?;
+    let request = match read_http_request(&mut stream) {
+        Ok(request) => request,
+        Err(err) => {
+            let body = json!({ "error": err.to_string() }).to_string();
+            write_http_response(&mut stream, 400, &body)?;
+            return Ok(());
+        }
+    };
     let path = normalized_path(&request.path);
     if state.inner.verbose {
         eprintln!("http: {} {} -> {}", request.method, request.path, path);
@@ -182,6 +189,9 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
         }
         bytes.extend_from_slice(&buffer[..read]);
     }
+    if bytes.len().saturating_sub(body_start) < content_length {
+        return Err(Error::msg("incomplete request body"));
+    }
     let body = String::from_utf8_lossy(&bytes[body_start..body_start + content_length]).to_string();
     Ok(HttpRequest {
         method,
@@ -215,7 +225,11 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Opti
                 responses.push(response);
             }
         }
-        return Ok(Some(Value::Array(responses)));
+        return if responses.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Value::Array(responses)))
+        };
     }
     handle_json_rpc_message(&request, session_id, state)
 }
@@ -225,11 +239,16 @@ fn handle_json_rpc_message(
     session_id: &str,
     state: AppState,
 ) -> Result<Option<Value>> {
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let id = request.get("id").cloned();
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let is_notification = id.as_ref().is_none_or(Value::is_null);
     if state.inner.verbose {
-        eprintln!("rpc: {method} id={id}");
+        eprintln!("rpc: {method} id={}", id.as_ref().unwrap_or(&Value::Null));
     }
+    if is_notification {
+        return Ok(None);
+    }
+    let id = id.unwrap_or(Value::Null);
     let result = match method {
         "notifications/initialized" => json!({}),
         "initialize" => json!({
@@ -322,8 +341,6 @@ fn clean_args(args: &Value) -> Value {
     if let Some(object) = clean.as_object_mut() {
         object.remove("approval_token");
         object.remove("approve");
-        object.remove("remember_in_session");
-        object.remove("remember_all_risky");
     }
     clean
 }
@@ -386,7 +403,7 @@ fn request_approval(
         .lock()
         .map_err(|_| Error::msg("approval lock poisoned"))?
         .insert(token.clone(), approval.clone());
-    let summary = match tool_name {
+    let mut summary = match tool_name {
         "run_command" => format!(
             "Run command: {}",
             args.get("command").and_then(Value::as_str).unwrap_or("")
@@ -423,6 +440,9 @@ fn request_approval(
         "clean" => "Remove cached snapshots".to_string(),
         _ => "Take screenshot".to_string(),
     };
+    if args.get("remember_all_risky").and_then(Value::as_bool) == Some(true) {
+        summary.push_str(" and remember all risky actions for this session");
+    }
     Ok(json!({
         "content": [{
             "type": "text",
@@ -433,7 +453,8 @@ fn request_approval(
             "approvalRequestId": format!("{session_id}:{token}"),
             "approvalToken": approval.token,
             "toolName": tool_name,
-            "summary": summary
+            "summary": summary,
+            "rememberAllRisky": args.get("remember_all_risky").and_then(Value::as_bool).unwrap_or(false)
         },
         "isError": true
     }))

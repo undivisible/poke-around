@@ -75,7 +75,7 @@ Config is stored at `~/.config/poke-around/config.json`.
 |------|-------------|
 | **full** (default) | All tools, no approval required. |
 | **limited** | Read-only tools plus a curated set of safe commands (`ls`, `cat`, `grep`, `curl`, etc.). |
-| **sandbox** | Broader command support, but writes restricted to `~/Downloads` and `/tmp`. |
+| **sandbox** | Broader command support, with destructive patterns blocked and write/delete/UI mutation tools requiring approval or blocked by policy. |
 
 ```bash
 poke-around --mode sandbox

@@ -60,7 +60,7 @@ fn mcp_batch_should_return_tools_after_initialized_notification() {
 }
 
 #[test]
-fn initialized_notification_without_id_should_return_json_rpc_response() {
+fn initialized_notification_without_id_should_return_no_content() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
     let response = post_json(
@@ -68,9 +68,7 @@ fn initialized_notification_without_id_should_return_json_rpc_response() {
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#""id":null"#));
-    assert!(response.contains(r#""result":{}"#));
+    assert!(response.starts_with("HTTP/1.1 204 No Content"));
 }
 
 #[test]
@@ -88,7 +86,7 @@ fn initialized_request_with_id_should_return_json_rpc_response() {
 }
 
 #[test]
-fn batch_unknown_method_without_id_should_return_json_body() {
+fn batch_unknown_method_without_id_should_return_no_content() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
     let response = post_json(
@@ -96,13 +94,11 @@ fn batch_unknown_method_without_id_should_return_json_body() {
         r#"[{"jsonrpc":"2.0","method":"unknown/notification"}]"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#""id":null"#));
-    assert!(response.contains(r#""error""#));
+    assert!(response.starts_with("HTTP/1.1 204 No Content"));
 }
 
 #[test]
-fn tool_call_without_id_should_return_json_rpc_response() {
+fn tool_call_without_id_should_return_no_content() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
     let response = post_json(
@@ -110,9 +106,29 @@ fn tool_call_without_id_should_return_json_rpc_response() {
         r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"system_info","arguments":{}}}"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#""id":null"#));
-    assert!(response.contains(r#""structuredContent""#));
+    assert!(response.starts_with("HTTP/1.1 204 No Content"));
+}
+
+#[test]
+fn incomplete_body_should_return_bad_request() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
+    stream
+        .write_all(
+            b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{}",
+        )
+        .expect("request should write");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("write side should close");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("response should read");
+
+    assert!(response.starts_with("HTTP/1.1 400 Error"));
+    assert!(response.contains("incomplete request body"));
 }
 
 #[test]
@@ -193,4 +209,54 @@ fn read_image_tool_should_return_mcp_image_content_over_http() {
     assert!(result["structuredContent"].get("base64").is_none());
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn approval_token_should_not_allow_hidden_auto_approve_escalation() {
+    let path =
+        std::env::temp_dir().join(format!("poke-around-approval-{}.txt", std::process::id()));
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let first = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "write_file",
+            "arguments": {
+                "path": path,
+                "content": "first"
+            }
+        }
+    })
+    .to_string();
+    let response = post_json(port, &first);
+    let (_, body) = response
+        .split_once("\r\n\r\n")
+        .expect("response should include body separator");
+    let value: Value = serde_json::from_str(body).expect("response body should parse");
+    let token = value["result"]["structuredContent"]["approvalToken"]
+        .as_str()
+        .expect("approval token should exist");
+    let second = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "write_file",
+            "arguments": {
+                "path": path,
+                "content": "first",
+                "approve": true,
+                "approval_token": token,
+                "remember_all_risky": true
+            }
+        }
+    })
+    .to_string();
+
+    let response = post_json(port, &second);
+
+    assert!(response.contains("AWAITING_APPROVAL"));
+    assert!(!path.exists());
 }
