@@ -5,9 +5,4 @@ docs/.vitepress/cache/
 .DS_Store
 xcuserdata/
 superpowers/
-zig-out/
 target/
-.zig-cache/root
-libapp.a
-root
-.zig-cache/

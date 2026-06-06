@@ -14,6 +14,12 @@ Run Poke Around on your machine, then message Poke from iMessage, Telegram, or S
 
 ## Install
 
+**Install script (macOS / Linux)**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.sh | bash
+```
+
 **Homebrew (macOS / Linux)**
 
 ```bash
@@ -44,7 +50,7 @@ cargo build --release
 
 **Manual download**
 
-Download the latest binary for your platform from [Releases](https://github.com/undivisible/poke-around/releases).
+Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` plus `poke-around-bridge.js` in the same directory.
 
 On macOS, if the binary is blocked by Gatekeeper:
 
@@ -76,11 +82,6 @@ poke-around --mode sandbox
 # or
 POKE_GATE_PERMISSION_MODE=limited poke-around
 ```
-
-## System tray
-
-- **macOS** — native menu bar icon (AppKit)
-- **Linux** — AppIndicator tray icon via `menubar_linux.py` (requires `python3-gi` and `libayatana-appindicator3-0.1`)
 
 ## Running as a service
 

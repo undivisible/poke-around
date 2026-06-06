@@ -7,8 +7,10 @@
     "build:bridge": "bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js && bun -e \"import { createRequire } from 'node:module'; import { cpSync, existsSync } from 'node:fs'; import path from 'node:path'; const require = createRequire(import.meta.url); const pkg = require.resolve('systray2/package.json'); const src = path.join(path.dirname(pkg), 'traybin'); if (existsSync(src)) cpSync(src, 'bridge/dist/traybin', { recursive: true }); else console.warn('systray2 traybin missing; skipping copy');\"",
     "build": "cargo build --workspace",
     "fmt": "cargo fmt --all -- --check",
+    "typecheck": "cargo check --workspace --all-targets --all-features",
     "lint": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "test": "cargo test --workspace --all-features",
+    "test:install": "bash scripts/test-install.sh",
     "release": "bun run build:bridge && cargo build --workspace --release"
   },
   "keywords": [

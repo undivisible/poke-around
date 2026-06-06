@@ -15,7 +15,6 @@ Poke Around is a Rust daemon that starts a local MCP server, launches the bridge
 5. `crates/poke-around/src/agents.rs` — discovers and runs scheduled agent scripts
 6. `crates/poke-around/src/bridge.rs` — launches the Poke SDK bridge process
 7. `bridge/poke-bridge.ts` — TypeScript bridge bundled into `bridge/dist/poke-around-bridge.js`
-8. `src/*.zig` — archived legacy source retained for reference only
 
 ## Commands
 
@@ -24,6 +23,7 @@ cargo build --workspace    # build
 cargo run --bin poke-around # build and run
 cargo test --workspace     # run tests
 bun run build:bridge       # bundle bridge/poke-bridge.ts → bridge/dist/poke-around-bridge.js
+bun run test:install       # validate scripts/install.sh
 bun run release            # build bridge + Rust release binary
 ```
 
@@ -42,16 +42,18 @@ The active daemon targets stable Rust with edition 2024.
 ## Release
 
 Pushing a `v*.*.*` tag triggers `.github/workflows/release.yml`, which builds binaries for
-macOS (arm64, x86_64) and Linux (x86_64) and uploads them to a GitHub release.
+macOS (arm64, x86_64) and Linux (x86_64), packages them with the bridge, and uploads them to a GitHub release.
 The homebrew-tap formula is updated automatically by its own workflow within ~1 hour.
 
 ## Validation
 
 ```bash
 cargo fmt --all -- --check
+cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo build --workspace --release
+bash scripts/test-install.sh
 ```
 
 If a change affects the bridge, rebuild with `bun run build:bridge`.

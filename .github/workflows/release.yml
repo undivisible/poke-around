@@ -28,11 +28,17 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Typecheck
+        run: cargo check --workspace --all-targets --all-features
+
       - name: Lint
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Run tests
         run: cargo test --workspace --all-features
+
+      - name: Install script test
+        run: bash scripts/test-install.sh
 
   # Build the bridge JS once (platform-independent)
   bridge:
@@ -92,7 +98,6 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.rust_target }}/release/poke-around dist/
           cp bridge/dist/poke-around-bridge.js dist/
-          if [ -f src/menubar_linux.py ]; then cp src/menubar_linux.py dist/; fi
           tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .
 
       - uses: actions/upload-artifact@v4

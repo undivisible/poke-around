@@ -30,11 +30,17 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Typecheck
+        run: cargo check --workspace --all-targets --all-features
+
       - name: Lint
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
         run: cargo test --workspace --all-features
+
+      - name: Install script test
+        run: bash scripts/test-install.sh
 
       - name: Build
         run: cargo build --workspace --release
