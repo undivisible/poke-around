@@ -964,7 +964,6 @@ fn system_info(state: &AppState) -> Result<Value> {
 
 fn read_image(args: &Value, state: &AppState) -> Result<Value> {
     let path = path_arg(args, state)?;
-    let data = fs::read(&path)?;
     let mime = match path
         .extension()
         .and_then(|value| value.to_str())
@@ -977,11 +976,11 @@ fn read_image(args: &Value, state: &AppState) -> Result<Value> {
         "pdf" => "application/pdf",
         _ => "application/octet-stream",
     };
-    Ok(ok_json(json!({
+    let metadata = json!({
         "path": path,
-        "mime_type": mime,
-        "base64": base64::engine::general_purpose::STANDARD.encode(data)
-    })))
+        "mime_type": mime
+    });
+    ok_json_with_image(metadata, &path, mime)
 }
 
 fn run_agent(args: &Value) -> Result<Value> {
@@ -1123,6 +1122,24 @@ mod tests {
             response["structuredContent"]["path"].as_str().unwrap(),
             path.to_string_lossy()
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_image_should_return_mcp_image_content() {
+        let path =
+            std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
+        fs::write(&path, [1_u8, 2, 3, 4]).unwrap();
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+
+        let response = read_image(&json!({ "path": path }), &state).unwrap();
+        let content = response["content"].as_array().unwrap();
+
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["mimeType"], "image/png");
+        assert_eq!(content[1]["data"], "AQIDBA==");
+        assert!(response["structuredContent"].get("base64").is_none());
 
         let _ = fs::remove_file(path);
     }

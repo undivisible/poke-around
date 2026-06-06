@@ -1,5 +1,7 @@
 use poke_around::mcp::{AppState, start_server};
 use poke_around::policy::PermissionMode;
+use serde_json::{Value, json};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
@@ -153,4 +155,42 @@ fn mcp_prefixed_request_target_should_return_tools() {
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
     assert!(response.contains(r#""name":"run_command""#));
+}
+
+#[test]
+fn read_image_tool_should_return_mcp_image_content_over_http() {
+    let path = std::env::temp_dir().join(format!(
+        "poke-around-http-read-image-{}.png",
+        std::process::id()
+    ));
+    fs::write(&path, [1_u8, 2, 3, 4]).expect("image fixture should write");
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "read_image",
+            "arguments": { "path": path }
+        }
+    })
+    .to_string();
+    let response = post_json(port, &body);
+    let (_, body) = response
+        .split_once("\r\n\r\n")
+        .expect("response should include body separator");
+    let value: Value = serde_json::from_str(body).expect("response body should parse");
+    let result = &value["result"];
+    let content = result["content"]
+        .as_array()
+        .expect("content should be array");
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["mimeType"], "image/png");
+    assert_eq!(content[1]["data"], "AQIDBA==");
+    assert!(result["structuredContent"].get("base64").is_none());
+
+    let _ = fs::remove_file(path);
 }
