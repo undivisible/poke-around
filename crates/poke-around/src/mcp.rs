@@ -72,7 +72,7 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         .get("mcp-session-id")
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    let body = if request.method == "GET" && request.path == "/health" {
+    let body = if request.method == "GET" && matches!(request.path.as_str(), "/health" | "/mcp") {
         json!({ "ok": true })
     } else if request.method == "POST" && request.path == "/mcp" {
         handle_json_rpc(&request.body, &session_id, state)?

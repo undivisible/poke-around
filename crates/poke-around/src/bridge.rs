@@ -1,4 +1,5 @@
 use crate::{Error, Result};
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -12,7 +13,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub fn start(mcp_url: &str) -> Result<Self> {
+    pub fn start(mcp_url: &str, mode: &str) -> Result<Self> {
         let bridge_path = resolve_bridge_path()?;
         let runtime = runtime_for(&bridge_path);
         let mut child = Command::new(runtime)
@@ -20,6 +21,8 @@ impl Bridge {
             .arg("tunnel")
             .arg("--mcp-url")
             .arg(mcp_url)
+            .arg("--mode")
+            .arg(mode)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -29,7 +32,7 @@ impl Bridge {
             thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines().map_while(std::result::Result::ok) {
-                    eprintln!("{line}");
+                    print_bridge_event(&line);
                 }
             });
         }
@@ -67,6 +70,66 @@ impl Bridge {
         let _ = self.child.wait();
         Ok(())
     }
+}
+
+fn print_bridge_event(line: &str) {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        eprintln!("{line}");
+        return;
+    };
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    match event_type {
+        "webhook_ready" => log_status("Webhook ready."),
+        "connected" => {
+            let connection_id = value
+                .get("connectionId")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let tunnel_url = value.get("tunnelUrl").and_then(Value::as_str);
+            match tunnel_url {
+                Some(url) => log_status(&format!("Tunnel connected ({connection_id}) -> {url}")),
+                None => log_status(&format!("Tunnel connected ({connection_id})")),
+            }
+            log_status("Ready - your Poke agent can now access this machine.");
+        }
+        "tools_synced" => {
+            let count = value.get("count").and_then(Value::as_u64).unwrap_or(0);
+            log_status(&format!("Tools synced: {count}"));
+        }
+        "disconnected" => log_status("Tunnel disconnected."),
+        "auth_required" => {
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Authentication required.");
+            log_status(message);
+        }
+        "webhook_sent" => log_status("Notified Poke agent about connection."),
+        "webhook_error" | "error" => {
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("bridge error");
+            log_status(&format!("Bridge error: {message}"));
+        }
+        _ => eprintln!("{line}"),
+    }
+}
+
+fn log_status(message: &str) {
+    let now = chrono_like_time();
+    eprintln!("[{now}] {message}");
+}
+
+fn chrono_like_time() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() % 86_400)
+        .unwrap_or(0);
+    let hour = seconds / 3_600;
+    let minute = (seconds % 3_600) / 60;
+    let second = seconds % 60;
+    format!("{hour:02}:{minute:02}:{second:02}")
 }
 
 impl Drop for Bridge {

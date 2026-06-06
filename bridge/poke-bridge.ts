@@ -104,6 +104,7 @@ function getArg(flag: string): string | null {
 }
 
 const mode = argv[0] ?? "tunnel";
+const permissionMode = getArg("--mode") ?? "full";
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const RESTART_AFTER_DISCONNECT_MS = 15_000;
 const MAX_CONN_HISTORY = 10;
@@ -164,6 +165,41 @@ async function runTunnel(): Promise<void> {
     }
   };
 
+  const buildAccessModeMessage = (): string => {
+    switch (permissionMode) {
+      case "limited":
+        return "Access mode: Limited. You can read files, list directories, and run safe read-only commands. You cannot write files, take screenshots, or run other commands.";
+      case "sandbox":
+        return "Access mode: Sandbox. You can read files, list directories, and run approved sandbox commands. Destructive or disallowed actions require approval or are blocked.";
+      default:
+        return "Access mode: Full. You can run shell commands, read files, list directories, take screenshots, and use computer-control tools. Destructive actions still require approval.";
+    }
+  };
+
+  const notifyPoke = async (connectionId: string, tunnelUrl?: string) => {
+    if (!webhookUrl || !webhookToken) return;
+    try {
+      await poke.sendWebhook({
+        webhookUrl,
+        webhookToken,
+        data: {
+          message:
+            `Poke Around is connected to this computer (tunnel: ${connectionId}). ` +
+            `${tunnelUrl ? `Tunnel URL: ${tunnelUrl}. ` : ""}` +
+            `${buildAccessModeMessage()} ` +
+            `Use the Poke Around MCP tools whenever I ask you to do something on this machine.`,
+          connectionId,
+          tunnelUrl,
+          mode: permissionMode,
+          integration: "poke-around",
+        },
+      });
+      emit({ type: "webhook_sent" });
+    } catch (err) {
+      emit({ type: "webhook_error", message: String(err) });
+    }
+  };
+
   const cleanupTunnel = async () => {
     clearHeartbeat();
     clearTunnelRestart();
@@ -217,13 +253,14 @@ async function runTunnel(): Promise<void> {
       activeTunnel = tunnel;
 
       tunnel.on("connected", (info) => {
-        emit({ type: "connected", connectionId: info.connectionId });
+        emit({ type: "connected", connectionId: info.connectionId, tunnelUrl: info.tunnelUrl });
         recordConnection(info.connectionId);
         clearTunnelRestart();
         clearHeartbeat();
         heartbeatTimer = setInterval(() => {
           emit({ type: "heartbeat", tunnelName, ts: Date.now() });
         }, HEARTBEAT_INTERVAL_MS);
+        void notifyPoke(info.connectionId, info.tunnelUrl);
       });
       tunnel.on("disconnected", () => {
         emit({ type: "disconnected" });

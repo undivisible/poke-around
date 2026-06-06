@@ -14,4 +14,14 @@ describe("bridge tunnel lifecycle", () => {
     expect(source).toContain("webhookUrl, webhookToken");
     expect(source).toContain('/mcp/connections/${id}');
   });
+
+  test("notifies Poke after a fresh tunnel connection", () => {
+    expect(source).toContain("const notifyPoke = async");
+    expect(source).toContain("void notifyPoke(info.connectionId, info.tunnelUrl)");
+    expect(source).toContain("Use the Poke Around MCP tools");
+  });
+
+  test("emits tunnel url with connection events", () => {
+    expect(source).toContain('tunnelUrl: info.tunnelUrl');
+  });
 });
