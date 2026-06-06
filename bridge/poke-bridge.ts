@@ -125,17 +125,18 @@ async function runTunnel(): Promise<void> {
 
   // ── Webhook: create once, cache forever ─────────────────────────────────
   // poke-gate pattern: read from state.json; only call createWebhook if missing.
-  let { webhookUrl, webhookToken } = readState() as {
+  let { webhookUrl, webhookToken, webhookName } = readState() as {
     webhookUrl?: string;
     webhookToken?: string;
+    webhookName?: string;
   };
 
-  if (!webhookUrl || !webhookToken) {
+  if (!webhookUrl || !webhookToken || webhookName !== tunnelName) {
     log("Creating webhook (first run)…");
     const wh = await poke.createWebhook({ condition: tunnelName, action: tunnelName });
     webhookUrl = wh.webhookUrl;
     webhookToken = wh.webhookToken;
-    patchState({ webhookUrl, webhookToken });
+    patchState({ webhookUrl, webhookToken, webhookName: tunnelName });
   } else {
     log("Reusing cached webhook.");
   }

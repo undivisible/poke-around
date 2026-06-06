@@ -15,6 +15,11 @@ describe("bridge tunnel lifecycle", () => {
     expect(source).toContain('/mcp/connections/${id}');
   });
 
+  test("recreates cached webhook when tunnel name changes", () => {
+    expect(source).toContain("webhookName !== tunnelName");
+    expect(source).toContain("webhookName: tunnelName");
+  });
+
   test("notifies Poke after a fresh tunnel connection", () => {
     expect(source).toContain("const notifyPoke = async");
     expect(source).toContain("void notifyPoke(info.connectionId, info.tunnelUrl)");
