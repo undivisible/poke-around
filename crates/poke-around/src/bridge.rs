@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 pub struct Bridge {
     child: Child,
@@ -50,9 +51,17 @@ impl Bridge {
 
     pub fn stop(&mut self) -> Result<()> {
         if let Ok(mut guard) = self.writer.lock()
-            && let Some(stdin) = guard.as_mut()
+            && let Some(mut stdin) = guard.take()
         {
             let _ = writeln!(stdin, "{{\"type\":\"stop\"}}");
+            drop(stdin);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if self.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(50));
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
