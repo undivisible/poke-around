@@ -80,18 +80,22 @@ async function cleanupStaleConnections(
   if (ids.size === 0) return;
 
   log(`Cleaning up ${ids.size} old connection(s)…`);
-  const base = process.env.POKE_API ?? "https://poke.com/api/v1";
   for (const id of ids) {
-    try {
-      await fetch(`${base}/mcp/connections/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch {}
+    await deleteConnection(token, id);
   }
 
   const { webhookUrl, webhookToken } = webhook;
   patchState({ webhookUrl, webhookToken, connectionId: undefined, connectionHistory: [] });
+}
+
+async function deleteConnection(token: string, connectionId: string): Promise<void> {
+  const base = process.env.POKE_API ?? "https://poke.com/api/v1";
+  try {
+    await fetch(`${base}/mcp/connections/${connectionId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {}
 }
 
 // ── arg parsing ─────────────────────────────────────────────────────────────
@@ -199,12 +203,16 @@ async function runTunnel(): Promise<void> {
     }
   };
 
-  const cleanupTunnel = async () => {
+  const cleanupTunnel = async (deleteRemote: boolean) => {
+    const connectionId = activeTunnel?.info?.connectionId;
     clearHeartbeat();
     clearTunnelRestart();
     if (activeTunnel) {
       try { await activeTunnel.stop(); } catch {}
       activeTunnel = null;
+    }
+    if (deleteRemote && connectionId) {
+      await deleteConnection(token, connectionId);
     }
   };
 
@@ -213,7 +221,7 @@ async function runTunnel(): Promise<void> {
   // Poke's backend and doesn't accumulate stale instances across restarts.
   const sigHandler = () => {
     stopRequested = true;
-    cleanupTunnel().finally(() => process.exit(0));
+    cleanupTunnel(true).finally(() => process.exit(0));
   };
   process.once("SIGTERM", sigHandler);
   process.once("SIGINT", sigHandler);
@@ -233,7 +241,7 @@ async function runTunnel(): Promise<void> {
     restartTimer = setTimeout(async () => {
       restartTimer = null;
       if (stopRequested) return;
-      await cleanupTunnel();
+      await cleanupTunnel(false);
       await startFreshTunnel();
     }, RESTART_AFTER_DISCONNECT_MS);
   };
@@ -247,7 +255,7 @@ async function runTunnel(): Promise<void> {
         url: mcpUrl,
         name: tunnelName,
         token,
-        cleanupOnStop: true,
+        cleanupOnStop: false,
       });
       activeTunnel = tunnel;
 
@@ -325,7 +333,7 @@ async function runTunnel(): Promise<void> {
       } else if (cmd.type === "stop") {
         log("Stop requested.");
         stopRequested = true;
-        await cleanupTunnel();
+        await cleanupTunnel(true);
         process.exit(0);
       }
     } catch {
@@ -336,7 +344,7 @@ async function runTunnel(): Promise<void> {
   rl.on("close", () => {
     // parent closed stdin → shut down
     stopRequested = true;
-    cleanupTunnel().finally(() => process.exit(0));
+    cleanupTunnel(true).finally(() => process.exit(0));
   });
 }
 

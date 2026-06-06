@@ -9,10 +9,16 @@ describe("bridge tunnel lifecycle", () => {
     expect(source).toContain("scheduleTunnelRestart");
   });
 
+  test("does not delete remote connection on transient tunnel restart", () => {
+    expect(source).toContain("cleanupOnStop: false");
+    expect(source).toContain("await cleanupTunnel(false)");
+    expect(source).toContain("await cleanupTunnel(true)");
+  });
+
   test("cleans stale connections without dropping webhook credentials", () => {
     expect(source).toContain("async function cleanupStaleConnections");
     expect(source).toContain("webhookUrl, webhookToken");
-    expect(source).toContain('/mcp/connections/${id}');
+    expect(source).toContain('/mcp/connections/${connectionId}');
   });
 
   test("recreates cached webhook when tunnel name changes", () => {
