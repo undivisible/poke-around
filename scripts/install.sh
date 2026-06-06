@@ -3,10 +3,11 @@ set -euo pipefail
 
 REPO="undivisible/poke-around"
 BIN="${POKE_AROUND_BIN:-/usr/local/bin/poke-around}"
-VERSION="${1:-v0.3.15}"
+VERSION="${1:-v0.3.16}"
 
 case "$VERSION" in
-  0.3.15|latest) VERSION="v0.3.15" ;;
+  0.3.16|latest) VERSION="v0.3.16" ;;
+  0.3.15) VERSION="v0.3.15" ;;
   0.3.14) VERSION="v0.3.14" ;;
   0.3.13) VERSION="v0.3.13" ;;
   0.3.12) VERSION="v0.3.12" ;;
@@ -22,6 +23,10 @@ esac
 
 sha256_for_asset() {
   case "$1:$2" in
+    v0.3.16:poke-around-macos-aarch64.tar.gz) printf '%s\n' "552e459d7610aa4bba1a05bef8ac84a30dd06feb369de8c0778a7876ec4676d0" ;;
+    v0.3.16:poke-around-macos-x86_64.tar.gz) printf '%s\n' "29b31e10b3a770941b1d154f457b4fa875f27d611096ea5971acc0aff09dc2b8" ;;
+    v0.3.16:poke-around-linux-x86_64.tar.gz) printf '%s\n' "d3a5ffe9e64fe39ef2bb840fc048b2ad93cb1f8cefeec371b1dd3fee170b3444" ;;
+    v0.3.16:poke-around-linux-aarch64.tar.gz) printf '%s\n' "4ecd78c29674ea50abed767935cf8935d3b7d813a31b0bc04b27b5d5c81b2802" ;;
     v0.3.15:poke-around-macos-aarch64.tar.gz) printf '%s\n' "883505dfcb25df27580af0abb30d25b52209faa9e47275e5f6a31365deaf850a" ;;
     v0.3.15:poke-around-macos-x86_64.tar.gz) printf '%s\n' "e1e6382ffa1acfa74645727065c4966176920d115e29975491d757ff1f73a8c1" ;;
     v0.3.15:poke-around-linux-x86_64.tar.gz) printf '%s\n' "13ee699a45a1a8b097b0c09e88b4657253950e810af0700fd20e8f49944941b3" ;;
