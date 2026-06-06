@@ -27,6 +27,9 @@ jobs:
       - name: Build bridge
         run: bun run build:bridge
 
+      - name: Test bridge
+        run: bun run test:bridge
+
       - name: Format
         run: cargo fmt --all -- --check
 

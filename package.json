@@ -10,6 +10,7 @@
     "typecheck": "cargo check --workspace --all-targets --all-features",
     "lint": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "test": "cargo test --workspace --all-features",
+    "test:bridge": "bun test bridge/poke-bridge.test.ts",
     "test:install": "bash scripts/test-install.sh",
     "release": "bun run build:bridge && cargo build --workspace --release"
   },
