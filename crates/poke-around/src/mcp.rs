@@ -81,7 +81,7 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
     } else if request.method == "GET" && matches!(path.as_str(), "/" | "/health" | "/mcp") {
         Some(json!({ "ok": true }))
     } else if request.method == "POST" && matches!(path.as_str(), "/" | "/mcp") {
-        handle_json_rpc(&request.body, &session_id, state)?
+        handle_json_rpc(&request.body, &session_id, state.clone())?
     } else {
         write_http_response(
             &mut stream,
@@ -91,8 +91,19 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         return Ok(());
     };
     match response {
-        Some(body) => write_http_response(&mut stream, 200, &body.to_string())?,
-        None => write_http_response(&mut stream, 204, "")?,
+        Some(body) => {
+            let body = body.to_string();
+            if state.inner.verbose {
+                eprintln!("http: response 200 bytes={}", body.len());
+            }
+            write_http_response(&mut stream, 200, &body)?;
+        }
+        None => {
+            if state.inner.verbose {
+                eprintln!("http: response 204 bytes=0");
+            }
+            write_http_response(&mut stream, 204, "")?;
+        }
     }
     Ok(())
 }
@@ -201,7 +212,7 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Opti
                 responses.push(response);
             }
         }
-        return Ok((!responses.is_empty()).then_some(Value::Array(responses)));
+        return Ok(Some(Value::Array(responses)));
     }
     handle_json_rpc_message(&request, session_id, state)
 }
@@ -211,14 +222,10 @@ fn handle_json_rpc_message(
     session_id: &str,
     state: AppState,
 ) -> Result<Option<Value>> {
-    let id = request.get("id").cloned();
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     if state.inner.verbose {
-        let logged_id = id.as_ref().unwrap_or(&Value::Null);
-        eprintln!("rpc: {method} id={logged_id}");
-    }
-    if method == "notifications/initialized" && id.is_none() {
-        return Ok(None);
+        eprintln!("rpc: {method} id={id}");
     }
     let result = match method {
         "notifications/initialized" => json!({}),
@@ -247,18 +254,12 @@ fn handle_json_rpc_message(
         }
         "ping" => json!({}),
         _ => {
-            let Some(id) = id else {
-                return Ok(None);
-            };
             return Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "error": { "code": -32601, "message": format!("Unknown method: {method}") }
             })));
         }
-    };
-    let Some(id) = id else {
-        return Ok(None);
     };
     Ok(Some(
         json!({ "jsonrpc": "2.0", "id": id, "result": result }),

@@ -58,7 +58,7 @@ fn mcp_batch_should_return_tools_after_initialized_notification() {
 }
 
 #[test]
-fn initialized_notification_without_id_should_return_no_content() {
+fn initialized_notification_without_id_should_return_json_rpc_response() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
     let response = post_json(
@@ -66,7 +66,9 @@ fn initialized_notification_without_id_should_return_no_content() {
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 204 No Content"));
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.contains(r#""id":null"#));
+    assert!(response.contains(r#""result":{}"#));
 }
 
 #[test]
@@ -81,6 +83,34 @@ fn initialized_request_with_id_should_return_json_rpc_response() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
     assert!(response.contains(r#""id":3"#));
     assert!(response.contains(r#""result":{}"#));
+}
+
+#[test]
+fn batch_unknown_method_without_id_should_return_json_body() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json(
+        port,
+        r#"[{"jsonrpc":"2.0","method":"unknown/notification"}]"#,
+    );
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.contains(r#""id":null"#));
+    assert!(response.contains(r#""error""#));
+}
+
+#[test]
+fn tool_call_without_id_should_return_json_rpc_response() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json(
+        port,
+        r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"system_info","arguments":{}}}"#,
+    );
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.contains(r#""id":null"#));
+    assert!(response.contains(r#""structuredContent""#));
 }
 
 #[test]
