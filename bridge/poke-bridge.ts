@@ -123,26 +123,6 @@ const permissionMode = getArg("--mode") ?? "full";
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const RESTART_AFTER_DISCONNECT_MS = 15_000;
 const MAX_CONN_HISTORY = 10;
-const PENDING_TUNNEL_ACTIVATION_TIMEOUT_MS = 5_000;
-
-type PendingTunnel = PokeTunnel & {
-  connectionId?: string | null;
-  activateTunnel?: () => Promise<void>;
-};
-
-async function activatePendingTunnel(tunnel: PokeTunnel): Promise<void> {
-  const internal = tunnel as PendingTunnel;
-  const deadline = Date.now() + PENDING_TUNNEL_ACTIVATION_TIMEOUT_MS;
-  while (!internal.connectionId && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  if (!internal.connectionId || typeof internal.activateTunnel !== "function") return;
-  try {
-    await internal.activateTunnel.call(internal);
-  } catch (err) {
-    emit({ type: "error", message: `pending tunnel activation failed: ${formatError(err)}` });
-  }
-}
 
 async function localToolCount(mcpUrl: string): Promise<number> {
   try {
@@ -339,9 +319,7 @@ async function runTunnel(): Promise<void> {
         })();
       });
 
-      const startPromise = tunnel.start();
-      void activatePendingTunnel(tunnel);
-      await startPromise;
+      await tunnel.start();
       await (tunnel as unknown as { syncTools(): Promise<void> }).syncTools();
       log(`Tunnel started → ${mcpUrl}`);
     } catch (err) {

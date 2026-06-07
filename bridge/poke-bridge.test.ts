@@ -42,9 +42,9 @@ describe("bridge tunnel lifecycle", () => {
     expect(source).toContain(".syncTools();");
   });
 
-  test("activates pending tunnel before first upstream connection", () => {
-    expect(source).toContain("activatePendingTunnel(tunnel)");
-    expect(source).toContain("internal.activateTunnel.call(internal)");
+  test("does not call private sdk tunnel activation methods", () => {
+    expect(source).not.toContain("activatePendingTunnel(tunnel)");
+    expect(source).not.toContain("internal.activateTunnel.call(internal)");
   });
 
   test("reports local tool count when sdk sync count is wrong", () => {
