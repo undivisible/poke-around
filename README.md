@@ -54,6 +54,20 @@ cargo build --release
 ./target/release/poke-around
 ```
 
+**Native Rust bridge branch**
+
+```bash
+cargo install --git https://github.com/undivisible/poke-around.git --branch codex/rust-native-bridge poke-around
+```
+
+To test the branch from a checkout:
+
+```bash
+git clone --branch codex/rust-native-bridge https://github.com/undivisible/poke-around.git
+cd poke-around
+cargo run --release -- --mode full
+```
+
 **Manual download**
 
 Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` or `poke-around.exe` plus `poke-around-bridge.js` in the same directory.
