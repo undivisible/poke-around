@@ -34,8 +34,11 @@ require_literal 'TMP_ARCHIVE="$(mktemp'
 require_literal 'TMP_DIR="$(mktemp -d'
 require_literal 'trap '\''rm -f "$TMP_ARCHIVE" "$TMP_INSTALL"; rm -rf "$TMP_DIR"'\'' EXIT'
 require_regex 'curl -fsSL -o "\$TMP_ARCHIVE" "\$URL"'
-require_literal 'sha256_for_asset()'
-require_literal 'v0.3.16:poke-around-linux-aarch64.tar.gz'
+require_literal 'fetch_release_json()'
+require_literal 'json_tag_name()'
+require_literal 'json_asset_digest()'
+require_literal 'api_url="https://api.github.com/repos/$REPO/releases/latest"'
+require_literal 'api_url="https://api.github.com/repos/$REPO/releases/tags/$version"'
 require_literal 'file_sha256()'
 require_literal 'Checksum mismatch for $ASSET'
 require_literal 'URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"'
@@ -94,17 +97,37 @@ cat > "$MOCK_BIN/curl" <<'MOCK'
 #!/bin/bash
 set -euo pipefail
 out=""
+url=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o)
       out="$2"
       shift 2
       ;;
+    -H)
+      shift 2
+      ;;
     *)
+      url="$1"
       shift
       ;;
   esac
 done
+if [[ "$url" == "https://api.github.com/repos/undivisible/poke-around/releases/latest" ]]; then
+  cat <<'JSON'
+{
+  "tag_name": "v0.3.20",
+  "assets": [
+    {
+      "name": "poke-around-macos-aarch64.tar.gz",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "tarball_url": "https://api.github.com/repos/undivisible/poke-around/tarball/v0.3.20"
+}
+JSON
+  exit 0
+fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/poke-around-curl.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 printf '#!/bin/sh\necho installed\n' > "$tmp/poke-around"
@@ -117,7 +140,7 @@ chmod +x "$MOCK_BIN/curl"
 cat > "$MOCK_BIN/shasum" <<'MOCK'
 #!/bin/bash
 set -euo pipefail
-printf '%s  %s\n' "552e459d7610aa4bba1a05bef8ac84a30dd06feb369de8c0778a7876ec4676d0" "${@: -1}"
+printf '%s  %s\n' "1111111111111111111111111111111111111111111111111111111111111111" "${@: -1}"
 MOCK
 chmod +x "$MOCK_BIN/shasum"
 
