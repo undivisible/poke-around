@@ -57,12 +57,12 @@ jobs:
         working-directory: bridge
 
       - name: Bundle bridge
-        run: bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js
+        run: bun run build:bridge
 
       - uses: actions/upload-artifact@v4
         with:
           name: bridge-js
-          path: bridge/dist/poke-around-bridge.js
+          path: bridge/dist
 
   # Build native binary per platform
   build:
@@ -107,7 +107,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.rust_target }}/release/poke-around dist/
-          cp bridge/dist/poke-around-bridge.js dist/
+          cp -R bridge/dist/. dist/
           tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .
 
       - name: Package
@@ -116,7 +116,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target/${{ matrix.rust_target }}/release/poke-around.exe dist/
-          Copy-Item bridge/dist/poke-around-bridge.js dist/
+          Copy-Item bridge/dist/* dist/ -Recurse
           Compress-Archive -Path dist/* -DestinationPath poke-around-${{ matrix.name }}.zip -Force
 
       - uses: actions/upload-artifact@v4
