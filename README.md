@@ -43,9 +43,7 @@ Requires stable [Rust](https://www.rust-lang.org/tools/install) and [Bun](https:
 ```bash
 git clone https://github.com/undivisible/poke-around.git
 cd poke-around
-bun run build:bridge
-cargo build --release
-./target/release/poke-around
+./scripts/install.sh
 ```
 
 **Manual download**

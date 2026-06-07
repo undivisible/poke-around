@@ -3,75 +3,81 @@ set -euo pipefail
 
 REPO="undivisible/poke-around"
 BIN="${POKE_AROUND_BIN:-/usr/local/bin/poke-around}"
-VERSION="${1:-v0.3.15}"
+VERSION="${1:-latest}"
+
+install_file() {
+  local mode="$1"
+  local src="$2"
+  local dest="$3"
+  local dir
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  if [[ -w "$dir" && ( ! -e "$dest" || -w "$dest" ) ]]; then
+    install -m "$mode" "$src" "$dest"
+  else
+    sudo install -m "$mode" "$src" "$dest"
+  fi
+}
+
+install_from_repo() {
+  local root="$1"
+  local install_dir
+  install_dir="$(dirname "$BIN")"
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo is required to install from a local checkout" >&2
+    exit 1
+  fi
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "bun is required to build the bridge from a local checkout" >&2
+    exit 1
+  fi
+  echo " Building poke-around from local checkout..."
+  (cd "$root" && bun run build:bridge && cargo build --workspace --release)
+  install_file 755 "$root/target/release/poke-around" "$BIN"
+  install_file 644 "$root/bridge/dist/poke-around-bridge.js" "$install_dir/poke-around-bridge.js"
+  if [[ -d "$root/bridge/dist/traybin" ]]; then
+    if [[ -w "$install_dir" ]]; then
+      rm -rf "$install_dir/traybin"
+      cp -R "$root/bridge/dist/traybin" "$install_dir/traybin"
+    else
+      sudo rm -rf "$install_dir/traybin"
+      sudo cp -R "$root/bridge/dist/traybin" "$install_dir/traybin"
+    fi
+  fi
+  echo " Installed to $BIN"
+  echo " Run: poke-around --help"
+}
+
+fetch_release_json() {
+  local version="$1"
+  local api_url
+  if [[ "$version" == "latest" ]]; then
+    api_url="https://api.github.com/repos/$REPO/releases/latest"
+  else
+    api_url="https://api.github.com/repos/$REPO/releases/tags/$version"
+  fi
+  curl -fsSL -H "Accept: application/vnd.github+json" "$api_url"
+}
+
+json_tag_name() {
+  sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+json_asset_digest() {
+  local asset="$1"
+  ASSET_NAME="$asset" perl -0ne '
+    if (/"name"\s*:\s*"\Q$ENV{ASSET_NAME}\E"(?:(?!"browser_download_url").)*"digest"\s*:\s*"sha256:([0-9a-f]{64})"/s) {
+      print "$1\n";
+      exit 0;
+    }
+  '
+}
 
 case "$VERSION" in
-  0.3.15|latest) VERSION="v0.3.15" ;;
-  0.3.14) VERSION="v0.3.14" ;;
-  0.3.13) VERSION="v0.3.13" ;;
-  0.3.12) VERSION="v0.3.12" ;;
-  0.3.11) VERSION="v0.3.11" ;;
-  0.3.10) VERSION="v0.3.10" ;;
-  0.3.8) VERSION="v0.3.8" ;;
-  0.3.7) VERSION="v0.3.7" ;;
-  0.3.6) VERSION="v0.3.6" ;;
-  0.3.5) VERSION="v0.3.5" ;;
-  0.3.4) VERSION="v0.3.4" ;;
-  0.3.2) VERSION="v0.3.2" ;;
+  latest) ;;
+  v*) ;;
+  *) VERSION="v$VERSION" ;;
 esac
-
-sha256_for_asset() {
-  case "$1:$2" in
-    v0.3.15:poke-around-macos-aarch64.tar.gz) printf '%s\n' "883505dfcb25df27580af0abb30d25b52209faa9e47275e5f6a31365deaf850a" ;;
-    v0.3.15:poke-around-macos-x86_64.tar.gz) printf '%s\n' "e1e6382ffa1acfa74645727065c4966176920d115e29975491d757ff1f73a8c1" ;;
-    v0.3.15:poke-around-linux-x86_64.tar.gz) printf '%s\n' "13ee699a45a1a8b097b0c09e88b4657253950e810af0700fd20e8f49944941b3" ;;
-    v0.3.15:poke-around-linux-aarch64.tar.gz) printf '%s\n' "1da5d5c0c6626714bd1352583b363afaf4dd73c47ffeb4d00f0407633e918ec7" ;;
-    v0.3.14:poke-around-macos-aarch64.tar.gz) printf '%s\n' "01af7fa785cdc606527eb5d536c7ba339db756322aa2ec9c7b6df7e342b446d3" ;;
-    v0.3.14:poke-around-macos-x86_64.tar.gz) printf '%s\n' "047f7c9d71700acb52d0c5ae447cf8d66475efd4c203b4ed67dfc34d9bb4e7c7" ;;
-    v0.3.14:poke-around-linux-x86_64.tar.gz) printf '%s\n' "290bb7b7b61e0086239be17a1265027c39db94fc53d389d1fe72333d40e40fc4" ;;
-    v0.3.14:poke-around-linux-aarch64.tar.gz) printf '%s\n' "ef8ea79fa03277e30a435c2c88cfb299996bbfb300270dbe3de0b8113776ef5e" ;;
-    v0.3.13:poke-around-macos-aarch64.tar.gz) printf '%s\n' "f678a5b072c5a55092d706cbe4b9b09b6c8779b349a03f491b79cfe2f197e0ef" ;;
-    v0.3.13:poke-around-macos-x86_64.tar.gz) printf '%s\n' "1900f6ccbb5ae38d4b622813104cc70df3a0bcbdaf16cd8774e26968e60e94f8" ;;
-    v0.3.13:poke-around-linux-x86_64.tar.gz) printf '%s\n' "e28f62723e094eab7d5ad16e1d79d765016dcd32a4da8f3c352022690c6a0df3" ;;
-    v0.3.13:poke-around-linux-aarch64.tar.gz) printf '%s\n' "f32731a3898b316e2eb30f73222df09c06c2c365cd3b067c7acb55aaa7fe4fb2" ;;
-    v0.3.12:poke-around-macos-aarch64.tar.gz) printf '%s\n' "6b8112d882e9d8c9920766a6e88aec4b1b50edc6c7777d1fe0c70f3bf32715ff" ;;
-    v0.3.12:poke-around-macos-x86_64.tar.gz) printf '%s\n' "75ad09bda8fc6a8afe5581cd503cf2bb8c08e23da2d5c6c81f41f3590982a5b3" ;;
-    v0.3.12:poke-around-linux-x86_64.tar.gz) printf '%s\n' "6e37b0670a07ee153661d03d4bab9097c3973a4924f4170c33115a3c5d05ef49" ;;
-    v0.3.12:poke-around-linux-aarch64.tar.gz) printf '%s\n' "19c597b48fa6357280f904dc3257e03c2b59f0333b9d7a0188527d75905ad6aa" ;;
-    v0.3.11:poke-around-macos-aarch64.tar.gz) printf '%s\n' "c1379e85f28da20260182dbe92fbb8aba01e9375bcdbba95b98c97643ebe0cd8" ;;
-    v0.3.11:poke-around-macos-x86_64.tar.gz) printf '%s\n' "2eb25a545a49f63e4698dd299c5c5e2dc97de702854266d6e128439f5d5afb9d" ;;
-    v0.3.11:poke-around-linux-x86_64.tar.gz) printf '%s\n' "c0c64a06b4ae42623d407f7c25fb335930e5a8f0e3becc1c9accf04a023da580" ;;
-    v0.3.11:poke-around-linux-aarch64.tar.gz) printf '%s\n' "975b4ddeacb48484c5c2639b0e7ce632e4eb73ae66a6e13422239a2bc9719a1d" ;;
-    v0.3.10:poke-around-macos-aarch64.tar.gz) printf '%s\n' "72f103d8f5572ff7a3c740afe6c28a704d9f5e19dba929f663706c90e901b7f9" ;;
-    v0.3.10:poke-around-macos-x86_64.tar.gz) printf '%s\n' "4ca4d1f2580b0e6657016f66e24fb4626b41da804bfb938aa74324fb74d986dd" ;;
-    v0.3.10:poke-around-linux-x86_64.tar.gz) printf '%s\n' "d0384d5f98fe739a98892a60ceec14deb57b5979e3269c8ae725f78667c7ca4b" ;;
-    v0.3.10:poke-around-linux-aarch64.tar.gz) printf '%s\n' "86c553f941075c8cf7c56ded1e37dea03f9c938997e66fbe60d07871ffa7fade" ;;
-    v0.3.8:poke-around-macos-aarch64.tar.gz) printf '%s\n' "22ad537012c933824608d315f507ab83f66a5c0eaa71f6b3de6ca7662795af62" ;;
-    v0.3.8:poke-around-macos-x86_64.tar.gz) printf '%s\n' "f7c95be9549e6efd1dbaf712ba122932c988ded010ef5a535e1f03c996a80be7" ;;
-    v0.3.8:poke-around-linux-x86_64.tar.gz) printf '%s\n' "104c9fd5175cdcf26a8477f97484361a7b399cf7eb6581673933f342e52a3a0d" ;;
-    v0.3.8:poke-around-linux-aarch64.tar.gz) printf '%s\n' "a428bb54d3530e0cff54ff266afe6f03449bdd76e3be12cf116ae95cc5ba0ce3" ;;
-    v0.3.7:poke-around-macos-aarch64.tar.gz) printf '%s\n' "bd654ee2099c10b3c14bdfa28b20e5073a551d830054e2c1de219b8773bb79fe" ;;
-    v0.3.7:poke-around-macos-x86_64.tar.gz) printf '%s\n' "8ce41bdcc5304922d27576f805c891bbde2c9def09289adbc43f3d79e5471eb5" ;;
-    v0.3.7:poke-around-linux-x86_64.tar.gz) printf '%s\n' "6263a560e6f03ddbc702bf05e86d231cb7dc7129236c22fc3d9355aeaefa2674" ;;
-    v0.3.7:poke-around-linux-aarch64.tar.gz) printf '%s\n' "35fa12a6edbacf72fb4a3e8e1dcc6972b182459406a17136124b18db5db26fbd" ;;
-    v0.3.6:poke-around-macos-aarch64.tar.gz) printf '%s\n' "6d73ad299294cc4e0a97b30aaeb61b7602ca4f7c25f97f20ae12d52ff10bbe25" ;;
-    v0.3.6:poke-around-macos-x86_64.tar.gz) printf '%s\n' "f5c8ef13f6df040829c3e827feb97af7be3e0c74006d8c5c15a6fdd55075db16" ;;
-    v0.3.6:poke-around-linux-x86_64.tar.gz) printf '%s\n' "41b322f3ec8d6290ffe0cd979ac25795e9b27f6a5a8c14afbbb9fe56c8e97c58" ;;
-    v0.3.6:poke-around-linux-aarch64.tar.gz) printf '%s\n' "32c43de820083098474d1bfacc0f27c3b595b78a720d1f9d6ed2eb773c645823" ;;
-    v0.3.5:poke-around-macos-aarch64.tar.gz) printf '%s\n' "95525a554f37132c9e75fb5b6e31b90241f94faacbb8b773251ba50ac907ea0a" ;;
-    v0.3.5:poke-around-macos-x86_64.tar.gz) printf '%s\n' "f45ce156ebe2b8a7090b140834c6804780a43c3eadb103cb54903d396bbfa5ba" ;;
-    v0.3.5:poke-around-linux-x86_64.tar.gz) printf '%s\n' "97377e11dd5c3d839bb7b08ca727cca51d555c3a879304facdd56bc1f52acf90" ;;
-    v0.3.5:poke-around-linux-aarch64.tar.gz) printf '%s\n' "5a6734c6a7dcd5c299d853220adc6f66cd950449832014e5a9d71e2b09f84f40" ;;
-    v0.3.4:poke-around-macos-aarch64.tar.gz) printf '%s\n' "a6f02a62e533842fced008fcf670f0672b553fa073caf7874b1aa173ca78c640" ;;
-    v0.3.4:poke-around-macos-x86_64.tar.gz) printf '%s\n' "4e16e3c51fa9f16c2d869e8b4067a8c5ad5b904d44e037acebb91fd31250bf04" ;;
-    v0.3.4:poke-around-linux-x86_64.tar.gz) printf '%s\n' "cf669060ca3c7539b646d741d71e3a5a7e5b9527a97e4c2fd567f046958b5ee5" ;;
-    v0.3.4:poke-around-linux-aarch64.tar.gz) printf '%s\n' "1ae2f02d0b14b80766a92e352d4d225a2747f095dd658249f1a4133810e6e4d5" ;;
-    v0.3.2:poke-around-macos-aarch64.tar.gz) printf '%s\n' "4c60e61338b3023fba3d12bcf9ad85d8f694161f0faadb626c4f22b042127397" ;;
-    v0.3.2:poke-around-macos-x86_64.tar.gz) printf '%s\n' "273fe8fd3e45431287c2aca7f0b1e076dfdaea9d323443361c3037f412e08aaf" ;;
-    v0.3.2:poke-around-linux-x86_64.tar.gz) printf '%s\n' "3def9ea22e80ce7c4e5afa0adc9682aa402081746d55f57ba43041ab84f0efed" ;;
-    *) return 1 ;;
-  esac
-}
 
 file_sha256() {
   if command -v shasum >/dev/null 2>&1; then
@@ -83,6 +89,15 @@ file_sha256() {
     exit 1
   fi
 }
+
+src="${BASH_SOURCE[0]:-}"
+if [[ -n "$src" && "$(basename -- "$src")" == "install.sh" && "${POKE_AROUND_USE_RELEASE:-}" != "1" ]]; then
+  root="$(cd "$(dirname -- "$src")/.." && pwd)"
+  if [[ -f "$root/Cargo.toml" && -f "$root/package.json" && -f "$root/bridge/poke-bridge.ts" ]]; then
+    install_from_repo "$root"
+    exit 0
+  fi
+fi
 
 echo " Installing poke-around..."
 
@@ -102,8 +117,16 @@ case "$ARCH" in
 esac
 
 ASSET="poke-around-$OS-$ARCH.tar.gz"
-if ! EXPECTED_SHA256="$(sha256_for_asset "$VERSION" "$ASSET")"; then
-  echo "No checksum for $VERSION/$ASSET" >&2
+RELEASE_JSON="$(fetch_release_json "$VERSION")"
+RESOLVED_VERSION="$(printf '%s\n' "$RELEASE_JSON" | json_tag_name)"
+if [[ -z "$RESOLVED_VERSION" ]]; then
+  echo "Could not resolve release tag for $VERSION" >&2
+  exit 1
+fi
+VERSION="$RESOLVED_VERSION"
+EXPECTED_SHA256="$(printf '%s\n' "$RELEASE_JSON" | json_asset_digest "$ASSET")"
+if [[ -z "$EXPECTED_SHA256" ]]; then
+  echo "No checksum digest for $VERSION/$ASSET" >&2
   exit 1
 fi
 
@@ -134,11 +157,23 @@ BRIDGE="$INSTALL_DIR/poke-around-bridge.js"
 if [[ -w "$INSTALL_DIR" && ( ! -e "$BIN" || -w "$BIN" ) ]]; then
   install -m 755 "$TMP_DIR/poke-around" "$TMP_INSTALL"
   mv -f "$TMP_INSTALL" "$BIN"
-  install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
+  if [[ -f "$TMP_DIR/poke-around-bridge.js" ]]; then
+    install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
+  fi
+  if [[ -d "$TMP_DIR/traybin" ]]; then
+    rm -rf "$INSTALL_DIR/traybin"
+    cp -R "$TMP_DIR/traybin" "$INSTALL_DIR/traybin"
+  fi
 else
   sudo install -m 755 "$TMP_DIR/poke-around" "$TMP_INSTALL"
   sudo mv -f "$TMP_INSTALL" "$BIN"
-  sudo install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
+  if [[ -f "$TMP_DIR/poke-around-bridge.js" ]]; then
+    sudo install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
+  fi
+  if [[ -d "$TMP_DIR/traybin" ]]; then
+    sudo rm -rf "$INSTALL_DIR/traybin"
+    sudo cp -R "$TMP_DIR/traybin" "$INSTALL_DIR/traybin"
+  fi
 fi
 
 echo " Installed to $BIN"
