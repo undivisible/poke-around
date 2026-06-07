@@ -58,9 +58,7 @@ impl Bridge {
 
     pub fn stop(&mut self) -> Result<()> {
         let _ = self.tx.send(BridgeCommand::Stop);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        let _ = self.handle.take();
         Ok(())
     }
 }
