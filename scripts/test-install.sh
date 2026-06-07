@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
 INSTALL_PS1="$SCRIPT_DIR/install.ps1"
+GITATTRIBUTES="$SCRIPT_DIR/../.gitattributes"
 
 require_literal() {
   local text="$1"
@@ -65,6 +66,13 @@ require_windows_literal 'Invoke-WebRequest -Uri $Url -OutFile $ArchivePath'
 require_windows_literal 'Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force'
 require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force'
 require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around-bridge.js") -Destination (Join-Path $InstallDir "poke-around-bridge.js") -Force'
+require_windows_literal '[Environment]::SetEnvironmentVariable("Path", $UpdatedUserPath, "User")'
+require_windows_literal 'Write-Host "Added $InstallDir to your user PATH. Open a new terminal to use poke-around from anywhere."'
+
+if ! grep -Fq '*.ps1 linguist-vendored' "$GITATTRIBUTES"; then
+  echo "missing: *.ps1 linguist-vendored" >&2
+  exit 1
+fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/poke-around-install-test.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT

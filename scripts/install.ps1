@@ -50,8 +50,27 @@ try {
   Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force
   Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around-bridge.js") -Destination (Join-Path $InstallDir "poke-around-bridge.js") -Force
 
+  $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  $PathEntries = @()
+  if (-not [string]::IsNullOrWhiteSpace($UserPath)) {
+    $PathEntries = $UserPath -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  }
+  $PathHasInstallDir = $false
+  foreach ($Entry in $PathEntries) {
+    if ([string]::Equals($Entry.TrimEnd('\'), $InstallDir.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+      $PathHasInstallDir = $true
+      break
+    }
+  }
+  if (-not $PathHasInstallDir) {
+    $UpdatedUserPath = if ($PathEntries.Count -gt 0) { ($PathEntries + $InstallDir) -join ';' } else { $InstallDir }
+    [Environment]::SetEnvironmentVariable("Path", $UpdatedUserPath, "User")
+    $env:Path = if ([string]::IsNullOrWhiteSpace($env:Path)) { $InstallDir } else { "$env:Path;$InstallDir" }
+    Write-Host "Added $InstallDir to your user PATH. Open a new terminal to use poke-around from anywhere."
+  }
+
   Write-Host "Installed to $InstallDir"
-  Write-Host "Run: $InstallDir\poke-around.exe --help"
+  Write-Host "Run: poke-around --help"
 } finally {
   if (Test-Path -LiteralPath $TempRoot) {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force
