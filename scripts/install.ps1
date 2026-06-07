@@ -36,19 +36,13 @@ try {
   Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force
 
   $ExePath = Join-Path $ExtractDir "poke-around.exe"
-  $BridgePath = Join-Path $ExtractDir "poke-around-bridge.js"
 
   if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
     throw "Archive did not contain poke-around.exe"
   }
 
-  if (-not (Test-Path -LiteralPath $BridgePath -PathType Leaf)) {
-    throw "Archive did not contain poke-around-bridge.js"
-  }
-
   New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
   Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force
-  Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around-bridge.js") -Destination (Join-Path $InstallDir "poke-around-bridge.js") -Force
 
   $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $PathEntries = @()

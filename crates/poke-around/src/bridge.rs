@@ -1,120 +1,441 @@
-use crate::{Error, Result};
-use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use crate::{Error, Result, config};
+use rs_poke::{
+    CreateWebhook, CredentialsStore, LoginOptions, Poke, PokeOptions, TunnelEvent, TunnelOptions,
+    TunnelRunner,
+};
+use serde_json::{Map, Value};
 use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
+const MAX_CONN_HISTORY: usize = 10;
 
 pub struct Bridge {
-    child: Child,
-    writer: Arc<Mutex<Option<ChildStdin>>>,
+    tx: mpsc::UnboundedSender<BridgeCommand>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+enum BridgeCommand {
+    SendWebhook(String),
+    Stop,
 }
 
 impl Bridge {
     pub fn start(mcp_url: &str, mode: &str) -> Result<Self> {
-        let bridge_path = resolve_bridge_path()?;
-        let runtime = runtime_for(&bridge_path);
-        let mut child = Command::new(runtime)
-            .arg(&bridge_path)
-            .arg("tunnel")
-            .arg("--mcp-url")
-            .arg(mcp_url)
-            .arg("--mode")
-            .arg(mode)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let writer = Arc::new(Mutex::new(child.stdin.take()));
-        if let Some(stdout) = child.stdout.take() {
-            thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(std::result::Result::ok) {
-                    print_bridge_event(&line);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mcp_url = mcp_url.to_string();
+        let mode = mode.to_string();
+        let handle = thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    log_status(&format!(
+                        "Bridge error: failed to start async runtime: {err}"
+                    ));
+                    return;
                 }
-            });
-        }
-        Ok(Self { child, writer })
+            };
+            if let Err(err) = runtime.block_on(run_bridge(mcp_url, mode, rx)) {
+                log_status(&format!("Bridge error: {err}"));
+            }
+        });
+        Ok(Self {
+            tx,
+            handle: Some(handle),
+        })
     }
 
     pub fn send_message(&self, message: &str) -> Result<()> {
-        let mut guard = self
-            .writer
-            .lock()
-            .map_err(|_| Error::msg("bridge lock poisoned"))?;
-        let Some(stdin) = guard.as_mut() else {
-            return Err(Error::msg("bridge stdin closed"));
-        };
-        let payload = serde_json::json!({ "type": "send_webhook", "message": message });
-        writeln!(stdin, "{payload}")?;
-        Ok(())
+        self.tx
+            .send(BridgeCommand::SendWebhook(message.to_string()))
+            .map_err(|_| Error::msg("bridge command channel closed"))
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        if let Ok(mut guard) = self.writer.lock()
-            && let Some(mut stdin) = guard.take()
-        {
-            let _ = writeln!(stdin, "{{\"type\":\"stop\"}}");
-            drop(stdin);
+        let _ = self.tx.send(BridgeCommand::Stop);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if self.child.try_wait()?.is_some() {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
         Ok(())
     }
 }
 
-fn print_bridge_event(line: &str) {
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
-        eprintln!("{line}");
-        return;
-    };
-    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-    match event_type {
-        "webhook_ready" => log_status("Webhook ready."),
-        "connected" => {
-            let connection_id = value
-                .get("connectionId")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let tunnel_url = value.get("tunnelUrl").and_then(Value::as_str);
-            match tunnel_url {
-                Some(url) => log_status(&format!("Tunnel connected ({connection_id}) -> {url}")),
-                None => log_status(&format!("Tunnel connected ({connection_id})")),
+async fn run_bridge(
+    mcp_url: String,
+    permission_mode: String,
+    mut rx: mpsc::UnboundedReceiver<BridgeCommand>,
+) -> Result<()> {
+    let token = ensure_auth().await?;
+    let poke = Poke::new(PokeOptions {
+        api_key: Some(token),
+        ..PokeOptions::default()
+    })?;
+    let tunnel_name = integration_name("poke-around");
+    let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
+    log_status("Webhook ready.");
+    cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
+
+    let mut stop_requested = false;
+    while !stop_requested {
+        let mut runner = TunnelRunner::new(
+            poke.clone(),
+            TunnelOptions {
+                url: mcp_url.clone(),
+                name: tunnel_name.clone(),
+                cleanup_on_stop: false,
+                sync_interval: Duration::from_secs(300),
+            },
+        );
+        let mut events = runner.subscribe();
+        match runner.start().await {
+            Ok(info) => {
+                record_connection(&info.connection_id)?;
+                log_status(&format!(
+                    "Tunnel connected ({}) -> {}",
+                    info.connection_id, info.tunnel_url
+                ));
+                log_status("Ready - your Poke agent can now access this machine.");
+                notify_poke(
+                    &poke,
+                    &webhook_url,
+                    &webhook_token,
+                    &permission_mode,
+                    &tunnel_name,
+                    &info.connection_id,
+                    Some(&info.tunnel_url),
+                )
+                .await;
+                let count = runner.sync_tools().await.unwrap_or(0);
+                log_status(&format!(
+                    "Tools synced: {}",
+                    count.max(local_tool_count(&mcp_url).await)
+                ));
             }
-            log_status("Ready - your Poke agent can now access this machine.");
+            Err(err) => {
+                log_status(&format!("Bridge error: {err}"));
+                sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
+                continue;
+            }
         }
-        "tools_synced" => {
-            let count = value.get("count").and_then(Value::as_u64).unwrap_or(0);
-            log_status(&format!("Tools synced: {count}"));
+
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        let mut sync = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            tokio::select! {
+                _ = heartbeat.tick() => {}
+                _ = sync.tick() => {
+                    let count = runner.sync_tools().await.unwrap_or(0);
+                    log_status(&format!("Tools synced: {}", count.max(local_tool_count(&mcp_url).await)));
+                }
+                event = events.recv() => {
+                    match event {
+                        Ok(TunnelEvent::Disconnected) => {
+                            log_status("Tunnel disconnected.");
+                            break;
+                        }
+                        Ok(TunnelEvent::ToolsSynced { tool_count }) => {
+                            log_status(&format!("Tools synced: {}", tool_count.max(local_tool_count(&mcp_url).await)));
+                        }
+                        Ok(TunnelEvent::OAuthRequired { .. }) => {
+                            log_status("Poke token expired - re-authenticating...");
+                            break;
+                        }
+                        Ok(TunnelEvent::Error(message)) => {
+                            log_status(&format!("Bridge error: {message}"));
+                            break;
+                        }
+                        Ok(TunnelEvent::Connected(_)) => {}
+                        Err(_) => break,
+                    }
+                }
+                command = rx.recv() => {
+                    match command {
+                        Some(BridgeCommand::SendWebhook(message)) => {
+                            send_webhook_message(&poke, &webhook_url, &webhook_token, &message).await;
+                        }
+                        Some(BridgeCommand::Stop) | None => {
+                            if let Some(info) = runner.info() {
+                                let _ = runner.delete_connection(&info.connection_id).await;
+                            }
+                            let _ = runner.stop().await;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
-        "disconnected" => log_status("Tunnel disconnected."),
-        "auth_required" => {
-            let message = value
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("Authentication required.");
-            log_status(message);
+        if let Some(info) = runner.info() {
+            let _ = runner.delete_connection(&info.connection_id).await;
         }
-        "webhook_sent" => log_status("Notified Poke agent about connection."),
-        "heartbeat" => {}
-        "webhook_error" | "error" => {
-            let message = value
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("bridge error");
-            log_status(&format!("Bridge error: {message}"));
-        }
-        _ => eprintln!("{line}"),
+        let _ = runner.stop().await;
+        sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
     }
+    Ok(())
+}
+
+async fn sleep_or_stop(
+    rx: &mut mpsc::UnboundedReceiver<BridgeCommand>,
+    duration: Duration,
+    stop_requested: &mut bool,
+) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        match rx.try_recv() {
+            Ok(BridgeCommand::Stop) | Err(mpsc::error::TryRecvError::Disconnected) => {
+                *stop_requested = true;
+                return;
+            }
+            Ok(BridgeCommand::SendWebhook(_)) | Err(mpsc::error::TryRecvError::Empty) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+async fn ensure_auth() -> Result<String> {
+    if let Some(token) = rs_poke::get_token()? {
+        return Ok(token);
+    }
+    log_status("Opening browser for Poke login...");
+    let store = CredentialsStore::default_store().map_err(|err| Error::msg(err.to_string()))?;
+    let options = LoginOptions::new(store);
+    rs_poke::login(options)
+        .await
+        .map_err(|err| Error::msg(err.to_string()))
+}
+
+async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, String)> {
+    let state = read_state()?;
+    let webhook_url = state.get("webhookUrl").and_then(Value::as_str);
+    let webhook_token = state.get("webhookToken").and_then(Value::as_str);
+    let webhook_name = state.get("webhookName").and_then(Value::as_str);
+    if let (Some(url), Some(token), Some(name)) = (webhook_url, webhook_token, webhook_name)
+        && name == tunnel_name
+    {
+        eprintln!("\x1b[2m[bridge] Reusing cached webhook.\x1b[0m");
+        return Ok((url.to_string(), token.to_string()));
+    }
+    eprintln!("\x1b[2m[bridge] Creating webhook (first run)...\x1b[0m");
+    let webhook = poke
+        .create_webhook(CreateWebhook {
+            condition: tunnel_name,
+            action: tunnel_name,
+        })
+        .await
+        .map_err(|err| Error::msg(err.to_string()))?;
+    patch_state([
+        ("webhookUrl", Value::String(webhook.webhook_url.clone())),
+        ("webhookToken", Value::String(webhook.webhook_token.clone())),
+        ("webhookName", Value::String(tunnel_name.to_string())),
+    ])?;
+    Ok((webhook.webhook_url, webhook.webhook_token))
+}
+
+async fn cleanup_stale_connections(
+    poke: &Poke,
+    webhook_url: &str,
+    webhook_token: &str,
+) -> Result<()> {
+    let state = read_state()?;
+    let mut ids = Vec::new();
+    if let Some(id) = state.get("connectionId").and_then(Value::as_str) {
+        ids.push(id.to_string());
+    }
+    if let Some(history) = state.get("connectionHistory").and_then(Value::as_array) {
+        for id in history.iter().filter_map(Value::as_str) {
+            if !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "\x1b[2m[bridge] Cleaning up {} old connection(s)...\x1b[0m",
+        ids.len()
+    );
+    for id in ids {
+        let _ = poke
+            .raw_auth(
+                reqwest::Method::DELETE,
+                &format!("/mcp/connections/{id}"),
+                None,
+            )
+            .await;
+    }
+    patch_state([
+        ("webhookUrl", Value::String(webhook_url.to_string())),
+        ("webhookToken", Value::String(webhook_token.to_string())),
+        ("connectionHistory", Value::Array(Vec::new())),
+    ])?;
+    remove_state_key("connectionId")?;
+    Ok(())
+}
+
+async fn notify_poke(
+    poke: &Poke,
+    webhook_url: &str,
+    webhook_token: &str,
+    permission_mode: &str,
+    tunnel_name: &str,
+    connection_id: &str,
+    tunnel_url: Option<&str>,
+) {
+    let mode_message = match permission_mode {
+        "limited" => {
+            "Access mode: Limited. You can read files, list directories, and run safe read-only commands. You cannot write files, take screenshots, or run other commands."
+        }
+        "sandbox" => {
+            "Access mode: Sandbox. You can read files, list directories, and run approved sandbox commands. Destructive or disallowed actions require approval or are blocked."
+        }
+        _ => {
+            "Access mode: Full. You can run shell commands, read files, list directories, take screenshots, and use computer-control tools. Destructive actions still require approval."
+        }
+    };
+    let message = format!(
+        "Poke Around is connected to {tunnel_name} (tunnel: {connection_id}). {}{mode_message} Use the Poke Around MCP tools whenever I ask you to do something on this machine.",
+        tunnel_url
+            .map(|url| format!("Tunnel URL: {url}. "))
+            .unwrap_or_default()
+    );
+    match poke
+        .send_webhook(
+            webhook_url,
+            webhook_token,
+            serde_json::json!({
+                "message": message,
+                "connectionId": connection_id,
+                "tunnelUrl": tunnel_url,
+                "mode": permission_mode,
+                "integration": tunnel_name
+            }),
+        )
+        .await
+    {
+        Ok(_) => log_status("Notified Poke agent about connection."),
+        Err(err) => log_status(&format!("Bridge error: {err}")),
+    }
+}
+
+async fn send_webhook_message(poke: &Poke, webhook_url: &str, webhook_token: &str, message: &str) {
+    match poke
+        .send_webhook(
+            webhook_url,
+            webhook_token,
+            serde_json::json!({ "message": message }),
+        )
+        .await
+    {
+        Ok(_) => log_status("Notified Poke agent about connection."),
+        Err(err) => log_status(&format!("Bridge error: {err}")),
+    }
+}
+
+async fn local_tool_count(mcp_url: &str) -> usize {
+    let Ok(response) = reqwest::Client::new()
+        .post(mcp_url)
+        .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+    else {
+        return 0;
+    };
+    let Ok(body) = response.json::<Value>().await else {
+        return 0;
+    };
+    body.get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn integration_name(base: &str) -> String {
+    let raw = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .unwrap_or_default()
+        });
+    let suffix = raw
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if suffix.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}-{suffix}")
+    }
+}
+
+fn read_state() -> Result<Map<String, Value>> {
+    match std::fs::read_to_string(config::state_path()?) {
+        Ok(data) => Ok(serde_json::from_str::<Value>(&data)?
+            .as_object()
+            .cloned()
+            .unwrap_or_default()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn patch_state<const N: usize>(updates: [(&str, Value); N]) -> Result<()> {
+    let mut state = read_state()?;
+    for (key, value) in updates {
+        state.insert(key.to_string(), value);
+    }
+    write_state(&state)
+}
+
+fn remove_state_key(key: &str) -> Result<()> {
+    let mut state = read_state()?;
+    state.remove(key);
+    write_state(&state)
+}
+
+fn write_state(state: &Map<String, Value>) -> Result<()> {
+    let path = config::state_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(state)?)?;
+    Ok(())
+}
+
+fn record_connection(connection_id: &str) -> Result<()> {
+    let state = read_state()?;
+    let mut history = state
+        .get("connectionHistory")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !history
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|known| known == connection_id)
+    {
+        history.insert(0, Value::String(connection_id.to_string()));
+    }
+    history.truncate(MAX_CONN_HISTORY);
+    patch_state([
+        ("connectionId", Value::String(connection_id.to_string())),
+        ("connectionHistory", Value::Array(history)),
+    ])
 }
 
 fn log_status(message: &str) {
@@ -140,57 +461,21 @@ impl Drop for Bridge {
 }
 
 pub fn send_one_shot_message(message: &str) -> Result<()> {
-    let bridge_path = resolve_bridge_path()?;
-    let runtime = runtime_for(&bridge_path);
-    let status = Command::new(runtime)
-        .arg(bridge_path)
-        .arg("send-message")
-        .arg("--message")
-        .arg(message)
-        .status()?;
-    if status.success() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| Error::msg(format!("failed to start async runtime: {err}")))?;
+    runtime.block_on(async {
+        let token = ensure_auth().await?;
+        let poke = Poke::new(PokeOptions {
+            api_key: Some(token),
+            ..PokeOptions::default()
+        })
+        .map_err(|err| Error::msg(err.to_string()))?;
+        poke.send_message(message)
+            .await
+            .map_err(|err| Error::msg(err.to_string()))?;
+        println!("sent");
         Ok(())
-    } else {
-        Err(Error::msg(format!("bridge exited with {status}")))
-    }
-}
-
-pub fn resolve_bridge_path() -> Result<PathBuf> {
-    let exe = std::env::current_exe()?;
-    let exe_dir = exe.parent().unwrap_or_else(|| Path::new("."));
-    let candidates = [
-        exe_dir.join("poke-around-bridge.js"),
-        exe_dir.join("../bridge/dist/poke-around-bridge.js"),
-        std::env::current_dir()?.join("bridge/dist/poke-around-bridge.js"),
-        std::env::current_dir()?.join("bridge/poke-bridge.ts"),
-    ];
-    candidates
-        .into_iter()
-        .find(|path| path.exists())
-        .ok_or_else(|| Error::msg("poke-around bridge not found"))
-}
-
-fn runtime_for(path: &Path) -> &'static str {
-    if path.extension().and_then(|value| value.to_str()) == Some("ts") {
-        return "bun";
-    }
-    for candidate in ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"] {
-        if Path::new(candidate).exists() {
-            return candidate;
-        }
-    }
-    if command_exists("bun") {
-        return "bun";
-    }
-    "node"
-}
-
-fn command_exists(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
+    })
 }

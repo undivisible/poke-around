@@ -68,7 +68,6 @@ require_windows_literal '$DefaultInstallDir = Join-Path $env:LOCALAPPDATA "Progr
 require_windows_literal 'Invoke-WebRequest -Uri $Url -OutFile $ArchivePath'
 require_windows_literal 'Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force'
 require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force'
-require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around-bridge.js") -Destination (Join-Path $InstallDir "poke-around-bridge.js") -Force'
 require_windows_literal '[Environment]::SetEnvironmentVariable("Path", $UpdatedUserPath, "User")'
 require_windows_literal 'Write-Host "Added $InstallDir to your user PATH. Open a new terminal to use poke-around from anywhere."'
 
@@ -131,9 +130,8 @@ fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/poke-around-curl.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 printf '#!/bin/sh\necho installed\n' > "$tmp/poke-around"
-printf 'bridge\n' > "$tmp/poke-around-bridge.js"
 chmod +x "$tmp/poke-around"
-tar -czf "$out" -C "$tmp" poke-around poke-around-bridge.js
+tar -czf "$out" -C "$tmp" poke-around
 MOCK
 chmod +x "$MOCK_BIN/curl"
 
@@ -150,11 +148,6 @@ PATH="$MOCK_BIN:$PATH" POKE_AROUND_BIN="$TARGET" "$INSTALL_SH"
 
 if [[ "$("$TARGET")" != "installed" ]]; then
   echo "installed binary did not execute" >&2
-  exit 1
-fi
-
-if [[ "$(cat "$(dirname "$TARGET")/poke-around-bridge.js")" != "bridge" ]]; then
-  echo "bridge was not installed" >&2
   exit 1
 fi
 

@@ -17,10 +17,13 @@ base64.workspace = true
 ctrlc.workspace = true
 dirs.workspace = true
 rand.workspace = true
+reqwest.workspace = true
+rs_poke.workspace = true
 rs_peekaboo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]

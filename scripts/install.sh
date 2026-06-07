@@ -100,16 +100,13 @@ if [[ ! -x "$TMP_DIR/poke-around" ]]; then
 fi
 
 INSTALL_DIR="$(dirname "$BIN")"
-BRIDGE="$INSTALL_DIR/poke-around-bridge.js"
 
 if [[ -w "$INSTALL_DIR" && ( ! -e "$BIN" || -w "$BIN" ) ]]; then
   install -m 755 "$TMP_DIR/poke-around" "$TMP_INSTALL"
   mv -f "$TMP_INSTALL" "$BIN"
-  install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
 else
   sudo install -m 755 "$TMP_DIR/poke-around" "$TMP_INSTALL"
   sudo mv -f "$TMP_INSTALL" "$BIN"
-  sudo install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
 fi
 
 echo " Installed to $BIN"

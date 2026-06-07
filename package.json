@@ -1,6 +1,6 @@
 {
   "name": "poke-around",
-  "version": "0.3.21",
+  "version": "0.4.0",
   "description": "Expose your machine to your Poke AI assistant via MCP tunnel",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "test": "cargo test --workspace --all-features",
     "test:bridge": "bun test bridge/poke-bridge.test.ts",
     "test:install": "bash scripts/test-install.sh",
-    "release": "bun run build:bridge && cargo build --workspace --release"
+    "release": "cargo build --workspace --release"
   },
   "keywords": [
     "poke",

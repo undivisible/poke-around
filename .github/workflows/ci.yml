@@ -14,21 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Install bridge dependencies
-        run: bun install
-        working-directory: bridge
-
-      - name: Build bridge
-        run: bun run build:bridge
-
-      - name: Test bridge
-        run: bun run test:bridge
 
       - name: Format
         run: cargo fmt --all -- --check

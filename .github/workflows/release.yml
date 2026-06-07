@@ -12,21 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Install bridge dependencies
-        run: bun install
-        working-directory: bridge
-
-      - name: Build bridge
-        run: bun run build:bridge
-
-      - name: Test bridge
-        run: bun run test:bridge
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -43,30 +31,9 @@ jobs:
       - name: Install script test
         run: bash scripts/test-install.sh
 
-  # Build the bridge JS once (platform-independent)
-  bridge:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install bridge deps
-        run: bun install
-        working-directory: bridge
-
-      - name: Bundle bridge
-        run: bun run build:bridge
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bridge-js
-          path: bridge/dist
-
   # Build native binary per platform
   build:
-    needs: bridge
+    needs: test
     strategy:
       matrix:
         include:
@@ -94,11 +61,6 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: bridge-js
-          path: bridge/dist
-
       - name: Build
         run: cargo build --workspace --release --target ${{ matrix.rust_target }}
 
@@ -107,7 +69,6 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.rust_target }}/release/poke-around dist/
-          cp -R bridge/dist/. dist/
           tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .
 
       - name: Package
@@ -116,7 +77,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target/${{ matrix.rust_target }}/release/poke-around.exe dist/
-          Copy-Item bridge/dist/* dist/ -Recurse
           Compress-Archive -Path dist/* -DestinationPath poke-around-${{ matrix.name }}.zip -Force
 
       - uses: actions/upload-artifact@v4
