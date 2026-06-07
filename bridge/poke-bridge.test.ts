@@ -41,4 +41,19 @@ describe("bridge tunnel lifecycle", () => {
     expect(source).toContain('syncTools(): Promise<void>');
     expect(source).toContain(".syncTools();");
   });
+
+  test("activates pending tunnel before first upstream connection", () => {
+    expect(source).toContain("activatePendingTunnel(tunnel)");
+    expect(source).toContain("internal.activateTunnel.call(internal)");
+  });
+
+  test("reports local tool count when sdk sync count is wrong", () => {
+    expect(source).toContain("async function localToolCount");
+    expect(source).toContain("Math.max(toolCount, await localToolCount(mcpUrl))");
+  });
+
+  test("includes nested causes in bridge error output", () => {
+    expect(source).toContain("function formatError");
+    expect(source).toContain("cause:");
+  });
 });

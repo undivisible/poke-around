@@ -26,6 +26,12 @@ function log(msg: string): void {
   process.stderr.write(`\x1b[2m[bridge] ${msg}\x1b[0m\n`);
 }
 
+function formatError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = "cause" in err ? (err as Error & { cause?: unknown }).cause : undefined;
+  return cause ? `${err.name}: ${err.message}; cause: ${formatError(cause)}` : `${err.name}: ${err.message}`;
+}
+
 function integrationName(base: string): string {
   const suffix = os.hostname().trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return suffix ? `${base}-${suffix}` : base;
@@ -65,7 +71,7 @@ function patchState(updates: Record<string, unknown>): void {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(merged, null, 2));
   } catch (err) {
-    log(`state write failed: ${err}`);
+    log(`state write failed: ${formatError(err)}`);
   }
 }
 
@@ -117,6 +123,41 @@ const permissionMode = getArg("--mode") ?? "full";
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const RESTART_AFTER_DISCONNECT_MS = 15_000;
 const MAX_CONN_HISTORY = 10;
+const PENDING_TUNNEL_ACTIVATION_TIMEOUT_MS = 5_000;
+
+type PendingTunnel = PokeTunnel & {
+  connectionId?: string | null;
+  activateTunnel?: () => Promise<void>;
+};
+
+async function activatePendingTunnel(tunnel: PokeTunnel): Promise<void> {
+  const internal = tunnel as PendingTunnel;
+  const deadline = Date.now() + PENDING_TUNNEL_ACTIVATION_TIMEOUT_MS;
+  while (!internal.connectionId && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!internal.connectionId || typeof internal.activateTunnel !== "function") return;
+  try {
+    await internal.activateTunnel.call(internal);
+  } catch (err) {
+    emit({ type: "error", message: `pending tunnel activation failed: ${formatError(err)}` });
+  }
+}
+
+async function localToolCount(mcpUrl: string): Promise<number> {
+  try {
+    const response = await fetch(mcpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    if (!response.ok) return 0;
+    const body = await response.json() as { result?: { tools?: unknown[] } };
+    return Array.isArray(body.result?.tools) ? body.result.tools.length : 0;
+  } catch {
+    return 0;
+  }
+}
 
 // ── tunnel mode ─────────────────────────────────────────────────────────────
 
@@ -204,7 +245,7 @@ async function runTunnel(): Promise<void> {
       });
       emit({ type: "webhook_sent" });
     } catch (err) {
-      emit({ type: "webhook_error", message: String(err) });
+      emit({ type: "webhook_error", message: formatError(err) });
     }
   };
 
@@ -280,7 +321,7 @@ async function runTunnel(): Promise<void> {
         scheduleTunnelRestart();
       });
       tunnel.on("error", (err) => {
-        emit({ type: "error", message: String(err) });
+        emit({ type: "error", message: formatError(err) });
         scheduleTunnelRestart();
       });
       tunnel.on("oauthRequired", async () => {
@@ -288,19 +329,23 @@ async function runTunnel(): Promise<void> {
         try {
           await login({ openBrowser: true });
         } catch (authErr) {
-          emit({ type: "error", message: `Re-auth failed: ${String(authErr)}` });
+          emit({ type: "error", message: `Re-auth failed: ${formatError(authErr)}` });
         }
         scheduleTunnelRestart();
       });
       tunnel.on("toolsSynced", ({ toolCount }) => {
-        emit({ type: "tools_synced", count: toolCount });
+        void (async () => {
+          emit({ type: "tools_synced", count: Math.max(toolCount, await localToolCount(mcpUrl)) });
+        })();
       });
 
-      await tunnel.start();
+      const startPromise = tunnel.start();
+      void activatePendingTunnel(tunnel);
+      await startPromise;
       await (tunnel as unknown as { syncTools(): Promise<void> }).syncTools();
       log(`Tunnel started → ${mcpUrl}`);
     } catch (err) {
-      emit({ type: "error", message: String(err) });
+      emit({ type: "error", message: formatError(err) });
       activeTunnel = null;
       scheduleTunnelRestart();
     } finally {
@@ -332,7 +377,7 @@ async function runTunnel(): Promise<void> {
           });
           emit({ type: "webhook_sent" });
         } catch (err) {
-          emit({ type: "webhook_error", message: String(err) });
+          emit({ type: "webhook_error", message: formatError(err) });
         }
 
       } else if (cmd.type === "stop") {
@@ -372,19 +417,19 @@ async function runSendMessage(): Promise<void> {
 // (e.g. on disconnect), which would crash Bun. Emit the error so the Zig
 // parent can reconnect, but keep the process alive so maintainTunnel retries.
 process.on("unhandledRejection", (reason) => {
-  emit({ type: "error", message: `unhandled rejection: ${String(reason)}` });
+  emit({ type: "error", message: `unhandled rejection: ${formatError(reason)}` });
 });
 
 // ── dispatch ─────────────────────────────────────────────────────────────────
 
 if (mode === "send-message") {
   runSendMessage().catch((err) => {
-    process.stderr.write(`bridge error: ${err.message}\n`);
+    process.stderr.write(`bridge error: ${formatError(err)}\n`);
     process.exit(1);
   });
 } else {
   runTunnel().catch((err) => {
-    emit({ type: "error", message: err.message });
+    emit({ type: "error", message: formatError(err) });
     process.exit(1);
   });
 }
