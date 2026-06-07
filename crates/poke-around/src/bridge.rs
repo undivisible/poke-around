@@ -179,5 +179,18 @@ fn runtime_for(path: &Path) -> &'static str {
             return candidate;
         }
     }
+    if command_exists("bun") {
+        return "bun";
+    }
     "node"
+}
+
+fn command_exists(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
 }

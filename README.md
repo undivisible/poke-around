@@ -6,7 +6,7 @@ Let your [Poke](https://poke.com) AI assistant access your machine.
 
 [![Latest Release](https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/releases/latest)
 [![License](https://img.shields.io/github/license/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/blob/main/LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square)
 
 ---
 
@@ -18,6 +18,12 @@ Run Poke Around on your machine, then message Poke from iMessage, Telegram, or S
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.sh | bash
+```
+
+**Install script (Windows PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.ps1 | iex
 ```
 
 **Homebrew (macOS / Linux)**
@@ -50,7 +56,7 @@ cargo build --release
 
 **Manual download**
 
-Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` plus `poke-around-bridge.js` in the same directory.
+Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` or `poke-around.exe` plus `poke-around-bridge.js` in the same directory.
 
 On macOS, if the binary is blocked by Gatekeeper:
 

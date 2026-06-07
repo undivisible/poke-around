@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+#[cfg(not(target_os = "windows"))]
 use rs_peekaboo::automation::{Target, parse_point};
+#[cfg(not(target_os = "windows"))]
 use rs_peekaboo::{Bounds, Direction, ImageMode, Peekaboo, Snapshot};
 
 #[derive(Clone)]
@@ -504,6 +506,7 @@ fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn image(args: &Value, _state: &AppState) -> Result<Value> {
     let mode = ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
     let path = str_arg(args, "path").map(PathBuf::from);
@@ -518,6 +521,21 @@ fn image(args: &Value, _state: &AppState) -> Result<Value> {
     ok_json_with_image(metadata, &capture.path, &capture.mime_type)
 }
 
+#[cfg(target_os = "windows")]
+fn image(args: &Value, _state: &AppState) -> Result<Value> {
+    let mode = rs_peekaboo::ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
+    let path = str_arg(args, "path").map(PathBuf::from);
+    let capture = crate::windows_automation::image(mode, path)?;
+    let metadata = json!({
+        "path": capture.path,
+        "mode": capture.mode,
+        "bytes": capture.bytes,
+        "mime_type": capture.mime_type,
+    });
+    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn see(args: &Value, _state: &AppState) -> Result<Value> {
     let app = str_arg(args, "app");
     let mode = ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
@@ -544,14 +562,52 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
     ok_json_with_image(metadata, &capture.path, &capture.mime_type)
 }
 
+#[cfg(target_os = "windows")]
+fn see(args: &Value, _state: &AppState) -> Result<Value> {
+    let app = str_arg(args, "app");
+    let mode = rs_peekaboo::ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
+    let path = str_arg(args, "path").map(PathBuf::from);
+    let capture = crate::windows_automation::image(mode, path)?;
+    let snapshot_id = rs_peekaboo::cache::new_snapshot_id();
+    let snapshot = rs_peekaboo::Snapshot {
+        snapshot_id,
+        elements: crate::windows_automation::ui_elements(app)?,
+    };
+    rs_peekaboo::cache::save_snapshot(&snapshot)?;
+    let metadata = json!({
+        "snapshot_id": snapshot.snapshot_id,
+        "elements": snapshot.elements,
+        "image": {
+            "path": capture.path,
+            "mode": capture.mode,
+            "bytes": capture.bytes,
+            "mime_type": capture.mime_type,
+        }
+    });
+    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn list_screens(_args: &Value) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().list_screens()?))
 }
 
+#[cfg(target_os = "windows")]
+fn list_screens(_args: &Value) -> Result<Value> {
+    Ok(ok_json(crate::windows_automation::list_screens()?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn permissions() -> Result<Value> {
     Ok(ok_json(Peekaboo::new().permissions()))
 }
 
+#[cfg(target_os = "windows")]
+fn permissions() -> Result<Value> {
+    Ok(ok_json(crate::windows_automation::permissions()))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn click(args: &Value, _state: &AppState) -> Result<Value> {
     let target = if let Some(element_id) = str_arg(args, "element_id") {
         Target::Query {
@@ -569,6 +625,17 @@ fn click(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().click(target, button, count)?))
 }
 
+#[cfg(target_os = "windows")]
+fn click(args: &Value, _state: &AppState) -> Result<Value> {
+    let point = crate::windows_automation::point_from_args(args, str_arg(args, "snapshot"))?;
+    let button = str_arg(args, "button").unwrap_or("left");
+    let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
+    Ok(ok_json(crate::windows_automation::click(
+        point, button, count,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn press(args: &Value, _state: &AppState) -> Result<Value> {
     let key = str_arg(args, "key").unwrap_or("");
     let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
@@ -576,6 +643,17 @@ fn press(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().press(key, count, delay_ms)?))
 }
 
+#[cfg(target_os = "windows")]
+fn press(args: &Value, _state: &AppState) -> Result<Value> {
+    let key = str_arg(args, "key").unwrap_or("");
+    let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
+    let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
+    Ok(ok_json(crate::windows_automation::press(
+        key, count, delay_ms,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
     let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(false);
@@ -589,11 +667,33 @@ fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
+    let text = str_arg(args, "text").unwrap_or("");
+    let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(false);
+    let press_return = args.get("return").and_then(Value::as_bool).unwrap_or(false);
+    let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
+    Ok(ok_json(crate::windows_automation::type_text(
+        text,
+        clear,
+        press_return,
+        delay_ms,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn paste(args: &Value, _state: &AppState) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
     Ok(ok_json(Peekaboo::new().paste(text)?))
 }
 
+#[cfg(target_os = "windows")]
+fn paste(args: &Value, _state: &AppState) -> Result<Value> {
+    let text = str_arg(args, "text").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::paste(text)?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
     let keys = str_arg(args, "keys").unwrap_or("");
     let parts = keys
@@ -604,6 +704,13 @@ fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().hotkey(&parts)?))
 }
 
+#[cfg(target_os = "windows")]
+fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
+    let keys = str_arg(args, "keys").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::hotkey(keys)?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
     let dx = int_arg(args, "dx").unwrap_or(0);
     let dy = int_arg(args, "dy").unwrap_or(0);
@@ -625,6 +732,14 @@ fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().scroll(direction, amount)?))
 }
 
+#[cfg(target_os = "windows")]
+fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
+    let dx = int_arg(args, "dx").unwrap_or(0);
+    let dy = int_arg(args, "dy").unwrap_or(0);
+    Ok(ok_json(crate::windows_automation::scroll(dx, dy)?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
     let from = parse_point(str_arg(args, "from").unwrap_or("0,0"))
         .unwrap_or(rs_peekaboo::Point { x: 0, y: 0 });
@@ -641,6 +756,22 @@ fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
+    let from = crate::windows_automation::point_from_text(str_arg(args, "from").unwrap_or("0,0"));
+    let to = crate::windows_automation::point_from_text(str_arg(args, "to").unwrap_or("0,0"));
+    let duration_ms = args
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(250);
+    Ok(ok_json(crate::windows_automation::swipe(
+        from,
+        to,
+        duration_ms,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn drag(args: &Value, _state: &AppState) -> Result<Value> {
     let from = parse_point(str_arg(args, "from").unwrap_or("0,0"))
         .unwrap_or(rs_peekaboo::Point { x: 0, y: 0 });
@@ -657,6 +788,22 @@ fn drag(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn drag(args: &Value, _state: &AppState) -> Result<Value> {
+    let from = crate::windows_automation::point_from_text(str_arg(args, "from").unwrap_or("0,0"));
+    let to = crate::windows_automation::point_from_text(str_arg(args, "to").unwrap_or("0,0"));
+    let duration_ms = args
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(250);
+    Ok(ok_json(crate::windows_automation::drag(
+        from,
+        to,
+        duration_ms,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
     let target = if let Some(element_id) = str_arg(args, "element_id") {
         Target::Query {
@@ -672,6 +819,13 @@ fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().move_cursor(target)?))
 }
 
+#[cfg(target_os = "windows")]
+fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
+    let point = crate::windows_automation::point_from_args(args, str_arg(args, "snapshot"))?;
+    Ok(ok_json(crate::windows_automation::move_cursor(point)?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
     let on = str_arg(args, "on").unwrap_or("");
     let value = str_arg(args, "value").unwrap_or("");
@@ -685,6 +839,14 @@ fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
+    let point = crate::windows_automation::point_from_args(args, str_arg(args, "snapshot"))?;
+    let value = str_arg(args, "value").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::set_value(point, value)?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn perform_action(args: &Value, _state: &AppState) -> Result<Value> {
     let on = str_arg(args, "on").unwrap_or("");
     let action = str_arg(args, "action").unwrap_or("");
@@ -698,6 +860,16 @@ fn perform_action(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn perform_action(args: &Value, _state: &AppState) -> Result<Value> {
+    let point = crate::windows_automation::point_from_args(args, str_arg(args, "snapshot"))?;
+    let action = str_arg(args, "action").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::perform_action(
+        point, action,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn window(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
     if action == "list" {
@@ -732,6 +904,39 @@ fn window(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn window(args: &Value, _state: &AppState) -> Result<Value> {
+    let action = str_arg(args, "action").unwrap_or("");
+    let bounds = match action {
+        "move" => Some(rs_peekaboo::Bounds {
+            x: int_arg(args, "x").unwrap_or(0),
+            y: int_arg(args, "y").unwrap_or(0),
+            width: 0,
+            height: 0,
+        }),
+        "resize" => Some(rs_peekaboo::Bounds {
+            x: 0,
+            y: 0,
+            width: int_arg(args, "width").unwrap_or(0),
+            height: int_arg(args, "height").unwrap_or(0),
+        }),
+        "set-bounds" => Some(rs_peekaboo::Bounds {
+            x: int_arg(args, "x").unwrap_or(0),
+            y: int_arg(args, "y").unwrap_or(0),
+            width: int_arg(args, "width").unwrap_or(0),
+            height: int_arg(args, "height").unwrap_or(0),
+        }),
+        _ => None,
+    };
+    Ok(ok_json(crate::windows_automation::window(
+        action,
+        str_arg(args, "app"),
+        str_arg(args, "title"),
+        bounds,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn app(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
     if action == "list" {
@@ -741,6 +946,16 @@ fn app(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().app(action, Some(app))?))
 }
 
+#[cfg(target_os = "windows")]
+fn app(args: &Value, _state: &AppState) -> Result<Value> {
+    let action = str_arg(args, "action").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::app(
+        action,
+        str_arg(args, "app"),
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
     let target = str_arg(args, "target").unwrap_or("");
     let app = str_arg(args, "app");
@@ -751,6 +966,21 @@ fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().open(target, app, no_focus)?))
 }
 
+#[cfg(target_os = "windows")]
+fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
+    let target = str_arg(args, "target").unwrap_or("");
+    let no_focus = args
+        .get("no_focus")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(ok_json(crate::windows_automation::open(
+        target,
+        str_arg(args, "app"),
+        no_focus,
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn menu(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
     let app = str_arg(args, "app").unwrap_or("");
@@ -768,20 +998,55 @@ fn menu(args: &Value, _state: &AppState) -> Result<Value> {
     )?))
 }
 
+#[cfg(target_os = "windows")]
+fn menu(args: &Value, _state: &AppState) -> Result<Value> {
+    let action = str_arg(args, "action").unwrap_or("");
+    let app = str_arg(args, "app").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::menu(
+        action,
+        app,
+        str_arg(args, "menu"),
+        str_arg(args, "item"),
+    )?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn clipboard_read() -> Result<Value> {
     let text = Peekaboo::new().clipboard_read()?;
     Ok(ok_json(json!({ "text": text })))
 }
 
+#[cfg(target_os = "windows")]
+fn clipboard_read() -> Result<Value> {
+    let text = crate::windows_automation::clipboard_read()?;
+    Ok(ok_json(json!({ "text": text })))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn clipboard_write(args: &Value) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
     Ok(ok_json(Peekaboo::new().clipboard_write(text)?))
 }
 
+#[cfg(target_os = "windows")]
+fn clipboard_write(args: &Value) -> Result<Value> {
+    let text = str_arg(args, "text").unwrap_or("");
+    Ok(ok_json(crate::windows_automation::clipboard_write(text)?))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn run_file(args: &Value, _state: &AppState) -> Result<Value> {
     let file = str_arg(args, "file").unwrap_or("");
     let results = Peekaboo::new().run_file(&PathBuf::from(file))?;
     Ok(ok_json(json!(results)))
+}
+
+#[cfg(target_os = "windows")]
+fn run_file(args: &Value, _state: &AppState) -> Result<Value> {
+    let file = str_arg(args, "file").unwrap_or("");
+    Ok(ok_json(json!(crate::windows_automation::run_file(
+        PathBuf::from(file)
+    )?)))
 }
 
 fn sleep(args: &Value) -> Result<Value> {

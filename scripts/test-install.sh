@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
+INSTALL_PS1="$SCRIPT_DIR/install.ps1"
 
 require_literal() {
   local text="$1"
@@ -44,6 +45,26 @@ require_regex 'mv -f "\$TMP_INSTALL" "\$BIN"'
 require_regex 'sudo mv -f "\$TMP_INSTALL" "\$BIN"'
 reject_literal 'curl -fsSL -o "$BIN" "$URL"'
 reject_literal 'releases/$VERSION/download'
+
+if [[ ! -f "$INSTALL_PS1" ]]; then
+  echo "missing: $INSTALL_PS1" >&2
+  exit 1
+fi
+
+require_windows_literal() {
+  local text="$1"
+  if ! grep -Fq "$text" "$INSTALL_PS1"; then
+    echo "missing: $text" >&2
+    exit 1
+  fi
+}
+
+require_windows_literal '$Asset = "poke-around-windows-x86_64.zip"'
+require_windows_literal '$DefaultInstallDir = Join-Path $env:LOCALAPPDATA "Programs\poke-around"'
+require_windows_literal 'Invoke-WebRequest -Uri $Url -OutFile $ArchivePath'
+require_windows_literal 'Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force'
+require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force'
+require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around-bridge.js") -Destination (Join-Path $InstallDir "poke-around-bridge.js") -Force'
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/poke-around-install-test.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT

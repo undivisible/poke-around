@@ -6,5 +6,6 @@ pub mod error;
 pub mod mcp;
 pub mod policy;
 pub mod tools;
+pub mod windows_automation;
 
 pub use error::{Error, Result};
