@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
+const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_CONN_HISTORY: usize = 10;
 
 pub struct Bridge {
@@ -87,6 +88,7 @@ async fn run_bridge(
                 name: tunnel_name.clone(),
                 cleanup_on_stop: false,
                 sync_interval: Duration::from_secs(300),
+                startup_timeout: TUNNEL_STARTUP_TIMEOUT,
             },
         );
         let mut events = runner.subscribe();
@@ -469,19 +471,8 @@ fn record_connection(connection_id: &str) -> Result<()> {
 }
 
 fn log_status(message: &str) {
-    let now = chrono_like_time();
+    let now = chrono::Local::now().format("%H:%M:%S");
     eprintln!("[{now}] {message}");
-}
-
-fn chrono_like_time() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() % 86_400)
-        .unwrap_or(0);
-    let hour = seconds / 3_600;
-    let minute = (seconds % 3_600) / 60;
-    let second = seconds % 60;
-    format!("{hour:02}:{minute:02}:{second:02}")
 }
 
 impl Drop for Bridge {
