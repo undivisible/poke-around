@@ -3,7 +3,7 @@ members = ["crates/poke-around"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/undivisible/poke-around"
@@ -14,7 +14,7 @@ ctrlc = "3.4"
 dirs = "6.0"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rs_poke = "0.1.0"
+rs_poke = "0.1.1"
 rs_peekaboo = "0.1.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

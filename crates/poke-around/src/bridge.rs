@@ -90,7 +90,35 @@ async fn run_bridge(
             },
         );
         let mut events = runner.subscribe();
-        match runner.start().await {
+        let mut stop_during_start = false;
+        let start_result = {
+            let start = runner.start();
+            tokio::pin!(start);
+            loop {
+                tokio::select! {
+                    result = &mut start => break result,
+                    command = rx.recv() => {
+                        match command {
+                            Some(BridgeCommand::SendWebhook(message)) => {
+                                send_webhook_message(&poke, &webhook_url, &webhook_token, &message).await;
+                            }
+                            Some(BridgeCommand::Stop) | None => {
+                                stop_during_start = true;
+                                break Err(rs_poke::Error::Protocol("stop requested".into()));
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        if stop_during_start {
+            if let Some(info) = runner.info() {
+                let _ = runner.delete_connection(&info.connection_id).await;
+            }
+            let _ = runner.stop().await;
+            return Ok(());
+        }
+        match start_result {
             Ok(info) => {
                 record_connection(&info.connection_id)?;
                 log_status(&format!(
@@ -116,6 +144,10 @@ async fn run_bridge(
             }
             Err(err) => {
                 log_status(&format!("Bridge error: {err}"));
+                if let Some(info) = runner.info() {
+                    let _ = runner.delete_connection(&info.connection_id).await;
+                }
+                let _ = runner.stop().await;
                 sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
                 continue;
             }
@@ -147,7 +179,7 @@ async fn run_bridge(
                             log_status(&format!("Bridge error: {message}"));
                             break;
                         }
-                        Ok(TunnelEvent::Connected(_)) => {}
+                        Ok(TunnelEvent::Created(_)) | Ok(TunnelEvent::Connected(_)) => {}
                         Err(_) => break,
                     }
                 }

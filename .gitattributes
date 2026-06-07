@@ -1,3 +1,2 @@
 examples/** linguist-documentation=true
 *.sh linguist-vendored
-*.ps1 linguist-vendored

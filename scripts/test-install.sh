@@ -68,11 +68,10 @@ require_windows_literal '$DefaultInstallDir = Join-Path $env:LOCALAPPDATA "Progr
 require_windows_literal 'Invoke-WebRequest -Uri $Url -OutFile $ArchivePath'
 require_windows_literal 'Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force'
 require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force'
-require_windows_literal '[Environment]::SetEnvironmentVariable("Path", $UpdatedUserPath, "User")'
-require_windows_literal 'Write-Host "Added $InstallDir to your user PATH. Open a new terminal to use poke-around from anywhere."'
+require_windows_literal 'Write-Host "Run: $(Join-Path $InstallDir "poke-around.exe") --help"'
 
-if ! grep -Fq '*.ps1 linguist-vendored' "$GITATTRIBUTES"; then
-  echo "missing: *.ps1 linguist-vendored" >&2
+if grep -Fq '*.ps1 linguist-vendored' "$GITATTRIBUTES"; then
+  echo "unexpected: *.ps1 linguist-vendored" >&2
   exit 1
 fi
 

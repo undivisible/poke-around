@@ -1,6 +1,6 @@
 {
   "name": "poke-around-bridge",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "dependencies": {
     "poke": "^0.4.2",
