@@ -20,6 +20,14 @@ Run Poke Around on your machine, then message Poke from iMessage, Telegram, or S
 curl -fsSL https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.sh | bash
 ```
 
+**Install script (Windows PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\poke-around\poke-around.exe` unless `POKE_AROUND_BIN` is set.
+
 **Homebrew (macOS / Linux)**
 
 ```bash
@@ -46,7 +54,13 @@ cd poke-around
 ./scripts/install.sh
 ```
 
-This installs to `~/.local/bin/poke-around` unless `POKE_AROUND_BIN` is set.
+```powershell
+git clone https://github.com/undivisible/poke-around.git
+cd poke-around
+.\scripts\install.ps1
+```
+
+On macOS/Linux this installs to `~/.local/bin/poke-around` unless `POKE_AROUND_BIN` is set. On Windows it installs to `%LOCALAPPDATA%\Programs\poke-around\`.
 
 **Manual download**
 
