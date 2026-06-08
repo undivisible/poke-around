@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use rs_peekaboo::automation::{Target, parse_point};
-use rs_peekaboo::{Bounds, Direction, ImageMode, Peekaboo, Point, Snapshot};
+use rs_peekaboo::automation::{Target, parse_point, validate_output_path};
+use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, Point, Snapshot};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -607,7 +607,7 @@ fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value
         "image" => image(args, state),
         "see" => see(args, state),
         "list_screens" => list_screens(args),
-        "permissions" => permissions(),
+        "permissions" => permissions(args),
         "click" => click(args, state),
         "press" => press(args, state),
         "type" => type_text(args, state),
@@ -633,8 +633,8 @@ fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value
 }
 
 fn image(args: &Value, _state: &AppState) -> Result<Value> {
-    let mode = ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
-    let path = str_arg(args, "path").map(PathBuf::from);
+    let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
+    let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
     let capture = Peekaboo::new().image(mode, path, retina)?;
     let metadata = json!({
@@ -642,14 +642,15 @@ fn image(args: &Value, _state: &AppState) -> Result<Value> {
         "mode": capture.mode,
         "bytes": capture.bytes,
         "mime_type": capture.mime_type,
+        "ephemeral": capture.ephemeral,
     });
-    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
+    ok_json_with_image(metadata, &capture)
 }
 
 fn see(args: &Value, _state: &AppState) -> Result<Value> {
     let app = str_arg(args, "app");
-    let mode = ImageMode::parse(str_arg(args, "mode").unwrap_or("screen"));
-    let path = str_arg(args, "path").map(PathBuf::from);
+    let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
+    let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
     let peekaboo = Peekaboo::new();
     let capture = peekaboo.image(mode, path, retina)?;
@@ -667,17 +668,22 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
             "mode": capture.mode,
             "bytes": capture.bytes,
             "mime_type": capture.mime_type,
+            "ephemeral": capture.ephemeral,
         }
     });
-    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
+    ok_json_with_image(metadata, &capture)
 }
 
 fn list_screens(_args: &Value) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().list_screens()?))
 }
 
-fn permissions() -> Result<Value> {
-    Ok(ok_json(Peekaboo::new().permissions()))
+fn permissions(args: &Value) -> Result<Value> {
+    if str_arg(args, "action") == Some("grant") {
+        Ok(ok_json(Peekaboo::new().grant_permissions()?))
+    } else {
+        Ok(ok_json(Peekaboo::new().permissions()))
+    }
 }
 
 fn click(args: &Value, _state: &AppState) -> Result<Value> {
@@ -944,20 +950,31 @@ fn ok_json(value: Value) -> Value {
     })
 }
 
-fn ok_json_with_image(value: Value, image_path: &Path, mime_type: &str) -> Result<Value> {
-    let data = fs::read(image_path)?;
+fn ok_json_with_image(value: Value, capture: &ImageCapture) -> Result<Value> {
+    let data = fs::read(&capture.path)?;
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-    Ok(json!({
+    let response = json!({
         "content": [
             { "type": "text", "text": text },
             {
                 "type": "image",
                 "data": base64::engine::general_purpose::STANDARD.encode(data),
-                "mimeType": mime_type
+                "mimeType": capture.mime_type
             }
         ],
         "structuredContent": value
-    }))
+    });
+    if capture.ephemeral {
+        let _ = fs::remove_file(&capture.path);
+    }
+    Ok(response)
+}
+
+fn optional_output_path(args: &Value) -> Result<Option<PathBuf>> {
+    match str_arg(args, "path") {
+        Some(path) => Ok(Some(validate_output_path(Path::new(path))?)),
+        None => Ok(None),
+    }
 }
 
 fn error_result(text: impl Into<String>) -> Value {
@@ -1131,7 +1148,14 @@ fn read_image(args: &Value, state: &AppState) -> Result<Value> {
         "path": path,
         "mime_type": mime
     });
-    ok_json_with_image(metadata, &path, mime)
+    let capture = ImageCapture {
+        path: path.clone(),
+        mode: ImageMode::Screen,
+        bytes: fs::metadata(&path)?.len(),
+        mime_type: mime.to_string(),
+        ephemeral: false,
+    };
+    ok_json_with_image(metadata, &capture)
 }
 
 fn run_agent(args: &Value) -> Result<Value> {
@@ -1141,14 +1165,16 @@ fn run_agent(args: &Value) -> Result<Value> {
 }
 
 fn take_screenshot(args: &Value) -> Result<Value> {
-    let path = args.get("path").and_then(Value::as_str).map(PathBuf::from);
-    let capture = rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, path, true)?;
+    let path = optional_output_path(args)?;
+    let capture =
+        rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, path, true)?;
     let metadata = json!({
         "path": capture.path,
         "bytes": capture.bytes,
-        "mime_type": capture.mime_type
+        "mime_type": capture.mime_type,
+        "ephemeral": capture.ephemeral,
     });
-    ok_json_with_image(metadata, &capture.path, &capture.mime_type)
+    ok_json_with_image(metadata, &capture)
 }
 
 fn edit_file(args: &Value, state: &AppState) -> Result<Value> {
@@ -1261,7 +1287,14 @@ mod tests {
         ));
         fs::write(&path, [1_u8, 2, 3, 4]).unwrap();
 
-        let response = ok_json_with_image(json!({ "path": path }), &path, "image/png").unwrap();
+        let capture = ImageCapture {
+            path: path.clone(),
+            mode: ImageMode::Screen,
+            bytes: 4,
+            mime_type: "image/png".to_string(),
+            ephemeral: false,
+        };
+        let response = ok_json_with_image(json!({ "path": path }), &capture).unwrap();
         let content = response["content"].as_array().unwrap();
 
         assert_eq!(content.len(), 2);

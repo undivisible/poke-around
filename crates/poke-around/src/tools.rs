@@ -87,8 +87,13 @@ fn computer_use_tools() -> Vec<Value> {
         }),
         json!({
             "name": "permissions",
-            "description": "Probe screen recording, accessibility, and clipboard access.",
-            "inputSchema": {"type": "object", "properties": {}}
+            "description": "Probe or grant screen recording, accessibility, and clipboard access.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Optional action: grant"}
+                }
+            }
         }),
         json!({
             "name": "click",
