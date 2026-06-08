@@ -1,6 +1,7 @@
 use crate::policy::{self, PermissionMode};
 use crate::{Error, Result, agents, config, tools};
 use base64::Engine;
+use rand::Rng;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -75,7 +76,7 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         Ok(request) => request,
         Err(err) => {
             let body = json!({ "error": err.to_string() }).to_string();
-            write_http_response(&mut stream, 400, &body)?;
+            write_http_response(&mut stream, 400, &body, &[])?;
             return Ok(());
         }
     };
@@ -86,42 +87,112 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
     let session_id = request
         .headers
         .get("mcp-session-id")
+        .filter(|value| !value.is_empty())
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    let response = if request.method == "OPTIONS" {
-        None
-    } else if request.method == "GET" && path.starts_with("/.well-known/oauth-protected-resource") {
-        Some(oauth_protected_resource_metadata(&request))
-    } else if request.method == "GET" && path == "/.well-known/oauth-authorization-server" {
-        Some(oauth_authorization_server_metadata())
-    } else if request.method == "GET" && matches!(path.as_str(), "/" | "/health" | "/mcp") {
-        Some(json!({ "ok": true }))
+    let http_response = if request.method == "OPTIONS" {
+        HttpResponse::no_content()
+    } else if request.method == "GET" && path == "/mcp" {
+        HttpResponse::method_not_allowed()
+    } else if request.method == "GET" && matches!(path.as_str(), "/" | "/health") {
+        HttpResponse::json(200, json!({ "ok": true }))
+    } else if request.method == "DELETE" && matches!(path.as_str(), "/" | "/mcp") {
+        HttpResponse::method_not_allowed()
     } else if request.method == "POST" && matches!(path.as_str(), "/" | "/mcp") {
-        handle_json_rpc(&request.body, &session_id, state.clone())?
+        match handle_json_rpc(&request.body, &session_id, state.clone())? {
+            Some(body) => {
+                let mut response = HttpResponse::json(200, body);
+                if request_contains_initialize(&request.body) {
+                    let new_session = new_mcp_session_id();
+                    response
+                        .headers
+                        .push(("Mcp-Session-Id".to_string(), new_session));
+                }
+                response
+            }
+            None => HttpResponse::accepted(),
+        }
     } else {
         write_http_response(
             &mut stream,
             404,
             &json!({ "error": "not found" }).to_string(),
+            &[],
         )?;
         return Ok(());
     };
-    match response {
-        Some(body) => {
-            let body = body.to_string();
-            if state.inner.verbose {
-                eprintln!("http: response 200 bytes={}", body.len());
-            }
-            write_http_response(&mut stream, 200, &body)?;
-        }
-        None => {
-            if state.inner.verbose {
-                eprintln!("http: response 204 bytes=0");
-            }
-            write_http_response(&mut stream, 204, "")?;
+    if state.inner.verbose {
+        eprintln!(
+            "http: response {} bytes={}",
+            http_response.status,
+            http_response.body.len()
+        );
+    }
+    write_http_response(
+        &mut stream,
+        http_response.status,
+        &http_response.body,
+        &http_response.headers,
+    )?;
+    Ok(())
+}
+
+struct HttpResponse {
+    status: u16,
+    body: String,
+    headers: Vec<(String, String)>,
+}
+
+impl HttpResponse {
+    fn json(status: u16, body: Value) -> Self {
+        Self {
+            status,
+            body: body.to_string(),
+            headers: Vec::new(),
         }
     }
-    Ok(())
+
+    fn no_content() -> Self {
+        Self {
+            status: 204,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn accepted() -> Self {
+        Self {
+            status: 202,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn method_not_allowed() -> Self {
+        Self {
+            status: 405,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+}
+
+fn request_contains_initialize(body: &str) -> bool {
+    let Ok(request) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    if let Some(items) = request.as_array() {
+        return items
+            .iter()
+            .any(|item| item.get("method").and_then(Value::as_str) == Some("initialize"));
+    }
+    request.get("method").and_then(Value::as_str) == Some("initialize")
+}
+
+fn new_mcp_session_id() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::rng().fill(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn normalized_path(raw: &str) -> String {
@@ -149,32 +220,6 @@ fn tunnel_prefixed_mcp_path(path: &str) -> bool {
         return false;
     };
     prefix.is_empty() || prefix.starts_with('/') && prefix.len() > 1
-}
-
-fn oauth_protected_resource_metadata(request: &HttpRequest) -> Value {
-    let host = request
-        .headers
-        .get("host")
-        .cloned()
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    json!({
-        "resource": format!("http://{host}/mcp"),
-        "authorization_servers": ["https://poke.com"],
-        "bearer_methods_supported": ["header"],
-        "scopes_supported": ["mcp:tools"]
-    })
-}
-
-fn oauth_authorization_server_metadata() -> Value {
-    json!({
-        "issuer": "https://poke.com",
-        "authorization_endpoint": "https://poke.com/oauth/authorize",
-        "token_endpoint": "https://poke.com/api/v1/oauth/token",
-        "registration_endpoint": "https://poke.com/api/v1/oauth/register",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
-        "code_challenge_methods_supported": ["S256"]
-    })
 }
 
 struct HttpRequest {
@@ -243,18 +288,36 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     })
 }
 
-fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<()> {
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    extra_headers: &[(String, String)],
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
+        405 => "Method Not Allowed",
         _ => "Error",
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, Accept\r\nAccess-Control-Expose-Headers: Mcp-Session-Id\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
+        "HTTP/1.1 {status} {reason}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, Accept, MCP-Protocol-Version\r\nAccess-Control-Expose-Headers: Mcp-Session-Id\r\n",
     )?;
+    for (name, value) in extra_headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    if body.is_empty() && status != 200 {
+        write!(stream, "Content-Length: 0\r\nConnection: close\r\n\r\n")?;
+    } else {
+        write!(
+            stream,
+            "Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )?;
+    }
     Ok(())
 }
 

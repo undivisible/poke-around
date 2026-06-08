@@ -20,12 +20,6 @@ Run Poke Around on your machine, then message Poke from iMessage, Telegram, or S
 curl -fsSL https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.sh | bash
 ```
 
-**Install script (Windows PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/undivisible/poke-around/main/scripts/install.ps1 | iex
-```
-
 **Homebrew (macOS / Linux)**
 
 ```bash
@@ -54,31 +48,9 @@ cd poke-around
 
 This installs to `~/.local/bin/poke-around` unless `POKE_AROUND_BIN` is set.
 
-**Native Rust bridge branch**
-
-```bash
-cargo install --git https://github.com/undivisible/poke-around.git --branch codex/rust-native-bridge poke-around
-```
-
-To test the branch from a checkout:
-
-```bash
-git clone --branch codex/rust-native-bridge https://github.com/undivisible/poke-around.git
-cd poke-around
-./scripts/install.sh
-~/.local/bin/poke-around --mode full
-```
-
-```powershell
-git clone --branch codex/rust-native-bridge https://github.com/undivisible/poke-around.git
-cd poke-around
-.\scripts\install.ps1
-$env:LOCALAPPDATA\Programs\poke-around\poke-around.exe --mode full
-```
-
 **Manual download**
 
-Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` or `poke-around.exe` plus `poke-around-bridge.js` in the same directory.
+Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` or `poke-around.exe` on your `PATH`.
 
 On macOS, if the binary is blocked by Gatekeeper:
 
@@ -169,6 +141,7 @@ See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy.
 
 - Rust rewrite of [f/poke-gate](https://github.com/f/poke-gate)
 - macOS computer-use primitives through [rs_peekaboo](https://github.com/undivisible/rs_peekaboo)
+- Poke tunnel client through [rs_poke](https://github.com/undivisible/rs_poke)
 - [Poke](https://poke.com) by [The Interaction Company](https://interaction.co)
 
 ## License

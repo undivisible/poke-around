@@ -1,14 +1,11 @@
-FROM oven/bun:latest AS builder-bun
+FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY . .
-RUN bun install --cwd bridge && bun run build:bridge
-
-FROM rust:1-bookworm AS builder-rust
-WORKDIR /app
-COPY --from=builder-bun /app .
 RUN cargo build --workspace --release
 
-FROM node:22-slim
-COPY --from=builder-rust /app/target/release/poke-around /usr/local/bin/poke-around
-COPY --from=builder-rust /app/bridge/dist/poke-around-bridge.js /usr/local/bin/poke-around-bridge.js
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/poke-around /usr/local/bin/poke-around
 ENTRYPOINT ["poke-around"]

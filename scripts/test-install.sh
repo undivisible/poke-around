@@ -3,8 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
-INSTALL_PS1="$SCRIPT_DIR/install.ps1"
-GITATTRIBUTES="$SCRIPT_DIR/../.gitattributes"
 
 require_literal() {
   local text="$1"
@@ -52,44 +50,6 @@ require_regex 'mv -f "\$TMP_INSTALL" "\$BIN"'
 require_regex 'sudo mv -f "\$TMP_INSTALL" "\$BIN"'
 reject_literal 'curl -fsSL -o "$BIN" "$URL"'
 reject_literal 'releases/$VERSION/download'
-
-if [[ ! -f "$INSTALL_PS1" ]]; then
-  echo "missing: $INSTALL_PS1" >&2
-  exit 1
-fi
-
-require_windows_literal() {
-  local text="$1"
-  if ! grep -Fq "$text" "$INSTALL_PS1"; then
-    echo "missing: $text" >&2
-    exit 1
-  fi
-}
-
-require_windows_literal '$Asset = "poke-around-windows-x86_64.zip"'
-require_windows_literal '$DefaultInstallDir = Join-Path $env:LOCALAPPDATA "Programs\poke-around"'
-require_windows_literal 'function Install-FromRepo'
-require_windows_literal 'function Get-ReleaseJson'
-require_windows_literal 'function Get-AssetDigest'
-require_windows_literal 'function Get-FileSha256'
-require_windows_literal 'cargo build --workspace --release'
-require_windows_literal '$env:POKE_AROUND_USE_RELEASE -ne "1"'
-require_windows_literal '$env:POKE_AROUND_BIN'
-require_windows_literal 'Build did not produce poke-around.exe'
-require_windows_literal 'api.github.com/repos/$Repo/releases/latest'
-require_windows_literal 'api.github.com/repos/$Repo/releases/tags/$ReleaseVersion'
-require_windows_literal 'Checksum mismatch for $Asset'
-require_windows_literal 'No checksum digest for $Version/$Asset'
-require_windows_literal 'Invoke-WebRequest -Uri $Url -OutFile $ArchivePath'
-require_windows_literal 'Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force'
-require_windows_literal '.poke-around.$PID.tmp'
-require_windows_literal 'Move-Item -LiteralPath $TempInstall -Destination (Join-Path $InstallDir "poke-around.exe") -Force'
-require_windows_literal 'Write-Host "Run: $(Join-Path $InstallDir "poke-around.exe") --help"'
-
-if grep -Fq '*.ps1 linguist-vendored' "$GITATTRIBUTES"; then
-  echo "unexpected: *.ps1 linguist-vendored" >&2
-  exit 1
-fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/poke-around-install-test.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT

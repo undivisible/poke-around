@@ -140,9 +140,7 @@ async fn run_bridge(
                 if synced > 0 {
                     log_status("Ready - your Poke agent can now access this machine.");
                 } else {
-                    log_status(
-                        "Tools not synced yet; Poke may not be able to use this machine.",
-                    );
+                    log_status("Tools not synced yet; Poke may not be able to use this machine.");
                 }
             }
             Err(err) => {
@@ -192,8 +190,12 @@ async fn run_bridge(
                             break;
                         }
                         Ok(TunnelEvent::Error(message)) => {
-                            log_status(&format!("Bridge error: {message}"));
-                            break;
+                            if is_non_fatal_bridge_error(&message) {
+                                log_status(&format!("Bridge warning: {message}"));
+                            } else {
+                                log_status(&format!("Bridge error: {message}"));
+                                break;
+                            }
                         }
                         Ok(TunnelEvent::Created(_)) | Ok(TunnelEvent::Connected(_)) => {}
                         Err(_) => break,
@@ -531,6 +533,10 @@ fn record_connection(connection_id: &str) -> Result<()> {
         ("connectionId", Value::String(connection_id.to_string())),
         ("connectionHistory", Value::Array(history)),
     ])
+}
+
+fn is_non_fatal_bridge_error(message: &str) -> bool {
+    message.contains("activate-tunnel") || message.contains("sync-tools")
 }
 
 fn log_status(message: &str) {
