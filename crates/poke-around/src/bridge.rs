@@ -1,7 +1,7 @@
 use crate::{Error, Result, config};
 use rs_poke::{
-    CreateWebhook, CredentialsStore, LoginOptions, Poke, PokeOptions, TunnelEvent, TunnelOptions,
-    TunnelRunner,
+    CreateWebhook, CredentialsStore, FetchWithAuthOptions, LoginOptions, Poke, PokeOptions,
+    TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
 };
 use serde_json::{Map, Value};
 use std::thread;
@@ -85,9 +85,12 @@ async fn run_bridge(
             TunnelOptions {
                 url: mcp_url.clone(),
                 name: tunnel_name.clone(),
+                client_id: std::env::var("POKE_CLIENT_ID").ok(),
+                client_secret: std::env::var("POKE_CLIENT_SECRET").ok(),
                 cleanup_on_stop: false,
                 sync_interval: Duration::from_secs(300),
                 startup_timeout: TUNNEL_STARTUP_TIMEOUT,
+                ..TunnelOptions::default()
             },
         );
         let mut events = runner.subscribe();
@@ -156,14 +159,9 @@ async fn run_bridge(
 
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat.tick().await;
-        let mut sync = tokio::time::interval(Duration::from_secs(300));
-        sync.tick().await;
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {}
-                _ = sync.tick() => {
-                    sync_and_report_tools(&runner, &mcp_url).await;
-                }
                 event = events.recv() => {
                     match event {
                         Ok(TunnelEvent::Disconnected) => {
@@ -251,9 +249,15 @@ async fn ensure_auth() -> Result<String> {
     }
     log_status("Opening browser for Poke login...");
     let store = CredentialsStore::default_store().map_err(|err| Error::msg(err.to_string()))?;
-    let options = LoginOptions::new(store);
+    let options = LoginOptions::new(store).on_code(|info| {
+        log_status(&format!(
+            "Enter code {} at {}",
+            info.user_code, info.login_url
+        ));
+    });
     rs_poke::login(options)
         .await
+        .map(|result| result.token)
         .map_err(|err| Error::msg(err.to_string()))
 }
 
@@ -279,6 +283,7 @@ async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, Strin
     patch_state([
         ("webhookUrl", Value::String(webhook.webhook_url.clone())),
         ("webhookToken", Value::String(webhook.webhook_token.clone())),
+        ("triggerId", Value::String(webhook.trigger_id.clone())),
         ("webhookName", Value::String(tunnel_name.to_string())),
     ])?;
     Ok((webhook.webhook_url, webhook.webhook_token))
@@ -309,13 +314,14 @@ async fn cleanup_stale_connections(
         ids.len()
     );
     for id in ids {
-        let _ = poke
-            .raw_auth(
-                reqwest::Method::DELETE,
-                &format!("/mcp/connections/{id}"),
-                None,
-            )
-            .await;
+        let _ = fetch_with_auth(FetchWithAuthOptions {
+            path: &format!("/mcp/connections/{id}"),
+            method: reqwest::Method::DELETE,
+            body: None,
+            token: Some(poke.api_key().to_string()),
+            base_url: Some(poke.base_url().to_string()),
+        })
+        .await;
     }
     patch_state([
         ("webhookUrl", Value::String(webhook_url.to_string())),

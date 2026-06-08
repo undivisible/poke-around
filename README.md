@@ -145,6 +145,18 @@ await poke.sendMessage("Hello from my agent!");
 
 Per-agent secrets go in `~/.config/poke-around/agents/.env.<name>`.
 
+## Configuration
+
+Poke Around uses [rs_poke](https://github.com/undivisible/rs_poke) for authentication and tunneling. Credentials are stored at `~/.config/poke/credentials.json`.
+
+| Variable | Description |
+|----------|-------------|
+| `POKE_API` | Poke API base URL (default: `https://poke.com/api/v1`) |
+| `POKE_API_KEY` | API key (optional if logged in via device flow) |
+| `POKE_FRONTEND` | Frontend URL for device login (default: `https://poke.com`) |
+| `POKE_CLIENT_ID` | OAuth client ID for MCP connections (optional) |
+| `POKE_CLIENT_SECRET` | OAuth client secret for MCP connections (optional) |
+
 ## Security
 
 In **full mode**, Poke Around grants full shell access to your Poke agent. Only run it on machines and networks you trust. Use `limited` or `sandbox` mode for tighter restrictions.
