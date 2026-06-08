@@ -103,6 +103,21 @@ async function deleteConnection(token: string, connectionId: string): Promise<vo
   } catch {}
 }
 
+async function countLocalTools(mcpUrl: string): Promise<number | null> {
+  try {
+    const res = await fetch(mcpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { result?: { tools?: unknown[] } };
+    return Array.isArray(body.result?.tools) ? body.result.tools.length : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── arg parsing ─────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
@@ -292,8 +307,9 @@ async function runTunnel(): Promise<void> {
         }
         scheduleTunnelRestart();
       });
-      tunnel.on("toolsSynced", ({ toolCount }) => {
-        emit({ type: "tools_synced", count: toolCount });
+      tunnel.on("toolsSynced", async ({ toolCount }) => {
+        const count = toolCount > 0 ? toolCount : await countLocalTools(mcpUrl);
+        emit({ type: "tools_synced", count: count ?? toolCount });
       });
 
       await tunnel.start();

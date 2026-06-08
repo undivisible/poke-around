@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="undivisible/poke-around"
-BIN="${POKE_AROUND_BIN:-/usr/local/bin/poke-around}"
+BIN="${POKE_AROUND_BIN:-$HOME/.local/bin/poke-around}"
 VERSION="${1:-latest}"
 
 install_file() {

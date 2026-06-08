@@ -46,6 +46,8 @@ cd poke-around
 ./scripts/install.sh
 ```
 
+This installs to `~/.local/bin/poke-around` unless `POKE_AROUND_BIN` is set.
+
 **Manual download**
 
 Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` plus `poke-around-bridge.js` in the same directory.

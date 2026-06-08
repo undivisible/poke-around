@@ -41,4 +41,10 @@ describe("bridge tunnel lifecycle", () => {
     expect(source).toContain('syncTools(): Promise<void>');
     expect(source).toContain(".syncTools();");
   });
+
+  test("falls back to local tool count when Poke omits tools array", () => {
+    expect(source).toContain("async function countLocalTools");
+    expect(source).toContain('method: "tools/list"');
+    expect(source).toContain("toolCount > 0 ? toolCount : await countLocalTools(mcpUrl)");
+  });
 });
