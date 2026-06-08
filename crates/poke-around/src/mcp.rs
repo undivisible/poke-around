@@ -1166,8 +1166,7 @@ fn run_agent(args: &Value) -> Result<Value> {
 
 fn take_screenshot(args: &Value) -> Result<Value> {
     let path = optional_output_path(args)?;
-    let capture =
-        rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, path, true)?;
+    let capture = rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, path, true)?;
     let metadata = json!({
         "path": capture.path,
         "bytes": capture.bytes,
