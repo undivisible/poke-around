@@ -68,6 +68,10 @@ require_windows_literal() {
 
 require_windows_literal '$Asset = "poke-around-windows-x86_64.zip"'
 require_windows_literal '$DefaultInstallDir = Join-Path $env:LOCALAPPDATA "Programs\poke-around"'
+require_windows_literal 'function Install-FromRepo'
+require_windows_literal 'cargo build --workspace --release'
+require_windows_literal '$env:POKE_AROUND_USE_RELEASE -ne "1"'
+require_windows_literal 'Build did not produce poke-around.exe'
 require_windows_literal 'Invoke-WebRequest -Uri $Url -OutFile $ArchivePath'
 require_windows_literal 'Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force'
 require_windows_literal 'Copy-Item -LiteralPath (Join-Path $ExtractDir "poke-around.exe") -Destination (Join-Path $InstallDir "poke-around.exe") -Force'

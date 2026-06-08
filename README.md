@@ -69,6 +69,13 @@ cd poke-around
 ~/.local/bin/poke-around --mode full
 ```
 
+```powershell
+git clone --branch codex/rust-native-bridge https://github.com/undivisible/poke-around.git
+cd poke-around
+.\scripts\install.ps1
+$env:LOCALAPPDATA\Programs\poke-around\poke-around.exe --mode full
+```
+
 **Manual download**
 
 Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` or `poke-around.exe` plus `poke-around-bridge.js` in the same directory.
