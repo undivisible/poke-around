@@ -125,6 +125,7 @@ fn computer_use_tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "Text to type"},
+                    "app": {"type": "string", "description": "Optional app name to focus before typing"},
                     "clear": {"type": "boolean", "description": "Clear the current field first"},
                     "return": {"type": "boolean", "description": "Press return after typing"},
                     "delay_ms": {"type": "number", "description": "Delay between characters in milliseconds"}

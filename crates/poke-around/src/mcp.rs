@@ -410,7 +410,23 @@ fn handle_tool_call(
     {
         return request_approval(tool_name, args, session_id, &state);
     }
-    execute_tool(tool_name, args, &state)
+    let result = execute_tool(tool_name, args, &state)?;
+    if state.inner.verbose
+        && let Some(text) = result
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+    {
+        let preview = if text.len() > 240 {
+            format!("{}...", &text[..240])
+        } else {
+            text.to_string()
+        };
+        eprintln!("tool result: {preview}");
+    }
+    Ok(result)
 }
 
 fn needs_approval(tool_name: &str, args: &Value, mode: PermissionMode) -> bool {
@@ -677,11 +693,13 @@ fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
     let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(false);
     let press_return = args.get("return").and_then(Value::as_bool).unwrap_or(false);
     let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
+    let app = str_arg(args, "app");
     Ok(ok_json(Peekaboo::new().type_text(
         text,
         clear,
         press_return,
         delay_ms,
+        app,
     )?))
 }
 
