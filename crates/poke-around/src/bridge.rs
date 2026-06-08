@@ -403,14 +403,14 @@ async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
         };
         let local = local_tool_count(mcp_url).await;
         let reported = last_synced.max(local);
-        if last_synced > 0 {
+        if reported > 0 {
             log_status(&format!("Tools synced: {reported}"));
             return reported;
         }
         if attempt < SYNC_TOOLS_MAX_ATTEMPTS {
             if local > 0 {
                 log_status(&format!(
-                    "Tunnel not ready for sync-tools yet (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying in {}s...",
+                    "sync-tools API returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying in {}s...",
                     SYNC_TOOLS_RETRY_DELAY.as_secs()
                 ));
             } else {

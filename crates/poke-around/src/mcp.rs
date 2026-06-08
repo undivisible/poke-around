@@ -90,6 +90,10 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         .unwrap_or_else(|| "default".to_string());
     let response = if request.method == "OPTIONS" {
         None
+    } else if request.method == "GET" && path.starts_with("/.well-known/oauth-protected-resource") {
+        Some(oauth_protected_resource_metadata(&request))
+    } else if request.method == "GET" && path == "/.well-known/oauth-authorization-server" {
+        Some(oauth_authorization_server_metadata())
     } else if request.method == "GET" && matches!(path.as_str(), "/" | "/health" | "/mcp") {
         Some(json!({ "ok": true }))
     } else if request.method == "POST" && matches!(path.as_str(), "/" | "/mcp") {
@@ -130,11 +134,47 @@ fn normalized_path(raw: &str) -> String {
     } else {
         raw.to_string()
     };
-    if path.ends_with("/mcp") {
+    if path.starts_with("/.well-known/") {
+        return path;
+    }
+    if tunnel_prefixed_mcp_path(&path) {
         "/mcp".to_string()
     } else {
         path
     }
+}
+
+fn tunnel_prefixed_mcp_path(path: &str) -> bool {
+    let Some(prefix) = path.strip_suffix("/mcp") else {
+        return false;
+    };
+    prefix.is_empty() || prefix.starts_with('/') && prefix.len() > 1
+}
+
+fn oauth_protected_resource_metadata(request: &HttpRequest) -> Value {
+    let host = request
+        .headers
+        .get("host")
+        .cloned()
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    json!({
+        "resource": format!("http://{host}/mcp"),
+        "authorization_servers": ["https://poke.com"],
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": ["mcp:tools"]
+    })
+}
+
+fn oauth_authorization_server_metadata() -> Value {
+    json!({
+        "issuer": "https://poke.com",
+        "authorization_endpoint": "https://poke.com/oauth/authorize",
+        "token_endpoint": "https://poke.com/api/v1/oauth/token",
+        "registration_endpoint": "https://poke.com/api/v1/oauth/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"]
+    })
 }
 
 struct HttpRequest {
