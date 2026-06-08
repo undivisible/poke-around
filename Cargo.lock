@@ -1176,9 +1176,9 @@ dependencies = [
 
 [[package]]
 name = "rs_poke"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c6a76f9946622b4705b1622b8d5a8c0b62dbeafb2c3f5bbd382d16d89f01e17"
+checksum = "2b6944ef6d8ce1318036b0e62125ecb36c5e6d7a142ce0e52ce0f2b5c5b02f0a"
 dependencies = [
  "bytes",
  "dirs",

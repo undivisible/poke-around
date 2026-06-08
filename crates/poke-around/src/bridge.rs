@@ -11,9 +11,11 @@ use tokio::sync::mpsc;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
 const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-const SYNC_TOOLS_INITIAL_DELAY: Duration = Duration::from_secs(5);
-const SYNC_TOOLS_MAX_ATTEMPTS: usize = 5;
-const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(2);
+// Poke's sync-tools endpoint cannot reach the local MCP through a new tunnel
+// until roughly 25-30s after connect (same propagation delay the npm SDK hits).
+const SYNC_TOOLS_INITIAL_DELAY: Duration = Duration::from_secs(20);
+const SYNC_TOOLS_MAX_ATTEMPTS: usize = 4;
+const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const MAX_CONN_HISTORY: usize = 10;
 
 pub struct Bridge {
@@ -127,7 +129,16 @@ async fn run_bridge(
                     "Tunnel connected ({}) -> {}",
                     info.connection_id, info.tunnel_url
                 ));
-                log_status("Ready - your Poke agent can now access this machine.");
+                log_status("Waiting for tunnel propagation before syncing tools...");
+                tokio::time::sleep(SYNC_TOOLS_INITIAL_DELAY).await;
+                let synced = sync_and_report_tools(&runner, &mcp_url).await;
+                if synced == 0 {
+                    log_status(
+                        "Tools not synced yet; Poke may not be able to use this machine.",
+                    );
+                } else {
+                    log_status("Ready - your Poke agent can now access this machine.");
+                }
                 notify_poke(
                     &poke,
                     &webhook_url,
@@ -138,8 +149,6 @@ async fn run_bridge(
                     Some(&info.tunnel_url),
                 )
                 .await;
-                tokio::time::sleep(SYNC_TOOLS_INITIAL_DELAY).await;
-                sync_and_report_tools(&runner, &mcp_url).await;
             }
             Err(err) => {
                 log_status(&format!("Bridge error: {err}"));
@@ -406,11 +415,13 @@ async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
         if attempt < SYNC_TOOLS_MAX_ATTEMPTS {
             if local > 0 {
                 log_status(&format!(
-                    "Tool sync returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying..."
+                    "Tunnel not ready for sync-tools yet (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying in {}s...",
+                    SYNC_TOOLS_RETRY_DELAY.as_secs()
                 ));
             } else {
                 log_status(&format!(
-                    "Tool sync returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); retrying..."
+                    "Tunnel not ready for sync-tools yet (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); retrying in {}s...",
+                    SYNC_TOOLS_RETRY_DELAY.as_secs()
                 ));
             }
             tokio::time::sleep(SYNC_TOOLS_RETRY_DELAY).await;
