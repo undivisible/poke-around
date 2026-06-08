@@ -11,10 +11,7 @@ use tokio::sync::mpsc;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
 const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-// Poke's sync-tools endpoint cannot reach the local MCP through a new tunnel
-// until roughly 25-30s after connect (same propagation delay the npm SDK hits).
-const SYNC_TOOLS_INITIAL_DELAY: Duration = Duration::from_secs(20);
-const SYNC_TOOLS_MAX_ATTEMPTS: usize = 4;
+const SYNC_TOOLS_MAX_ATTEMPTS: usize = 8;
 const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const MAX_CONN_HISTORY: usize = 10;
 
@@ -129,16 +126,6 @@ async fn run_bridge(
                     "Tunnel connected ({}) -> {}",
                     info.connection_id, info.tunnel_url
                 ));
-                log_status("Waiting for tunnel propagation before syncing tools...");
-                tokio::time::sleep(SYNC_TOOLS_INITIAL_DELAY).await;
-                let synced = sync_and_report_tools(&runner, &mcp_url).await;
-                if synced == 0 {
-                    log_status(
-                        "Tools not synced yet; Poke may not be able to use this machine.",
-                    );
-                } else {
-                    log_status("Ready - your Poke agent can now access this machine.");
-                }
                 notify_poke(
                     &poke,
                     &webhook_url,
@@ -149,6 +136,14 @@ async fn run_bridge(
                     Some(&info.tunnel_url),
                 )
                 .await;
+                let synced = sync_and_report_tools(&runner, &mcp_url).await;
+                if synced > 0 {
+                    log_status("Ready - your Poke agent can now access this machine.");
+                } else {
+                    log_status(
+                        "Tools not synced yet; Poke may not be able to use this machine.",
+                    );
+                }
             }
             Err(err) => {
                 log_status(&format!("Bridge error: {err}"));
