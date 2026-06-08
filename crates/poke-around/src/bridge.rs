@@ -84,7 +84,7 @@ async fn run_bridge(
     permission_mode: String,
     mut rx: async_mpsc::UnboundedReceiver<BridgeCommand>,
 ) -> Result<()> {
-    let token = ensure_auth().await?;
+    let token = ensure_auth(false).await?;
     let mut poke = make_poke(&token)?;
     let tunnel_name = integration_name("poke-around");
     let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
@@ -196,12 +196,14 @@ async fn run_bridge(
                             log_status(&format!(
                                 "Poke token expired - re-authenticating ({auth_url})..."
                             ));
-                            match ensure_auth().await {
-                                Ok(token) => {
+                            match recover_from_oauth_required().await {
+                                OAuthRecoveryOutcome::Restart { token } => {
                                     poke = make_poke(&token)?;
                                     restart_tunnel = true;
                                 }
-                                Err(err) => log_status(&format!("Re-auth failed: {err}")),
+                                OAuthRecoveryOutcome::Failed(message) => {
+                                    log_status(&format!("Re-auth failed: {message}"));
+                                }
                             }
                             break;
                         }
@@ -266,9 +268,46 @@ async fn sleep_or_stop(
     }
 }
 
-async fn ensure_auth() -> Result<String> {
-    if let Some(token) = rs_poke::get_token()? {
-        return Ok(token);
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OAuthRecoveryOutcome {
+    Restart { token: String },
+    Failed(String),
+}
+
+fn plan_oauth_recovery(
+    cached_reauth: std::result::Result<String, String>,
+    fresh_login: std::result::Result<String, String>,
+) -> OAuthRecoveryOutcome {
+    match cached_reauth {
+        Ok(token) => OAuthRecoveryOutcome::Restart { token },
+        Err(cached_err) => match fresh_login {
+            Ok(token) => OAuthRecoveryOutcome::Restart { token },
+            Err(fresh_err) => OAuthRecoveryOutcome::Failed(format!(
+                "{cached_err}; fresh login failed: {fresh_err}"
+            )),
+        },
+    }
+}
+
+async fn recover_from_oauth_required() -> OAuthRecoveryOutcome {
+    let cached = ensure_auth(false).await.map_err(|err| err.to_string());
+    if cached.is_ok() {
+        return plan_oauth_recovery(cached, Err("skipped".into()));
+    }
+    log_status("Cached credentials invalid - opening browser for fresh Poke login...");
+    let fresh = ensure_auth(true).await.map_err(|err| err.to_string());
+    plan_oauth_recovery(cached, fresh)
+}
+
+async fn ensure_auth(force_fresh: bool) -> Result<String> {
+    if !force_fresh {
+        if let Some(token) = rs_poke::get_token()? {
+            return Ok(token);
+        }
+    } else {
+        rs_poke::logout()
+            .await
+            .map_err(|err| Error::msg(err.to_string()))?;
     }
     log_status("Opening browser for Poke login...");
     let store = CredentialsStore::default_store().map_err(|err| Error::msg(err.to_string()))?;
@@ -278,8 +317,12 @@ async fn ensure_auth() -> Result<String> {
             info.user_code, info.login_url
         ));
     });
-    rs_poke::login(options)
-        .await
+    let login = if force_fresh {
+        rs_poke::login_fresh(options).await
+    } else {
+        rs_poke::login(options).await
+    };
+    login
         .map(|result| result.token)
         .map_err(|err| Error::msg(err.to_string()))
 }
@@ -591,7 +634,7 @@ pub fn send_one_shot_message(message: &str) -> Result<()> {
         .build()
         .map_err(|err| Error::msg(format!("failed to start async runtime: {err}")))?;
     runtime.block_on(async {
-        let token = ensure_auth().await?;
+        let token = ensure_auth(false).await?;
         let poke = make_poke(&token)?;
         poke.send_message(message)
             .await
@@ -616,5 +659,41 @@ mod tests {
         assert!(is_non_fatal_bridge_error("activate-tunnel failed"));
         assert!(is_non_fatal_bridge_error("sync-tools returned 0"));
         assert!(!is_non_fatal_bridge_error("connection timeout"));
+    }
+
+    #[test]
+    fn oauth_recovery_restarts_when_cached_token_is_valid() {
+        let outcome = plan_oauth_recovery(Ok("pk_cached".into()), Err("skipped".into()));
+        assert_eq!(
+            outcome,
+            OAuthRecoveryOutcome::Restart {
+                token: "pk_cached".into()
+            }
+        );
+    }
+
+    #[test]
+    fn oauth_recovery_falls_back_to_fresh_login() {
+        let outcome = plan_oauth_recovery(Err("cached invalid".into()), Ok("pk_fresh".into()));
+        assert_eq!(
+            outcome,
+            OAuthRecoveryOutcome::Restart {
+                token: "pk_fresh".into()
+            }
+        );
+    }
+
+    #[test]
+    fn oauth_recovery_reports_both_failures() {
+        let outcome = plan_oauth_recovery(
+            Err("cached invalid".into()),
+            Err("browser login timed out".into()),
+        );
+        assert_eq!(
+            outcome,
+            OAuthRecoveryOutcome::Failed(
+                "cached invalid; fresh login failed: browser login timed out".into()
+            )
+        );
     }
 }
