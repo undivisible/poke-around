@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
 const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const SYNC_TOOLS_INITIAL_DELAY: Duration = Duration::from_secs(5);
 const SYNC_TOOLS_MAX_ATTEMPTS: usize = 5;
 const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_CONN_HISTORY: usize = 10;
@@ -137,6 +138,7 @@ async fn run_bridge(
                     Some(&info.tunnel_url),
                 )
                 .await;
+                tokio::time::sleep(SYNC_TOOLS_INITIAL_DELAY).await;
                 sync_and_report_tools(&runner, &mcp_url).await;
             }
             Err(err) => {
@@ -151,7 +153,9 @@ async fn run_bridge(
         }
 
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        heartbeat.tick().await;
         let mut sync = tokio::time::interval(Duration::from_secs(300));
+        sync.tick().await;
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {}
@@ -165,7 +169,9 @@ async fn run_bridge(
                             break;
                         }
                         Ok(TunnelEvent::ToolsSynced { tool_count }) => {
-                            log_status(&format!("Tools synced: {}", tool_count.max(local_tool_count(&mcp_url).await)));
+                            if tool_count > 0 {
+                                log_status(&format!("Tools synced: {tool_count}"));
+                            }
                         }
                         Ok(TunnelEvent::OAuthRequired { auth_url }) => {
                             log_status(&format!(
