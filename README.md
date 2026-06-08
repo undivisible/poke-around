@@ -44,15 +44,15 @@ If Brew already poured a newer simdjson but could not link it, either run `brew 
 
 **Build from source**
 
-Requires stable [Rust](https://www.rust-lang.org/tools/install) and [Bun](https://bun.sh):
+Requires stable [Rust](https://www.rust-lang.org/tools/install):
 
 ```bash
 git clone https://github.com/undivisible/poke-around.git
 cd poke-around
-bun run build:bridge
-cargo build --release
-./target/release/poke-around
+./scripts/install.sh
 ```
+
+This installs to `~/.local/bin/poke-around` unless `POKE_AROUND_BIN` is set.
 
 **Native Rust bridge branch**
 
@@ -65,7 +65,8 @@ To test the branch from a checkout:
 ```bash
 git clone --branch codex/rust-native-bridge https://github.com/undivisible/poke-around.git
 cd poke-around
-cargo run --release -- --mode full
+./scripts/install.sh
+~/.local/bin/poke-around --mode full
 ```
 
 **Manual download**

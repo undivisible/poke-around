@@ -30,6 +30,9 @@ require_regex() {
   fi
 }
 
+require_literal 'install_from_repo()'
+require_literal 'cargo build --workspace --release'
+require_literal 'POKE_AROUND_USE_RELEASE'
 require_literal 'TMP_ARCHIVE="$(mktemp'
 require_literal 'TMP_DIR="$(mktemp -d'
 require_literal 'trap '\''rm -f "$TMP_ARCHIVE" "$TMP_INSTALL"; rm -rf "$TMP_DIR"'\'' EXIT'
@@ -79,6 +82,26 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/poke-around-install-test.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 MOCK_BIN="$WORK_DIR/bin"
 mkdir -p "$MOCK_BIN"
+
+cat > "$MOCK_BIN/cargo" <<'MOCK'
+#!/bin/bash
+set -euo pipefail
+mkdir -p target/release
+printf '#!/bin/sh\necho local\n' > target/release/poke-around
+chmod +x target/release/poke-around
+MOCK
+chmod +x "$MOCK_BIN/cargo"
+
+LOCAL_TARGET="$WORK_DIR/local/poke-around"
+mkdir -p "$(dirname "$LOCAL_TARGET")"
+PATH="$MOCK_BIN:$PATH" POKE_AROUND_BIN="$LOCAL_TARGET" "$INSTALL_SH"
+
+if [[ "$("$LOCAL_TARGET")" != "local" ]]; then
+  echo "local installed binary did not execute" >&2
+  exit 1
+fi
+
+rm -f "$MOCK_BIN/cargo"
 
 cat > "$MOCK_BIN/uname" <<'MOCK'
 #!/bin/bash
@@ -143,7 +166,7 @@ chmod +x "$MOCK_BIN/shasum"
 
 TARGET="$WORK_DIR/install/poke-around"
 mkdir -p "$(dirname "$TARGET")"
-PATH="$MOCK_BIN:$PATH" POKE_AROUND_BIN="$TARGET" "$INSTALL_SH"
+PATH="$MOCK_BIN:$PATH" POKE_AROUND_USE_RELEASE=1 POKE_AROUND_BIN="$TARGET" "$INSTALL_SH"
 
 if [[ "$("$TARGET")" != "installed" ]]; then
   echo "installed binary did not execute" >&2

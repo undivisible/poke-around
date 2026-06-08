@@ -2,8 +2,34 @@
 set -euo pipefail
 
 REPO="undivisible/poke-around"
-BIN="${POKE_AROUND_BIN:-/usr/local/bin/poke-around}"
+BIN="${POKE_AROUND_BIN:-$HOME/.local/bin/poke-around}"
 VERSION="${1:-latest}"
+
+install_file() {
+  local src="$1"
+  local dest="$2"
+  local dir
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  if [[ -w "$dir" && ( ! -e "$dest" || -w "$dest" ) ]]; then
+    install -m 755 "$src" "$dest"
+  else
+    sudo install -m 755 "$src" "$dest"
+  fi
+}
+
+install_from_repo() {
+  local root="$1"
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo is required to install from a local checkout" >&2
+    exit 1
+  fi
+  echo " Building poke-around from local checkout..."
+  (cd "$root" && cargo build --workspace --release)
+  install_file "$root/target/release/poke-around" "$BIN"
+  echo " Installed to $BIN"
+  echo " Run: poke-around --help"
+}
 
 fetch_release_json() {
   local version="$1"
@@ -46,6 +72,15 @@ file_sha256() {
     exit 1
   fi
 }
+
+src="${BASH_SOURCE[0]:-}"
+if [[ -n "$src" && "$(basename -- "$src")" == "install.sh" && "${POKE_AROUND_USE_RELEASE:-}" != "1" ]]; then
+  root="$(cd "$(dirname -- "$src")/.." && pwd)"
+  if [[ -f "$root/Cargo.toml" && -f "$root/crates/poke-around/src/main.rs" ]]; then
+    install_from_repo "$root"
+    exit 0
+  fi
+fi
 
 echo " Installing poke-around..."
 
