@@ -12,6 +12,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("peekaboo error: {0}")]
     Peekaboo(#[from] rs_peekaboo::PeekabooError),
+    #[error("poke error: {0}")]
+    Poke(#[from] rs_poke::Error),
     #[error("url error: {0}")]
     Url(#[from] url::ParseError),
 }

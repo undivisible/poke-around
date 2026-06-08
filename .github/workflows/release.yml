@@ -12,21 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Install bridge dependencies
-        run: bun install
-        working-directory: bridge
-
-      - name: Build bridge
-        run: bun run build:bridge
-
-      - name: Test bridge
-        run: bun run test:bridge
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -43,30 +31,9 @@ jobs:
       - name: Install script test
         run: bash scripts/test-install.sh
 
-  # Build the bridge JS once (platform-independent)
-  bridge:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install bridge deps
-        run: bun install
-        working-directory: bridge
-
-      - name: Bundle bridge
-        run: bun build bridge/poke-bridge.ts --bundle --target=node --outfile bridge/dist/poke-around-bridge.js
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bridge-js
-          path: bridge/dist/poke-around-bridge.js
-
   # Build native binary per platform
   build:
-    needs: bridge
+    needs: test
     strategy:
       matrix:
         include:
@@ -82,6 +49,9 @@ jobs:
           - os: ubuntu-24.04-arm
             name: linux-aarch64
             rust_target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            name: windows-x86_64
+            rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -91,25 +61,28 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: bridge-js
-          path: bridge/dist
-
       - name: Build
         run: cargo build --workspace --release --target ${{ matrix.rust_target }}
 
       - name: Package
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.rust_target }}/release/poke-around dist/
-          cp bridge/dist/poke-around-bridge.js dist/
           tar -czf poke-around-${{ matrix.name }}.tar.gz -C dist .
+
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target/${{ matrix.rust_target }}/release/poke-around.exe dist/
+          Compress-Archive -Path dist/* -DestinationPath poke-around-${{ matrix.name }}.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.name }}
-          path: poke-around-${{ matrix.name }}.tar.gz
+          path: poke-around-${{ matrix.name }}.*
 
   # Create GitHub release and update homebrew tap
   release:
@@ -133,4 +106,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "poke-around ${{ github.ref_name }}" \
             --generate-notes \
-            release-assets/*.tar.gz
+            release-assets/*

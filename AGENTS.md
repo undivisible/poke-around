@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance for working in this repository.
 
@@ -21,8 +21,8 @@ Poke Around is a Rust daemon that starts a local MCP server, runs an in-process 
 cargo build --workspace    # build
 cargo run --bin poke-around # build and run
 cargo test --workspace     # run tests
-bash scripts/test-install.sh
 cargo build --workspace --release
+bash scripts/test-install.sh
 ```
 
 ## Rust version
@@ -47,7 +47,6 @@ The homebrew-tap formula is updated automatically by its own workflow within ~1 
 
 ```bash
 cargo fmt --all -- --check
-cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo build --workspace --release

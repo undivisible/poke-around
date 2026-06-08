@@ -6,44 +6,27 @@ BIN="${POKE_AROUND_BIN:-$HOME/.local/bin/poke-around}"
 VERSION="${1:-latest}"
 
 install_file() {
-  local mode="$1"
-  local src="$2"
-  local dest="$3"
+  local src="$1"
+  local dest="$2"
   local dir
   dir="$(dirname "$dest")"
   mkdir -p "$dir"
   if [[ -w "$dir" && ( ! -e "$dest" || -w "$dest" ) ]]; then
-    install -m "$mode" "$src" "$dest"
+    install -m 755 "$src" "$dest"
   else
-    sudo install -m "$mode" "$src" "$dest"
+    sudo install -m 755 "$src" "$dest"
   fi
 }
 
 install_from_repo() {
   local root="$1"
-  local install_dir
-  install_dir="$(dirname "$BIN")"
   if ! command -v cargo >/dev/null 2>&1; then
     echo "cargo is required to install from a local checkout" >&2
     exit 1
   fi
-  if ! command -v bun >/dev/null 2>&1; then
-    echo "bun is required to build the bridge from a local checkout" >&2
-    exit 1
-  fi
   echo " Building poke-around from local checkout..."
-  (cd "$root" && bun run build:bridge && cargo build --workspace --release)
-  install_file 755 "$root/target/release/poke-around" "$BIN"
-  install_file 644 "$root/bridge/dist/poke-around-bridge.js" "$install_dir/poke-around-bridge.js"
-  if [[ -d "$root/bridge/dist/traybin" ]]; then
-    if [[ -w "$install_dir" ]]; then
-      rm -rf "$install_dir/traybin"
-      cp -R "$root/bridge/dist/traybin" "$install_dir/traybin"
-    else
-      sudo rm -rf "$install_dir/traybin"
-      sudo cp -R "$root/bridge/dist/traybin" "$install_dir/traybin"
-    fi
-  fi
+  (cd "$root" && cargo build --workspace --release)
+  install_file "$root/target/release/poke-around" "$BIN"
   echo " Installed to $BIN"
   echo " Run: poke-around --help"
 }
@@ -93,7 +76,7 @@ file_sha256() {
 src="${BASH_SOURCE[0]:-}"
 if [[ -n "$src" && "$(basename -- "$src")" == "install.sh" && "${POKE_AROUND_USE_RELEASE:-}" != "1" ]]; then
   root="$(cd "$(dirname -- "$src")/.." && pwd)"
-  if [[ -f "$root/Cargo.toml" && -f "$root/package.json" && -f "$root/bridge/poke-bridge.ts" ]]; then
+  if [[ -f "$root/Cargo.toml" && -f "$root/crates/poke-around/src/main.rs" ]]; then
     install_from_repo "$root"
     exit 0
   fi
@@ -152,28 +135,13 @@ if [[ ! -x "$TMP_DIR/poke-around" ]]; then
 fi
 
 INSTALL_DIR="$(dirname "$BIN")"
-BRIDGE="$INSTALL_DIR/poke-around-bridge.js"
 
 if [[ -w "$INSTALL_DIR" && ( ! -e "$BIN" || -w "$BIN" ) ]]; then
   install -m 755 "$TMP_DIR/poke-around" "$TMP_INSTALL"
   mv -f "$TMP_INSTALL" "$BIN"
-  if [[ -f "$TMP_DIR/poke-around-bridge.js" ]]; then
-    install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
-  fi
-  if [[ -d "$TMP_DIR/traybin" ]]; then
-    rm -rf "$INSTALL_DIR/traybin"
-    cp -R "$TMP_DIR/traybin" "$INSTALL_DIR/traybin"
-  fi
 else
   sudo install -m 755 "$TMP_DIR/poke-around" "$TMP_INSTALL"
   sudo mv -f "$TMP_INSTALL" "$BIN"
-  if [[ -f "$TMP_DIR/poke-around-bridge.js" ]]; then
-    sudo install -m 644 "$TMP_DIR/poke-around-bridge.js" "$BRIDGE"
-  fi
-  if [[ -d "$TMP_DIR/traybin" ]]; then
-    sudo rm -rf "$INSTALL_DIR/traybin"
-    sudo cp -R "$TMP_DIR/traybin" "$INSTALL_DIR/traybin"
-  fi
 fi
 
 echo " Installed to $BIN"

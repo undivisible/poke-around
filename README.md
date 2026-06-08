@@ -6,7 +6,7 @@ Let your [Poke](https://poke.com) AI assistant access your machine.
 
 [![Latest Release](https://img.shields.io/github/v/release/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/releases/latest)
 [![License](https://img.shields.io/github/license/undivisible/poke-around?style=flat-square)](https://github.com/undivisible/poke-around/blob/main/LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square)
 
 ---
 
@@ -38,7 +38,7 @@ If Brew already poured a newer simdjson but could not link it, either run `brew 
 
 **Build from source**
 
-Requires stable [Rust](https://www.rust-lang.org/tools/install) and [Bun](https://bun.sh):
+Requires stable [Rust](https://www.rust-lang.org/tools/install):
 
 ```bash
 git clone https://github.com/undivisible/poke-around.git
@@ -50,7 +50,7 @@ This installs to `~/.local/bin/poke-around` unless `POKE_AROUND_BIN` is set.
 
 **Manual download**
 
-Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` plus `poke-around-bridge.js` in the same directory.
+Download the latest archive for your platform from [Releases](https://github.com/undivisible/poke-around/releases), extract it, and place `poke-around` or `poke-around.exe` on your `PATH`.
 
 On macOS, if the binary is blocked by Gatekeeper:
 
@@ -141,6 +141,7 @@ See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy.
 
 - Rust rewrite of [f/poke-gate](https://github.com/f/poke-gate)
 - macOS computer-use primitives through [rs_peekaboo](https://github.com/undivisible/rs_peekaboo)
+- Poke tunnel client through [rs_poke](https://github.com/undivisible/rs_poke)
 - [Poke](https://poke.com) by [The Interaction Company](https://interaction.co)
 
 ## License

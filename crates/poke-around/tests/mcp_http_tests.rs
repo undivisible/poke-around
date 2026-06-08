@@ -27,7 +27,7 @@ fn post_json_path(port: u16, path: &str, body: &str) -> String {
 }
 
 #[test]
-fn get_mcp_should_return_health_response() {
+fn get_mcp_should_return_method_not_allowed() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
@@ -39,8 +39,21 @@ fn get_mcp_should_return_health_response() {
         .read_to_string(&mut response)
         .expect("response should read");
 
+    assert!(response.starts_with("HTTP/1.1 405"));
+    assert!(!response.contains(r#"{"ok":true}"#));
+}
+
+#[test]
+fn initialize_should_return_mcp_session_id_header() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let response = post_json(
+        port,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+    );
+
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#"{"ok":true}"#));
+    assert!(response.to_ascii_lowercase().contains("mcp-session-id:"));
 }
 
 #[test]
@@ -68,7 +81,7 @@ fn initialized_notification_without_id_should_return_no_content() {
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 204 No Content"));
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"));
 }
 
 #[test]
@@ -86,7 +99,7 @@ fn initialized_request_with_id_should_return_json_rpc_response() {
 }
 
 #[test]
-fn batch_unknown_method_without_id_should_return_no_content() {
+fn batch_unknown_method_without_id_should_return_accepted() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
     let response = post_json(
@@ -94,7 +107,7 @@ fn batch_unknown_method_without_id_should_return_no_content() {
         r#"[{"jsonrpc":"2.0","method":"unknown/notification"}]"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 204 No Content"));
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"));
 }
 
 #[test]
@@ -106,7 +119,7 @@ fn tool_call_without_id_should_return_no_content() {
         r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"system_info","arguments":{}}}"#,
     );
 
-    assert!(response.starts_with("HTTP/1.1 204 No Content"));
+    assert!(response.starts_with("HTTP/1.1 202 Accepted"));
 }
 
 #[test]
@@ -157,6 +170,38 @@ fn mcp_root_request_target_should_return_tools() {
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
     assert!(response.contains(r#""name":"run_command""#));
+}
+
+#[test]
+fn oauth_well_known_paths_should_not_be_collapsed_to_health_check() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    for path in [
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-authorization-server/mcp",
+        "/.well-known/openid-configuration/mcp",
+        "/mcp/.well-known/openid-configuration",
+    ] {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
+        let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "expected 404 for {path}, got: {}",
+            response.lines().next().unwrap_or_default()
+        );
+        assert!(
+            !response.contains(r#""ok":true"#),
+            "well-known path {path} must not return health check payload"
+        );
+    }
 }
 
 #[test]

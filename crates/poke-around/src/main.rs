@@ -34,6 +34,10 @@ fn run() -> Result<()> {
         }
         "agent" => run_agent_command(&args[1..]),
         "take-screenshot" => {
+            #[cfg(target_os = "windows")]
+            let capture =
+                poke_around::windows_automation::image(rs_peekaboo::ImageMode::Screen, None)?;
+            #[cfg(not(target_os = "windows"))]
             let capture =
                 rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, None, true)?;
             println!("{}", capture.path.display());
