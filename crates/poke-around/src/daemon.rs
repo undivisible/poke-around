@@ -8,6 +8,7 @@ pub fn run(mode_arg: Option<&str>, verbose: bool) -> Result<()> {
     let saved = config::read_config()?.permission_mode;
     let mode = PermissionMode::parse(mode_arg.or(saved.as_deref()));
     let state = AppState::new(mode, verbose)?;
+    crate::platform::log_gui_session_readiness(verbose);
     let port = start_server(state)?;
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
     eprintln!("poke-around MCP server listening on {mcp_url}");

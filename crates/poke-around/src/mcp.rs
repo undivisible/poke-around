@@ -408,7 +408,16 @@ fn handle_tool_call(
     if needs_approval(tool_name, args, state.inner.mode)
         && !is_approved(tool_name, args, session_id, &state)?
     {
-        return request_approval(tool_name, args, session_id, &state);
+        let result = request_approval(tool_name, args, session_id, &state)?;
+        if state.inner.verbose {
+            let summary = result
+                .get("structuredContent")
+                .and_then(|value| value.get("summary"))
+                .and_then(Value::as_str)
+                .unwrap_or(tool_name);
+            eprintln!("tool: {tool_name} awaiting approval: {summary}");
+        }
+        return Ok(result);
     }
     let result = execute_tool(tool_name, args, &state)?;
     if state.inner.verbose
@@ -977,12 +986,20 @@ fn run_command(args: &Value, state: &AppState) -> Result<Value> {
         .and_then(Value::as_str)
         .map(|path| expand_path(path, &state.inner.home))
         .unwrap_or_else(|| state.inner.home.clone());
-    let output = Command::new(shell())
-        .arg(shell_flag())
-        .arg(command)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .output()?;
+    let output = if cfg!(target_os = "windows") {
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", command])
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .output()?
+    } else {
+        Command::new(shell())
+            .arg(shell_flag())
+            .arg(command)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .output()?
+    };
     Ok(ok_json(json!({
         "stdout": String::from_utf8_lossy(&output.stdout),
         "stderr": String::from_utf8_lossy(&output.stderr),
