@@ -10,7 +10,9 @@ use tokio::sync::mpsc;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
-const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
+const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const SYNC_TOOLS_MAX_ATTEMPTS: usize = 5;
+const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_CONN_HISTORY: usize = 10;
 
 pub struct Bridge {
@@ -70,10 +72,7 @@ async fn run_bridge(
     mut rx: mpsc::UnboundedReceiver<BridgeCommand>,
 ) -> Result<()> {
     let token = ensure_auth().await?;
-    let poke = Poke::new(PokeOptions {
-        api_key: Some(token),
-        ..PokeOptions::default()
-    })?;
+    let mut poke = make_poke(&token)?;
     let tunnel_name = integration_name("poke-around");
     let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
     log_status("Webhook ready.");
@@ -138,11 +137,7 @@ async fn run_bridge(
                     Some(&info.tunnel_url),
                 )
                 .await;
-                let count = runner.sync_tools().await.unwrap_or(0);
-                log_status(&format!(
-                    "Tools synced: {}",
-                    count.max(local_tool_count(&mcp_url).await)
-                ));
+                sync_and_report_tools(&runner, &mcp_url).await;
             }
             Err(err) => {
                 log_status(&format!("Bridge error: {err}"));
@@ -161,8 +156,7 @@ async fn run_bridge(
             tokio::select! {
                 _ = heartbeat.tick() => {}
                 _ = sync.tick() => {
-                    let count = runner.sync_tools().await.unwrap_or(0);
-                    log_status(&format!("Tools synced: {}", count.max(local_tool_count(&mcp_url).await)));
+                    sync_and_report_tools(&runner, &mcp_url).await;
                 }
                 event = events.recv() => {
                     match event {
@@ -173,8 +167,18 @@ async fn run_bridge(
                         Ok(TunnelEvent::ToolsSynced { tool_count }) => {
                             log_status(&format!("Tools synced: {}", tool_count.max(local_tool_count(&mcp_url).await)));
                         }
-                        Ok(TunnelEvent::OAuthRequired { .. }) => {
-                            log_status("Poke token expired - re-authenticating...");
+                        Ok(TunnelEvent::OAuthRequired { auth_url }) => {
+                            log_status(&format!(
+                                "Poke token expired - re-authenticating ({auth_url})..."
+                            ));
+                            match ensure_auth().await {
+                                Ok(token) => {
+                                    if let Ok(client) = make_poke(&token) {
+                                        poke = client;
+                                    }
+                                }
+                                Err(err) => log_status(&format!("Re-auth failed: {err}")),
+                            }
                             break;
                         }
                         Ok(TunnelEvent::Error(message)) => {
@@ -369,6 +373,53 @@ async fn send_webhook_message(poke: &Poke, webhook_url: &str, webhook_token: &st
     }
 }
 
+fn make_poke(token: &str) -> Result<Poke> {
+    Poke::new(PokeOptions {
+        api_key: Some(token.to_string()),
+        ..PokeOptions::default()
+    })
+    .map_err(|err| Error::msg(err.to_string()))
+}
+
+async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
+    let mut last_synced = 0usize;
+    for attempt in 1..=SYNC_TOOLS_MAX_ATTEMPTS {
+        last_synced = match runner.sync_tools().await {
+            Ok(count) => count,
+            Err(err) => {
+                log_status(&format!("Tool sync error: {err}"));
+                0
+            }
+        };
+        let local = local_tool_count(mcp_url).await;
+        let reported = last_synced.max(local);
+        if last_synced > 0 {
+            log_status(&format!("Tools synced: {reported}"));
+            return reported;
+        }
+        if attempt < SYNC_TOOLS_MAX_ATTEMPTS {
+            if local > 0 {
+                log_status(&format!(
+                    "Tool sync returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying..."
+                ));
+            } else {
+                log_status(&format!(
+                    "Tool sync returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); retrying..."
+                ));
+            }
+            tokio::time::sleep(SYNC_TOOLS_RETRY_DELAY).await;
+        }
+    }
+    let local = local_tool_count(mcp_url).await;
+    let reported = last_synced.max(local);
+    if reported > 0 {
+        log_status(&format!("Tools synced: {reported}"));
+    } else {
+        log_status("Tools synced: 0 (check MCP server and tunnel connectivity)");
+    }
+    reported
+}
+
 async fn local_tool_count(mcp_url: &str) -> usize {
     let Ok(response) = reqwest::Client::new()
         .post(mcp_url)
@@ -488,11 +539,7 @@ pub fn send_one_shot_message(message: &str) -> Result<()> {
         .map_err(|err| Error::msg(format!("failed to start async runtime: {err}")))?;
     runtime.block_on(async {
         let token = ensure_auth().await?;
-        let poke = Poke::new(PokeOptions {
-            api_key: Some(token),
-            ..PokeOptions::default()
-        })
-        .map_err(|err| Error::msg(err.to_string()))?;
+        let poke = make_poke(&token)?;
         poke.send_message(message)
             .await
             .map_err(|err| Error::msg(err.to_string()))?;
