@@ -658,9 +658,11 @@ fn permissions() -> Result<Value> {
 fn click(args: &Value, _state: &AppState) -> Result<Value> {
     let button = str_arg(args, "button").unwrap_or("left");
     let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
-    Ok(ok_json(
-        Peekaboo::new().click(target_from_args(args)?, button, count)?,
-    ))
+    Ok(ok_json(Peekaboo::new().click(
+        target_from_args(args)?,
+        button,
+        count,
+    )?))
 }
 
 fn press(args: &Value, _state: &AppState) -> Result<Value> {
@@ -748,7 +750,9 @@ fn drag(args: &Value, _state: &AppState) -> Result<Value> {
 }
 
 fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
-    Ok(ok_json(Peekaboo::new().move_cursor(target_from_args(args)?)?))
+    Ok(ok_json(
+        Peekaboo::new().move_cursor(target_from_args(args)?)?,
+    ))
 }
 
 fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
