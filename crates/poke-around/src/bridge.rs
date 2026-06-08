@@ -4,20 +4,23 @@ use rs_poke::{
     TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
 };
 use serde_json::{Map, Value};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc as async_mpsc;
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const BRIDGE_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
 const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNC_TOOLS_MAX_ATTEMPTS: usize = 8;
 const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const MAX_CONN_HISTORY: usize = 10;
+const TUNNEL_HEALTH_CHECK: Duration = Duration::from_secs(30);
 
 pub struct Bridge {
-    tx: mpsc::UnboundedSender<BridgeCommand>,
+    tx: async_mpsc::UnboundedSender<BridgeCommand>,
     handle: Option<thread::JoinHandle<()>>,
+    done: Option<mpsc::Receiver<()>>,
 }
 
 enum BridgeCommand {
@@ -27,7 +30,8 @@ enum BridgeCommand {
 
 impl Bridge {
     pub fn start(mcp_url: &str, mode: &str) -> Result<Self> {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = async_mpsc::unbounded_channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let mcp_url = mcp_url.to_string();
         let mode = mode.to_string();
         let handle = thread::spawn(move || {
@@ -40,20 +44,24 @@ impl Bridge {
                     log_status(&format!(
                         "Bridge error: failed to start async runtime: {err}"
                     ));
+                    let _ = done_tx.send(());
                     return;
                 }
             };
             if let Err(err) = runtime.block_on(run_bridge(mcp_url, mode, rx)) {
                 log_status(&format!("Bridge error: {err}"));
             }
+            let _ = done_tx.send(());
         });
         Ok(Self {
             tx,
             handle: Some(handle),
+            done: Some(done_rx),
         })
     }
 
-    pub fn send_message(&self, message: &str) -> Result<()> {
+    /// Send a notification to the Poke agent through the cached webhook.
+    pub fn notify_via_webhook(&self, message: &str) -> Result<()> {
         self.tx
             .send(BridgeCommand::SendWebhook(message.to_string()))
             .map_err(|_| Error::msg("bridge command channel closed"))
@@ -61,7 +69,12 @@ impl Bridge {
 
     pub fn stop(&mut self) -> Result<()> {
         let _ = self.tx.send(BridgeCommand::Stop);
-        let _ = self.handle.take();
+        if let Some(done_rx) = self.done.take() {
+            let _ = done_rx.recv_timeout(BRIDGE_STOP_TIMEOUT);
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
         Ok(())
     }
 }
@@ -69,7 +82,7 @@ impl Bridge {
 async fn run_bridge(
     mcp_url: String,
     permission_mode: String,
-    mut rx: mpsc::UnboundedReceiver<BridgeCommand>,
+    mut rx: async_mpsc::UnboundedReceiver<BridgeCommand>,
 ) -> Result<()> {
     let token = ensure_auth().await?;
     let mut poke = make_poke(&token)?;
@@ -157,11 +170,17 @@ async fn run_bridge(
             }
         }
 
-        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
-        heartbeat.tick().await;
+        let mut restart_tunnel = false;
+        let mut health_check = tokio::time::interval(TUNNEL_HEALTH_CHECK);
+        health_check.tick().await;
         loop {
             tokio::select! {
-                _ = heartbeat.tick() => {}
+                _ = health_check.tick() => {
+                    if !runner.connected() {
+                        log_status("Tunnel no longer connected.");
+                        break;
+                    }
+                }
                 event = events.recv() => {
                     match event {
                         Ok(TunnelEvent::Disconnected) => {
@@ -179,9 +198,8 @@ async fn run_bridge(
                             ));
                             match ensure_auth().await {
                                 Ok(token) => {
-                                    if let Ok(client) = make_poke(&token) {
-                                        poke = client;
-                                    }
+                                    poke = make_poke(&token)?;
+                                    restart_tunnel = true;
                                 }
                                 Err(err) => log_status(&format!("Re-auth failed: {err}")),
                             }
@@ -219,24 +237,29 @@ async fn run_bridge(
             let _ = runner.delete_connection(&info.connection_id).await;
         }
         let _ = runner.stop().await;
+        if restart_tunnel {
+            log_status("Restarting tunnel with refreshed credentials...");
+            sleep_or_stop(&mut rx, Duration::from_secs(1), &mut stop_requested).await;
+            continue;
+        }
         sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
     }
     Ok(())
 }
 
 async fn sleep_or_stop(
-    rx: &mut mpsc::UnboundedReceiver<BridgeCommand>,
+    rx: &mut async_mpsc::UnboundedReceiver<BridgeCommand>,
     duration: Duration,
     stop_requested: &mut bool,
 ) {
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
         match rx.try_recv() {
-            Ok(BridgeCommand::Stop) | Err(mpsc::error::TryRecvError::Disconnected) => {
+            Ok(BridgeCommand::Stop) | Err(async_mpsc::error::TryRecvError::Disconnected) => {
                 *stop_requested = true;
                 return;
             }
-            Ok(BridgeCommand::SendWebhook(_)) | Err(mpsc::error::TryRecvError::Empty) => {
+            Ok(BridgeCommand::SendWebhook(_)) | Err(async_mpsc::error::TryRecvError::Empty) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
@@ -320,6 +343,7 @@ async fn cleanup_stale_connections(
             body: None,
             token: Some(poke.api_key().to_string()),
             base_url: Some(poke.base_url().to_string()),
+            client: None,
         })
         .await;
     }
@@ -516,7 +540,12 @@ fn write_state(state: &Map<String, Value>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(state)?)?;
+    std::fs::write(&path, serde_json::to_string_pretty(state)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -570,4 +599,22 @@ pub fn send_one_shot_message(message: &str) -> Result<()> {
         println!("sent");
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integration_name_appends_hostname_suffix() {
+        let name = integration_name("poke-around");
+        assert!(name.starts_with("poke-around"));
+    }
+
+    #[test]
+    fn non_fatal_errors_include_activate_and_sync_tools() {
+        assert!(is_non_fatal_bridge_error("activate-tunnel failed"));
+        assert!(is_non_fatal_bridge_error("sync-tools returned 0"));
+        assert!(!is_non_fatal_bridge_error("connection timeout"));
+    }
 }

@@ -83,8 +83,6 @@ const SANDBOX_COMMANDS: &[&str] = &[
     "python",
     "python3",
     "curl",
-    "dd",
-    "rm",
     "mktemp",
     "mkdir",
     "cp",
@@ -224,7 +222,6 @@ pub fn split_command_segments(command: &str) -> impl Iterator<Item = &str> {
         .split(&[';', '\n'][..])
         .flat_map(|part| part.split("&&"))
         .flat_map(|part| part.split("||"))
-        .flat_map(|part| part.split('|'))
         .map(str::trim)
         .filter(|part| !part.is_empty())
 }

@@ -12,7 +12,7 @@ pub fn run(mode_arg: Option<&str>, verbose: bool) -> Result<()> {
     let port = start_server(state)?;
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
     eprintln!("poke-around MCP server listening on {mcp_url}");
-    let _bridge = Bridge::start(&mcp_url, mode.as_str())?;
+    let mut bridge = Bridge::start(&mcp_url, mode.as_str())?;
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     ctrlc::set_handler(move || {
         let _ = shutdown_tx.send(());
@@ -20,5 +20,6 @@ pub fn run(mode_arg: Option<&str>, verbose: bool) -> Result<()> {
     .map_err(|err| crate::Error::msg(format!("failed to set Ctrl-C handler: {err}")))?;
     let _ = shutdown_rx.recv();
     eprintln!("poke-around shutting down");
+    bridge.stop()?;
     Ok(())
 }

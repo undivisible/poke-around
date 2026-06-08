@@ -36,6 +36,15 @@ pub fn read_config() -> Result<Config> {
     }
 }
 
+fn restrict_private_file(path: &std::path::Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 pub fn save_permission_mode(mode: &str) -> Result<()> {
     let mut config = read_config()?;
     config.permission_mode = Some(mode.to_string());
@@ -43,7 +52,8 @@ pub fn save_permission_mode(mode: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(&config)?)?;
+    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+    restrict_private_file(&path)?;
     Ok(())
 }
 
