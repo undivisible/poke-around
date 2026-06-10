@@ -28,4 +28,9 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+criterion = "0.8.2"
 tempfile = "3.23"
+
+[[bench]]
+name = "mcp_benchmark"
+harness = false
