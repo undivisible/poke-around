@@ -366,7 +366,7 @@ fn handle_tools_list() -> Result<Value> {
     Ok(json!({ "tools": tools_value }))
 }
 
-fn handle_tools_call_request(request: &Value, session_id: &str, state: AppState) -> Result<Value> {
+fn handle_tools_call_request(request: &Value, session_id: &str, state: &AppState) -> Result<Value> {
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params
@@ -1447,10 +1447,10 @@ mod tests {
             let structured_content = &response["structuredContent"];
             assert_eq!(structured_content["mode"], "screen");
             assert_eq!(structured_content["ephemeral"], false);
-            assert_eq!(
-                structured_content["path"].as_str().unwrap(),
-                path.to_string_lossy()
-            );
+            let expected = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let actual = std::path::PathBuf::from(structured_content["path"].as_str().unwrap());
+            let actual = actual.canonicalize().unwrap_or(actual);
+            assert_eq!(actual, expected);
 
             let _ = fs::remove_file(path);
         } else {
