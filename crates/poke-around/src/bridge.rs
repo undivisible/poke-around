@@ -1,4 +1,5 @@
 use crate::{Error, Result, config};
+use futures::future::join_all;
 use rs_poke::{
     CreateWebhook, CredentialsStore, FetchWithAuthOptions, LoginOptions, Poke, PokeOptions,
     TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
@@ -379,17 +380,23 @@ async fn cleanup_stale_connections(
         "\x1b[2m[bridge] Cleaning up {} old connection(s)...\x1b[0m",
         ids.len()
     );
-    for id in ids {
-        let _ = fetch_with_auth(FetchWithAuthOptions {
-            path: &format!("/mcp/connections/{id}"),
-            method: reqwest::Method::DELETE,
-            body: None,
-            token: Some(poke.api_key().to_string()),
-            base_url: Some(poke.base_url().to_string()),
-            client: None,
-        })
-        .await;
-    }
+    let futures = ids.into_iter().map(|id| {
+        let api_key = poke.api_key().to_string();
+        let base_url = poke.base_url().to_string();
+        async move {
+            let path = format!("/mcp/connections/{id}");
+            let _ = fetch_with_auth(FetchWithAuthOptions {
+                path: &path,
+                method: reqwest::Method::DELETE,
+                body: None,
+                token: Some(api_key),
+                base_url: Some(base_url),
+                client: None,
+            })
+            .await;
+        }
+    });
+    join_all(futures).await;
     patch_state([
         ("webhookUrl", Value::String(webhook_url.to_string())),
         ("webhookToken", Value::String(webhook_token.to_string())),
