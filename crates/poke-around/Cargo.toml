@@ -29,4 +29,6 @@ url.workspace = true
 
 [dev-dependencies]
 serial_test = "3.5.0"
+rustix = { version = "0.38", features = ["std", "net"] }
 tempfile = "3.23"
+libc = "0.2"

@@ -257,6 +257,26 @@ fn read_image_tool_should_return_mcp_image_content_over_http() {
 }
 
 #[test]
+fn malformed_request_should_return_bad_request() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
+    stream
+        .write_all(b"GARBAGE DATA WITHOUT PROPER HTTP FORMAT")
+        .expect("request should write");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("write side should close");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("response should read");
+
+    assert!(response.starts_with("HTTP/1.1 400 Error"));
+    assert!(response.contains("invalid http request"));
+}
+
+#[test]
 fn approval_token_should_not_allow_hidden_auto_approve_escalation() {
     let path =
         std::env::temp_dir().join(format!("poke-around-approval-{}.txt", std::process::id()));

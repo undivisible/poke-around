@@ -25,7 +25,6 @@ fn tool_schema_includes_poke_gate_and_poke_around_tools() {
             "edit_file",
             "web_fetch",
             "http_request",
-            "git_operations",
             "delete_file",
             "image",
             "see",
