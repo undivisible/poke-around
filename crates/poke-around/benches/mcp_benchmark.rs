@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 // We will mock a simplified loop with a cloneable dummy state
 #[derive(Clone)]
@@ -36,11 +36,16 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     };
 
     c.bench_function("loop_with_clone", |b| {
-        b.iter(|| handle_with_clone(black_box(&items), black_box(state.clone())))
+        b.iter(|| {
+            handle_with_clone(
+                std::hint::black_box(&items),
+                std::hint::black_box(state.clone()),
+            )
+        })
     });
 
     c.bench_function("loop_with_borrow", |b| {
-        b.iter(|| handle_with_borrow(black_box(&items), black_box(&state)))
+        b.iter(|| handle_with_borrow(std::hint::black_box(&items), std::hint::black_box(&state)))
     });
 }
 
