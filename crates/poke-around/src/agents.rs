@@ -54,6 +54,9 @@ pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
 }
 
 pub fn download_agent(name: &str) -> Result<PathBuf> {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(Error::msg("invalid agent name: only alphanumeric, dash, and underscore are allowed"));
+    }
     let dir = config::agents_dir()?;
     std::fs::create_dir_all(&dir)?;
     let url =
