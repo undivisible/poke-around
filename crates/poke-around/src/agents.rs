@@ -22,6 +22,10 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
     if direct.exists() {
         return Ok(direct);
     }
+    let js_path = dir.join(format!("{}.js", name));
+    if js_path.exists() {
+        return Ok(js_path);
+    }
     for entry in std::fs::read_dir(&dir)? {
         let path = entry?.path();
         if path.extension().and_then(|value| value.to_str()) != Some("js") {
