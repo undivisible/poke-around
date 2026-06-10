@@ -1323,12 +1323,15 @@ mod tests {
             } else {
                 Instant::now() - Duration::from_secs((-expires_in) as u64)
             };
-            approvals.insert(token.clone(), Approval {
-                token: token.clone(),
-                tool_name: tool_name.to_string(),
-                clean_args: clean_args.clone(),
-                expires_at,
-            });
+            approvals.insert(
+                token.clone(),
+                Approval {
+                    token: token.clone(),
+                    tool_name: tool_name.to_string(),
+                    clean_args: clean_args.clone(),
+                    expires_at,
+                },
+            );
         };
 
         let session_id = "session_1";
