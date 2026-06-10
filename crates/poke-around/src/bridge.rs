@@ -362,12 +362,15 @@ async fn cleanup_stale_connections(
 ) -> Result<()> {
     let state = read_state()?;
     let mut ids = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
     if let Some(id) = state.get("connectionId").and_then(Value::as_str) {
         ids.push(id.to_string());
+        seen.insert(id);
     }
     if let Some(history) = state.get("connectionHistory").and_then(Value::as_array) {
         for id in history.iter().filter_map(Value::as_str) {
-            if !ids.iter().any(|known| known == id) {
+            if seen.insert(id) {
                 ids.push(id.to_string());
             }
         }
