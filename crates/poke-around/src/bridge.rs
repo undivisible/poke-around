@@ -151,13 +151,14 @@ async fn run_tunnel_session(
     );
     let mut events = runner.subscribe();
 
-    let start_result = match start_tunnel_interleaved(&mut runner, rx, poke, webhook_url, webhook_token).await {
-        Ok(res) => res,
-        Err(_) => {
-            cleanup_runner(&mut runner).await;
-            return Ok(SessionOutcome::Stop);
-        }
-    };
+    let start_result =
+        match start_tunnel_interleaved(&mut runner, rx, poke, webhook_url, webhook_token).await {
+            Ok(res) => res,
+            Err(_) => {
+                cleanup_runner(&mut runner).await;
+                return Ok(SessionOutcome::Stop);
+            }
+        };
 
     match start_result {
         Ok(info) => {
