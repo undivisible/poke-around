@@ -1208,28 +1208,57 @@ fn web_fetch(args: &Value) -> Result<Value> {
 }
 
 fn http_request(args: &Value) -> Result<Value> {
-    let method = args.get("method").and_then(Value::as_str).unwrap_or("GET");
-    let url = args.get("url").and_then(Value::as_str).unwrap_or("");
-    let mut command = Command::new("curl");
-    command.arg("-sS").arg("-X").arg(method);
+    let method_str = args.get("method").and_then(Value::as_str).unwrap_or("GET");
+    let url_str = args.get("url").and_then(Value::as_str).unwrap_or("");
+
+    let method = match method_str.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
+        "HEAD" => reqwest::Method::HEAD,
+        "OPTIONS" => reqwest::Method::OPTIONS,
+        _ => reqwest::Method::GET,
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.request(method, url_str);
+
     if let Some(headers) = args.get("headers").and_then(Value::as_object) {
         for (name, value) in headers {
-            command.arg("-H").arg(format!(
-                "{name}: {}",
-                value.as_str().unwrap_or(&value.to_string())
-            ));
+            let val_str = value
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| value.to_string());
+            request = request.header(name, val_str);
         }
     }
+
     if let Some(body) = args.get("body").and_then(Value::as_str) {
-        command.arg("--data").arg(body);
+        request = request.body(body.to_string());
     }
-    let output = command.arg(url).output()?;
-    Ok(ok_json(json!({
-        "success": output.status.success(),
-        "status": output.status.code().unwrap_or(1),
-        "body": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr)
-    })))
+
+    match request.send() {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let success = response.status().is_success();
+            let body = response.text().unwrap_or_default();
+
+            Ok(ok_json(json!({
+                "success": success,
+                "status": status,
+                "body": body,
+                "stderr": ""
+            })))
+        }
+        Err(e) => Ok(ok_json(json!({
+            "success": false,
+            "status": 1,
+            "body": "",
+            "stderr": e.to_string()
+        }))),
+    }
 }
 
 fn git_operations(args: &Value, state: &AppState) -> Result<Value> {
