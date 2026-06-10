@@ -107,37 +107,17 @@ async fn run_bridge(
                 ..TunnelOptions::default()
             },
         );
-        let mut events = runner.subscribe();
-        let mut stop_during_start = false;
-        let start_result = {
-            let start = runner.start();
-            tokio::pin!(start);
-            loop {
-                tokio::select! {
-                    result = &mut start => break result,
-                    command = rx.recv() => {
-                        match command {
-                            Some(BridgeCommand::SendWebhook(message)) => {
-                                send_webhook_message(&poke, &webhook_url, &webhook_token, &message).await;
-                            }
-                            Some(BridgeCommand::Stop) | None => {
-                                stop_during_start = true;
-                                break Err(rs_poke::Error::Protocol("stop requested".into()));
-                            }
-                        }
-                    }
+        let events = runner.subscribe();
+
+        match start_tunnel_runner(&mut runner, &mut rx, &poke, &webhook_url, &webhook_token).await {
+            StartTunnelResult::StopRequested => {
+                if let Some(info) = runner.info() {
+                    let _ = runner.delete_connection(&info.connection_id).await;
                 }
+                let _ = runner.stop().await;
+                return Ok(());
             }
-        };
-        if stop_during_start {
-            if let Some(info) = runner.info() {
-                let _ = runner.delete_connection(&info.connection_id).await;
-            }
-            let _ = runner.stop().await;
-            return Ok(());
-        }
-        match start_result {
-            Ok(info) => {
+            StartTunnelResult::Success(info) => {
                 record_connection(&info.connection_id)?;
                 log_status(&format!(
                     "Tunnel connected ({}) -> {}",
@@ -160,7 +140,7 @@ async fn run_bridge(
                     log_status("Tools not synced yet; Poke may not be able to use this machine.");
                 }
             }
-            Err(err) => {
+            StartTunnelResult::Error(err) => {
                 log_status(&format!("Bridge error: {err}"));
                 if let Some(info) = runner.info() {
                     let _ = runner.delete_connection(&info.connection_id).await;
@@ -172,70 +152,32 @@ async fn run_bridge(
         }
 
         let mut restart_tunnel = false;
-        let mut health_check = tokio::time::interval(TUNNEL_HEALTH_CHECK);
-        health_check.tick().await;
-        loop {
-            tokio::select! {
-                _ = health_check.tick() => {
-                    if !runner.connected() {
-                        log_status("Tunnel no longer connected.");
-                        break;
-                    }
+        match monitor_tunnel(
+            &runner,
+            events,
+            &mut rx,
+            &poke,
+            &webhook_url,
+            &webhook_token,
+        )
+        .await?
+        {
+            MonitorTunnelResult::StopRequested => {
+                if let Some(info) = runner.info() {
+                    let _ = runner.delete_connection(&info.connection_id).await;
                 }
-                event = events.recv() => {
-                    match event {
-                        Ok(TunnelEvent::Disconnected) => {
-                            log_status("Tunnel disconnected.");
-                            break;
-                        }
-                        Ok(TunnelEvent::ToolsSynced { tool_count }) => {
-                            if tool_count > 0 {
-                                log_status(&format!("Tools synced: {tool_count}"));
-                            }
-                        }
-                        Ok(TunnelEvent::OAuthRequired { auth_url }) => {
-                            log_status(&format!(
-                                "Poke token expired - re-authenticating ({auth_url})..."
-                            ));
-                            match recover_from_oauth_required().await {
-                                OAuthRecoveryOutcome::Restart { token } => {
-                                    poke = make_poke(&token)?;
-                                    restart_tunnel = true;
-                                }
-                                OAuthRecoveryOutcome::Failed(message) => {
-                                    log_status(&format!("Re-auth failed: {message}"));
-                                }
-                            }
-                            break;
-                        }
-                        Ok(TunnelEvent::Error(message)) => {
-                            if is_non_fatal_bridge_error(&message) {
-                                log_status(&format!("Bridge warning: {message}"));
-                            } else {
-                                log_status(&format!("Bridge error: {message}"));
-                                break;
-                            }
-                        }
-                        Ok(TunnelEvent::Created(_)) | Ok(TunnelEvent::Connected(_)) => {}
-                        Err(_) => break,
-                    }
-                }
-                command = rx.recv() => {
-                    match command {
-                        Some(BridgeCommand::SendWebhook(message)) => {
-                            send_webhook_message(&poke, &webhook_url, &webhook_token, &message).await;
-                        }
-                        Some(BridgeCommand::Stop) | None => {
-                            if let Some(info) = runner.info() {
-                                let _ = runner.delete_connection(&info.connection_id).await;
-                            }
-                            let _ = runner.stop().await;
-                            return Ok(());
-                        }
-                    }
-                }
+                let _ = runner.stop().await;
+                return Ok(());
+            }
+            MonitorTunnelResult::Restart { new_poke } => {
+                poke = new_poke;
+                restart_tunnel = true;
+            }
+            MonitorTunnelResult::Disconnected => {
+                // Continue to regular cleanup and optional sleep
             }
         }
+
         if let Some(info) = runner.info() {
             let _ = runner.delete_connection(&info.connection_id).await;
         }
@@ -248,6 +190,119 @@ async fn run_bridge(
         sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
     }
     Ok(())
+}
+
+enum StartTunnelResult {
+    Success(rs_poke::TunnelInfo),
+    Error(rs_poke::Error),
+    StopRequested,
+}
+
+enum MonitorTunnelResult {
+    Restart { new_poke: Poke },
+    StopRequested,
+    Disconnected,
+}
+
+async fn monitor_tunnel(
+    runner: &TunnelRunner,
+    mut events: tokio::sync::broadcast::Receiver<TunnelEvent>,
+    rx: &mut async_mpsc::UnboundedReceiver<BridgeCommand>,
+    poke: &Poke,
+    webhook_url: &str,
+    webhook_token: &str,
+) -> Result<MonitorTunnelResult> {
+    let mut health_check = tokio::time::interval(TUNNEL_HEALTH_CHECK);
+    health_check.tick().await;
+    loop {
+        tokio::select! {
+            _ = health_check.tick() => {
+                if !runner.connected() {
+                    log_status("Tunnel no longer connected.");
+                    return Ok(MonitorTunnelResult::Disconnected);
+                }
+            }
+            event = events.recv() => {
+                match event {
+                    Ok(TunnelEvent::Disconnected) => {
+                        log_status("Tunnel disconnected.");
+                        return Ok(MonitorTunnelResult::Disconnected);
+                    }
+                    Ok(TunnelEvent::ToolsSynced { tool_count }) => {
+                        if tool_count > 0 {
+                            log_status(&format!("Tools synced: {tool_count}"));
+                        }
+                    }
+                    Ok(TunnelEvent::OAuthRequired { auth_url }) => {
+                        log_status(&format!(
+                            "Poke token expired - re-authenticating ({auth_url})..."
+                        ));
+                        match recover_from_oauth_required().await {
+                            OAuthRecoveryOutcome::Restart { token } => {
+                                let new_poke = make_poke(&token)?;
+                                return Ok(MonitorTunnelResult::Restart { new_poke });
+                            }
+                            OAuthRecoveryOutcome::Failed(message) => {
+                                log_status(&format!("Re-auth failed: {message}"));
+                            }
+                        }
+                        return Ok(MonitorTunnelResult::Disconnected);
+                    }
+                    Ok(TunnelEvent::Error(message)) => {
+                        if is_non_fatal_bridge_error(&message) {
+                            log_status(&format!("Bridge warning: {message}"));
+                        } else {
+                            log_status(&format!("Bridge error: {message}"));
+                            return Ok(MonitorTunnelResult::Disconnected);
+                        }
+                    }
+                    Ok(TunnelEvent::Created(_)) | Ok(TunnelEvent::Connected(_)) => {}
+                    Err(_) => return Ok(MonitorTunnelResult::Disconnected),
+                }
+            }
+            command = rx.recv() => {
+                match command {
+                    Some(BridgeCommand::SendWebhook(message)) => {
+                        send_webhook_message(poke, webhook_url, webhook_token, &message).await;
+                    }
+                    Some(BridgeCommand::Stop) | None => {
+                        return Ok(MonitorTunnelResult::StopRequested);
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn start_tunnel_runner(
+    runner: &mut TunnelRunner,
+    rx: &mut async_mpsc::UnboundedReceiver<BridgeCommand>,
+    poke: &Poke,
+    webhook_url: &str,
+    webhook_token: &str,
+) -> StartTunnelResult {
+    let start = runner.start();
+    tokio::pin!(start);
+    loop {
+        tokio::select! {
+            result = &mut start => {
+                return match result {
+                    Ok(info) => StartTunnelResult::Success(info),
+                    Err(err) => StartTunnelResult::Error(err),
+                };
+            }
+            command = rx.recv() => {
+                match command {
+                    Some(BridgeCommand::SendWebhook(message)) => {
+                        send_webhook_message(poke, webhook_url, webhook_token, &message).await;
+                    }
+                    Some(BridgeCommand::Stop) | None => {
+                        return StartTunnelResult::StopRequested;
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn sleep_or_stop(
