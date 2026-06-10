@@ -28,5 +28,5 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-libc = "0.2.186"
+rustix = { version = "0.38", features = ["std", "net"] }
 tempfile = "3.23"
