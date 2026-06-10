@@ -26,10 +26,14 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
+futures = "0.3.32"
 
 [dev-dependencies]
 criterion = "0.8.2"
+serial_test = "3.5.0"
+rustix = { version = "0.38", features = ["std", "net"] }
 tempfile = "3.23"
+libc = "0.2"
 
 [[bench]]
 name = "mcp_benchmark"
