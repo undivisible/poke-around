@@ -935,7 +935,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "poke-around"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "base64",
  "chrono",
@@ -1176,9 +1176,9 @@ dependencies = [
 
 [[package]]
 name = "rs_poke"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94b24ce02b735f1341984b4db7fd2bfe7d1d8d6b0743f14444ecd9ecebd5d088"
+checksum = "9a9fcad3872011dfb6696f474036c969e24e8985b1de1080be35062d91f101a8"
 dependencies = [
  "bytes",
  "clap",
