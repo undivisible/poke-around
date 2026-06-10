@@ -449,15 +449,6 @@ fn needs_approval(tool_name: &str, args: &Value, mode: PermissionMode) -> bool {
                 .get("command")
                 .and_then(Value::as_str)
                 .is_some_and(policy::is_destructive_command),
-            "git_operations" => args
-                .get("operation")
-                .and_then(Value::as_str)
-                .is_some_and(|op| {
-                    !matches!(
-                        op,
-                        "status" | "diff" | "log" | "show" | "branch" | "rev-parse"
-                    )
-                }),
             _ => false,
         },
         _ => false,
@@ -602,7 +593,6 @@ fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value
         "edit_file" => edit_file(args, state),
         "web_fetch" => web_fetch(args),
         "http_request" => http_request(args),
-        "git_operations" => git_operations(args, state),
         "delete_file" => delete_file(args, state),
         "image" => image(args, state),
         "see" => see(args, state),
@@ -1229,29 +1219,6 @@ fn http_request(args: &Value) -> Result<Value> {
         "status": output.status.code().unwrap_or(1),
         "body": String::from_utf8_lossy(&output.stdout),
         "stderr": String::from_utf8_lossy(&output.stderr)
-    })))
-}
-
-fn git_operations(args: &Value, state: &AppState) -> Result<Value> {
-    let operation = args.get("operation").and_then(Value::as_str).unwrap_or("");
-    let cwd = args
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(|path| expand_path(path, &state.inner.home))
-        .unwrap_or_else(|| state.inner.home.clone());
-    let mut command = Command::new("git");
-    command.arg(operation);
-    if let Some(extra) = args.get("args").and_then(Value::as_array) {
-        for arg in extra.iter().filter_map(Value::as_str) {
-            command.arg(arg);
-        }
-    }
-    let output = command.current_dir(cwd).output()?;
-    Ok(ok_json(json!({
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
-        "exit_code": output.status.code().unwrap_or(1),
-        "success": output.status.success()
     })))
 }
 
