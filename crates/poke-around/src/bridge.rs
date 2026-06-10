@@ -79,6 +79,190 @@ impl Bridge {
     }
 }
 
+enum SessionOutcome {
+    Stop,
+    RestartQuickly,
+    RestartWithDelay,
+}
+
+async fn cleanup_runner(runner: &mut TunnelRunner) {
+    if let Some(info) = runner.info() {
+        let _ = runner.delete_connection(&info.connection_id).await;
+    }
+    let _ = runner.stop().await;
+}
+
+async fn start_tunnel_interleaved(
+    runner: &mut TunnelRunner,
+    rx: &mut async_mpsc::UnboundedReceiver<BridgeCommand>,
+    poke: &Poke,
+    webhook_url: &str,
+    webhook_token: &str,
+) -> std::result::Result<std::result::Result<rs_poke::TunnelInfo, rs_poke::Error>, bool> {
+    let mut stop_during_start = false;
+    let start_result = {
+        let start = runner.start();
+        tokio::pin!(start);
+        loop {
+            tokio::select! {
+                result = &mut start => break result,
+                command = rx.recv() => {
+                    match command {
+                        Some(BridgeCommand::SendWebhook(message)) => {
+                            send_webhook_message(poke, webhook_url, webhook_token, &message).await;
+                        }
+                        Some(BridgeCommand::Stop) | None => {
+                            stop_during_start = true;
+                            break Err(rs_poke::Error::Protocol("stop requested".into()));
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if stop_during_start {
+        Err(true)
+    } else {
+        Ok(start_result)
+    }
+}
+
+async fn run_tunnel_session(
+    mcp_url: &str,
+    permission_mode: &str,
+    tunnel_name: &str,
+    poke: &mut Poke,
+    webhook_url: &str,
+    webhook_token: &str,
+    rx: &mut async_mpsc::UnboundedReceiver<BridgeCommand>,
+) -> Result<SessionOutcome> {
+    let mut runner = TunnelRunner::new(
+        poke.clone(),
+        TunnelOptions {
+            url: mcp_url.to_string(),
+            name: tunnel_name.to_string(),
+            client_id: std::env::var("POKE_CLIENT_ID").ok(),
+            client_secret: std::env::var("POKE_CLIENT_SECRET").ok(),
+            cleanup_on_stop: false,
+            sync_interval: Duration::from_secs(300),
+            startup_timeout: TUNNEL_STARTUP_TIMEOUT,
+            ..TunnelOptions::default()
+        },
+    );
+    let mut events = runner.subscribe();
+
+    let start_result = match start_tunnel_interleaved(&mut runner, rx, poke, webhook_url, webhook_token).await {
+        Ok(res) => res,
+        Err(_) => {
+            cleanup_runner(&mut runner).await;
+            return Ok(SessionOutcome::Stop);
+        }
+    };
+
+    match start_result {
+        Ok(info) => {
+            record_connection(&info.connection_id)?;
+            log_status(&format!(
+                "Tunnel connected ({}) -> {}",
+                info.connection_id, info.tunnel_url
+            ));
+            notify_poke(
+                poke,
+                webhook_url,
+                webhook_token,
+                permission_mode,
+                tunnel_name,
+                &info.connection_id,
+                Some(&info.tunnel_url),
+            )
+            .await;
+            let synced = sync_and_report_tools(&runner, mcp_url).await;
+            if synced > 0 {
+                log_status("Ready - your Poke agent can now access this machine.");
+            } else {
+                log_status("Tools not synced yet; Poke may not be able to use this machine.");
+            }
+        }
+        Err(err) => {
+            log_status(&format!("Bridge error: {err}"));
+            cleanup_runner(&mut runner).await;
+            return Ok(SessionOutcome::RestartWithDelay);
+        }
+    }
+
+    let mut restart_tunnel = false;
+    let mut health_check = tokio::time::interval(TUNNEL_HEALTH_CHECK);
+    health_check.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = health_check.tick() => {
+                if !runner.connected() {
+                    log_status("Tunnel no longer connected.");
+                    break;
+                }
+            }
+            event = events.recv() => {
+                match event {
+                    Ok(TunnelEvent::Disconnected) => {
+                        log_status("Tunnel disconnected.");
+                        break;
+                    }
+                    Ok(TunnelEvent::ToolsSynced { tool_count }) => {
+                        if tool_count > 0 {
+                            log_status(&format!("Tools synced: {tool_count}"));
+                        }
+                    }
+                    Ok(TunnelEvent::OAuthRequired { auth_url }) => {
+                        log_status(&format!(
+                            "Poke token expired - re-authenticating ({auth_url})..."
+                        ));
+                        match recover_from_oauth_required().await {
+                            OAuthRecoveryOutcome::Restart { token } => {
+                                *poke = make_poke(&token)?;
+                                restart_tunnel = true;
+                            }
+                            OAuthRecoveryOutcome::Failed(message) => {
+                                log_status(&format!("Re-auth failed: {message}"));
+                            }
+                        }
+                        break;
+                    }
+                    Ok(TunnelEvent::Error(message)) => {
+                        if is_non_fatal_bridge_error(&message) {
+                            log_status(&format!("Bridge warning: {message}"));
+                        } else {
+                            log_status(&format!("Bridge error: {message}"));
+                            break;
+                        }
+                    }
+                    Ok(TunnelEvent::Created(_)) | Ok(TunnelEvent::Connected(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            command = rx.recv() => {
+                match command {
+                    Some(BridgeCommand::SendWebhook(message)) => {
+                        send_webhook_message(poke, webhook_url, webhook_token, &message).await;
+                    }
+                    Some(BridgeCommand::Stop) | None => {
+                        cleanup_runner(&mut runner).await;
+                        return Ok(SessionOutcome::Stop);
+                    }
+                }
+            }
+        }
+    }
+
+    cleanup_runner(&mut runner).await;
+    if restart_tunnel {
+        log_status("Restarting tunnel with refreshed credentials...");
+        Ok(SessionOutcome::RestartQuickly)
+    } else {
+        Ok(SessionOutcome::RestartWithDelay)
+    }
+}
+
 async fn run_bridge(
     mcp_url: String,
     permission_mode: String,
@@ -93,158 +277,28 @@ async fn run_bridge(
 
     let mut stop_requested = false;
     while !stop_requested {
-        let mut runner = TunnelRunner::new(
-            poke.clone(),
-            TunnelOptions {
-                url: mcp_url.clone(),
-                name: tunnel_name.clone(),
-                client_id: std::env::var("POKE_CLIENT_ID").ok(),
-                client_secret: std::env::var("POKE_CLIENT_SECRET").ok(),
-                cleanup_on_stop: false,
-                sync_interval: Duration::from_secs(300),
-                startup_timeout: TUNNEL_STARTUP_TIMEOUT,
-                ..TunnelOptions::default()
-            },
-        );
-        let mut events = runner.subscribe();
-        let mut stop_during_start = false;
-        let start_result = {
-            let start = runner.start();
-            tokio::pin!(start);
-            loop {
-                tokio::select! {
-                    result = &mut start => break result,
-                    command = rx.recv() => {
-                        match command {
-                            Some(BridgeCommand::SendWebhook(message)) => {
-                                send_webhook_message(&poke, &webhook_url, &webhook_token, &message).await;
-                            }
-                            Some(BridgeCommand::Stop) | None => {
-                                stop_during_start = true;
-                                break Err(rs_poke::Error::Protocol("stop requested".into()));
-                            }
-                        }
-                    }
-                }
-            }
-        };
-        if stop_during_start {
-            if let Some(info) = runner.info() {
-                let _ = runner.delete_connection(&info.connection_id).await;
-            }
-            let _ = runner.stop().await;
-            return Ok(());
-        }
-        match start_result {
-            Ok(info) => {
-                record_connection(&info.connection_id)?;
-                log_status(&format!(
-                    "Tunnel connected ({}) -> {}",
-                    info.connection_id, info.tunnel_url
-                ));
-                notify_poke(
-                    &poke,
-                    &webhook_url,
-                    &webhook_token,
-                    &permission_mode,
-                    &tunnel_name,
-                    &info.connection_id,
-                    Some(&info.tunnel_url),
-                )
-                .await;
-                let synced = sync_and_report_tools(&runner, &mcp_url).await;
-                if synced > 0 {
-                    log_status("Ready - your Poke agent can now access this machine.");
-                } else {
-                    log_status("Tools not synced yet; Poke may not be able to use this machine.");
-                }
-            }
-            Err(err) => {
-                log_status(&format!("Bridge error: {err}"));
-                if let Some(info) = runner.info() {
-                    let _ = runner.delete_connection(&info.connection_id).await;
-                }
-                let _ = runner.stop().await;
-                sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
-                continue;
-            }
-        }
+        let outcome = run_tunnel_session(
+            &mcp_url,
+            &permission_mode,
+            &tunnel_name,
+            &mut poke,
+            &webhook_url,
+            &webhook_token,
+            &mut rx,
+        )
+        .await?;
 
-        let mut restart_tunnel = false;
-        let mut health_check = tokio::time::interval(TUNNEL_HEALTH_CHECK);
-        health_check.tick().await;
-        loop {
-            tokio::select! {
-                _ = health_check.tick() => {
-                    if !runner.connected() {
-                        log_status("Tunnel no longer connected.");
-                        break;
-                    }
-                }
-                event = events.recv() => {
-                    match event {
-                        Ok(TunnelEvent::Disconnected) => {
-                            log_status("Tunnel disconnected.");
-                            break;
-                        }
-                        Ok(TunnelEvent::ToolsSynced { tool_count }) => {
-                            if tool_count > 0 {
-                                log_status(&format!("Tools synced: {tool_count}"));
-                            }
-                        }
-                        Ok(TunnelEvent::OAuthRequired { auth_url }) => {
-                            log_status(&format!(
-                                "Poke token expired - re-authenticating ({auth_url})..."
-                            ));
-                            match recover_from_oauth_required().await {
-                                OAuthRecoveryOutcome::Restart { token } => {
-                                    poke = make_poke(&token)?;
-                                    restart_tunnel = true;
-                                }
-                                OAuthRecoveryOutcome::Failed(message) => {
-                                    log_status(&format!("Re-auth failed: {message}"));
-                                }
-                            }
-                            break;
-                        }
-                        Ok(TunnelEvent::Error(message)) => {
-                            if is_non_fatal_bridge_error(&message) {
-                                log_status(&format!("Bridge warning: {message}"));
-                            } else {
-                                log_status(&format!("Bridge error: {message}"));
-                                break;
-                            }
-                        }
-                        Ok(TunnelEvent::Created(_)) | Ok(TunnelEvent::Connected(_)) => {}
-                        Err(_) => break,
-                    }
-                }
-                command = rx.recv() => {
-                    match command {
-                        Some(BridgeCommand::SendWebhook(message)) => {
-                            send_webhook_message(&poke, &webhook_url, &webhook_token, &message).await;
-                        }
-                        Some(BridgeCommand::Stop) | None => {
-                            if let Some(info) = runner.info() {
-                                let _ = runner.delete_connection(&info.connection_id).await;
-                            }
-                            let _ = runner.stop().await;
-                            return Ok(());
-                        }
-                    }
-                }
+        match outcome {
+            SessionOutcome::Stop => {
+                stop_requested = true;
+            }
+            SessionOutcome::RestartQuickly => {
+                sleep_or_stop(&mut rx, Duration::from_secs(1), &mut stop_requested).await;
+            }
+            SessionOutcome::RestartWithDelay => {
+                sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
             }
         }
-        if let Some(info) = runner.info() {
-            let _ = runner.delete_connection(&info.connection_id).await;
-        }
-        let _ = runner.stop().await;
-        if restart_tunnel {
-            log_status("Restarting tunnel with refreshed credentials...");
-            sleep_or_stop(&mut rx, Duration::from_secs(1), &mut stop_requested).await;
-            continue;
-        }
-        sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
     }
     Ok(())
 }
