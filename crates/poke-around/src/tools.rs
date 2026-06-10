@@ -326,58 +326,6 @@ fn base_tools() -> Vec<Value> {
                 }
         }),
         json!({
-            "name": "git_operations",
-            "description": "Run a git operation in the current directory or cwd.",
-            "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "operation": {
-                            "type": "string",
-                            "enum": [
-                                "status",
-                                "diff",
-                                "log",
-                                "show",
-                                "commit",
-                                "add",
-                                "checkout",
-                                "branch",
-                                "stash",
-                                "reset",
-                                "rev-parse"
-                            ],
-                            "description": "Git operation to run"
-                        },
-                        "args": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Additional git arguments"
-                        },
-                        "cwd": {
-                            "type": "string",
-                            "description": "Working directory (optional, defaults to home)"
-                        },
-                        "approval_token": {
-                            "type": "string",
-                            "description": "Approval token returned by a previous AWAITING_APPROVAL response"
-                        },
-                        "approve": {
-                            "type": "boolean",
-                            "description": "Set true after user approves in chat"
-                        },
-                        "remember_all_risky": {
-                            "type": "boolean",
-                            "description": "If true, auto-approve all risky tools for this session"
-                        }
-                    },
-                    "required": [
-                        "operation"
-                    ]
-                }
-        }),
-        json!({
             "name": "delete_file",
             "description": "Delete a file or empty directory. Requires approval for non-empty directories.",
             "inputSchema": {
