@@ -7,6 +7,12 @@ pub struct Config {
     pub permission_mode: Option<String>,
 }
 
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(test)]
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
 pub fn config_dir() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -59,4 +65,96 @@ pub fn save_permission_mode(mode: &str) -> Result<()> {
 
 pub fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| Error::msg("home directory not found"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_config_derives() {
+        let mut config = Config::default();
+        assert_eq!(config.permission_mode, None);
+
+        config.permission_mode = Some("limited".to_string());
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.permission_mode, Some("limited".to_string()));
+    }
+
+    // Helper to safely run a test with modified XDG_CONFIG_HOME
+    fn with_temp_env<F>(test: F)
+    where
+        F: FnOnce(&std::path::Path),
+    {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Save original XDG_CONFIG_HOME
+        let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        // Ensure HOME is not used by config_dir() fallback by explicitly setting XDG_CONFIG_HOME
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            test(temp_dir.path());
+        }));
+
+        // Restore original environment
+        unsafe {
+            if let Some(val) = original_xdg {
+                std::env::set_var("XDG_CONFIG_HOME", val);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+        }
+
+        if let Err(err) = result {
+            std::panic::resume_unwind(err);
+        }
+    }
+
+    #[test]
+    fn test_paths() {
+        with_temp_env(|_| {
+            let base = config_dir().unwrap();
+            assert!(base.ends_with("poke-around"));
+
+            let agents = agents_dir().unwrap();
+            assert_eq!(agents, base.join("agents"));
+
+            let cfg = config_path().unwrap();
+            assert_eq!(cfg, base.join("config.json"));
+
+            let state = state_path().unwrap();
+            assert_eq!(state, base.join("state.json"));
+        });
+    }
+
+    #[test]
+    fn test_read_write_config() {
+        with_temp_env(|_| {
+            // Initially reading config should return default (NotFound -> Ok(Config::default()))
+            let initial_config = read_config().unwrap();
+            assert_eq!(initial_config.permission_mode, None);
+
+            // Save a new permission mode
+            save_permission_mode("full").unwrap();
+
+            // Reading it back should show "full"
+            let updated_config = read_config().unwrap();
+            assert_eq!(updated_config.permission_mode, Some("full".to_string()));
+
+            // Also verify the file actually exists and contains the data
+            let cfg_path = config_path().unwrap();
+            assert!(cfg_path.exists());
+
+            let content = std::fs::read_to_string(cfg_path).unwrap();
+            assert!(content.contains(r#""permission_mode": "full""#));
+        });
+    }
 }

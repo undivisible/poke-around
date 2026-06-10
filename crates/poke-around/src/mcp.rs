@@ -449,15 +449,6 @@ fn needs_approval(tool_name: &str, args: &Value, mode: PermissionMode) -> bool {
                 .get("command")
                 .and_then(Value::as_str)
                 .is_some_and(policy::is_destructive_command),
-            "git_operations" => args
-                .get("operation")
-                .and_then(Value::as_str)
-                .is_some_and(|op| {
-                    !matches!(
-                        op,
-                        "status" | "diff" | "log" | "show" | "branch" | "rev-parse"
-                    )
-                }),
             _ => false,
         },
         _ => false,
@@ -602,7 +593,6 @@ fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value
         "edit_file" => edit_file(args, state),
         "web_fetch" => web_fetch(args),
         "http_request" => http_request(args),
-        "git_operations" => git_operations(args, state),
         "delete_file" => delete_file(args, state),
         "image" => image(args, state),
         "see" => see(args, state),
@@ -1208,51 +1198,57 @@ fn web_fetch(args: &Value) -> Result<Value> {
 }
 
 fn http_request(args: &Value) -> Result<Value> {
-    let method = args.get("method").and_then(Value::as_str).unwrap_or("GET");
-    let url = args.get("url").and_then(Value::as_str).unwrap_or("");
-    let mut command = Command::new("curl");
-    command.arg("-sS").arg("-X").arg(method);
+    let method_str = args.get("method").and_then(Value::as_str).unwrap_or("GET");
+    let url_str = args.get("url").and_then(Value::as_str).unwrap_or("");
+
+    let method = match method_str.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
+        "HEAD" => reqwest::Method::HEAD,
+        "OPTIONS" => reqwest::Method::OPTIONS,
+        _ => reqwest::Method::GET,
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.request(method, url_str);
+
     if let Some(headers) = args.get("headers").and_then(Value::as_object) {
         for (name, value) in headers {
-            command.arg("-H").arg(format!(
-                "{name}: {}",
-                value.as_str().unwrap_or(&value.to_string())
-            ));
+            let val_str = value
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| value.to_string());
+            request = request.header(name, val_str);
         }
     }
-    if let Some(body) = args.get("body").and_then(Value::as_str) {
-        command.arg("--data").arg(body);
-    }
-    let output = command.arg(url).output()?;
-    Ok(ok_json(json!({
-        "success": output.status.success(),
-        "status": output.status.code().unwrap_or(1),
-        "body": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr)
-    })))
-}
 
-fn git_operations(args: &Value, state: &AppState) -> Result<Value> {
-    let operation = args.get("operation").and_then(Value::as_str).unwrap_or("");
-    let cwd = args
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(|path| expand_path(path, &state.inner.home))
-        .unwrap_or_else(|| state.inner.home.clone());
-    let mut command = Command::new("git");
-    command.arg(operation);
-    if let Some(extra) = args.get("args").and_then(Value::as_array) {
-        for arg in extra.iter().filter_map(Value::as_str) {
-            command.arg(arg);
-        }
+    if let Some(body) = args.get("body").and_then(Value::as_str) {
+        request = request.body(body.to_string());
     }
-    let output = command.current_dir(cwd).output()?;
-    Ok(ok_json(json!({
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
-        "exit_code": output.status.code().unwrap_or(1),
-        "success": output.status.success()
-    })))
+
+    match request.send() {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let success = response.status().is_success();
+            let body = response.text().unwrap_or_default();
+
+            Ok(ok_json(json!({
+                "success": success,
+                "status": status,
+                "body": body,
+                "stderr": ""
+            })))
+        }
+        Err(e) => Ok(ok_json(json!({
+            "success": false,
+            "status": 1,
+            "body": "",
+            "stderr": e.to_string()
+        }))),
+    }
 }
 
 fn delete_file(args: &Value, state: &AppState) -> Result<Value> {
@@ -1381,6 +1377,74 @@ mod tests {
     }
 
     #[test]
+    fn image_should_return_mcp_image_content() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+
+        let response = image(&json!({}), &state);
+        if let Ok(response) = response {
+            let content = response["content"].as_array().unwrap();
+
+            assert_eq!(content.len(), 2);
+            assert_eq!(content[0]["type"], "text");
+            assert_eq!(content[1]["type"], "image");
+            assert_eq!(content[1]["mimeType"], "image/png");
+
+            let structured_content = &response["structuredContent"];
+            assert_eq!(structured_content["mode"], "screen");
+            assert_eq!(structured_content["ephemeral"], true);
+            assert!(structured_content["path"].as_str().is_some());
+
+            let path = std::path::PathBuf::from(structured_content["path"].as_str().unwrap());
+            let _ = fs::remove_file(path);
+        } else {
+            let err = response.unwrap_err();
+            assert!(
+                err.to_string().contains("CommandFailed")
+                    || err.to_string().contains("no screenshot tool found")
+                    || err.to_string().contains("X server")
+            );
+        }
+    }
+
+    #[test]
+    fn image_with_args_should_return_mcp_image_content() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+
+        let path =
+            std::env::temp_dir().join(format!("poke-around-test-image-{}.png", std::process::id()));
+        let response = image(
+            &json!({ "mode": "screen", "path": path, "retina": false }),
+            &state,
+        );
+
+        if let Ok(response) = response {
+            let content = response["content"].as_array().unwrap();
+
+            assert_eq!(content.len(), 2);
+            assert_eq!(content[0]["type"], "text");
+            assert_eq!(content[1]["type"], "image");
+            assert_eq!(content[1]["mimeType"], "image/png");
+
+            let structured_content = &response["structuredContent"];
+            assert_eq!(structured_content["mode"], "screen");
+            assert_eq!(structured_content["ephemeral"], false);
+            assert_eq!(
+                structured_content["path"].as_str().unwrap(),
+                path.to_string_lossy()
+            );
+
+            let _ = fs::remove_file(path);
+        } else {
+            let err = response.unwrap_err();
+            assert!(
+                err.to_string().contains("CommandFailed")
+                    || err.to_string().contains("no screenshot tool found")
+                    || err.to_string().contains("X server")
+            );
+        }
+    }
+
+    #[test]
     fn read_image_should_return_mcp_image_content() {
         let path =
             std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
@@ -1396,5 +1460,33 @@ mod tests {
         assert!(response["structuredContent"].get("base64").is_none());
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn execute_tool_unknown_tool_should_return_error() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let response = execute_tool("non_existent_tool", &json!({}), &state).unwrap();
+
+        assert_eq!(response["isError"], true);
+        let content = response["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Unknown tool: non_existent_tool");
+    }
+
+    #[test]
+    fn execute_tool_should_propagate_io_errors_from_tool_execution() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        // Use a path that is guaranteed not to exist
+        let args = json!({ "path": "/path/does/not/exist/surely/poke_around_test_12345" });
+
+        // This should hit fs::read_to_string which will return a std::io::Error
+        let response = execute_tool("read_file", &args, &state);
+
+        // Assert it returns an Err(...) containing the IO error
+        assert!(response.is_err());
+        match response.unwrap_err() {
+            crate::Error::Io(_) => {}
+            _ => panic!("Expected IO error"),
+        }
     }
 }
