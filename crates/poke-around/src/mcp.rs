@@ -1310,6 +1310,18 @@ mod tests {
     }
 
     #[test]
+    fn execute_tool_unknown_should_return_error() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let response = execute_tool("some_unknown_tool", &json!({}), &state).unwrap();
+        let content = response["content"].as_array().unwrap();
+
+        assert_eq!(response["isError"], true);
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Unknown tool: some_unknown_tool");
+    }
+
+    #[test]
     fn read_image_should_return_mcp_image_content() {
         let path =
             std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
