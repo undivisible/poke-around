@@ -28,4 +28,5 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+libc = "0.2.186"
 tempfile = "3.23"

@@ -941,6 +941,7 @@ dependencies = [
  "chrono",
  "ctrlc",
  "dirs",
+ "libc",
  "rand",
  "reqwest",
  "rs_peekaboo",

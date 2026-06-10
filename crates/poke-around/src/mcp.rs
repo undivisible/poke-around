@@ -1326,4 +1326,53 @@ mod tests {
 
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn handle_connection_read_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+
+        // Set SO_LINGER via libc to force TCP RST when dropped
+        #[cfg(unix)]
+        {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&client);
+            let linger = libc::linger { l_onoff: 1, l_linger: 0 };
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    &linger as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::linger>() as libc::socklen_t,
+                );
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            let sock = client.as_raw_socket() as libc::SOCKET;
+            let linger = libc::linger { l_onoff: 1, l_linger: 0 };
+            unsafe {
+                libc::setsockopt(
+                    sock,
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    &linger as *const _ as *const libc::c_char,
+                    std::mem::size_of::<libc::linger>() as libc::c_int,
+                );
+            }
+        }
+
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100)); // Wait for RST
+
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let result = handle_connection(server_stream, state);
+
+        // When reading from a reset connection, handle_connection expects an Err internally,
+        // which it catches and writes a 400 response. But write_http_response will fail because
+        // the socket is broken/reset, causing handle_connection to return an Err overall.
+        assert!(result.is_err(), "Expected an error when handling a reset connection, got {:?}", result);
+    }
 }
