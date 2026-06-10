@@ -696,4 +696,33 @@ mod tests {
             )
         );
     }
+
+    use serial_test::serial;
+
+    #[tokio::test]
+    #[serial]
+    async fn ensure_auth_returns_error_on_invalid_credentials_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let original_env = std::env::var_os("XDG_CONFIG_HOME");
+
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        }
+        let poke_dir = temp_dir.path().join("poke");
+        std::fs::create_dir(&poke_dir).unwrap();
+        std::fs::write(poke_dir.join("credentials.json"), b"not json").unwrap();
+
+        let result = ensure_auth(false).await;
+        let is_err = result.is_err();
+
+        unsafe {
+            if let Some(val) = original_env {
+                std::env::set_var("XDG_CONFIG_HOME", val);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+        }
+
+        assert!(is_err);
+    }
 }
