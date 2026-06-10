@@ -337,6 +337,38 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Opti
     handle_json_rpc_message(&request, session_id, state)
 }
 
+fn handle_initialize(request: &Value) -> Value {
+    json!({
+        "protocolVersion": request
+            .get("params")
+            .and_then(|params| params.get("protocolVersion"))
+            .and_then(Value::as_str)
+            .unwrap_or("2024-11-05"),
+        "serverInfo": { "name": "poke-around", "version": env!("CARGO_PKG_VERSION") },
+        "capabilities": { "tools": { "listChanged": false } },
+        "instructions": "This server gives you access to the user's machine. You can run shell commands, read/write files, list directories, use browser-style fetch tools, take screenshots, and get system info. Use these tools to help the user with OS-level tasks."
+    })
+}
+
+fn handle_tools_list() -> Result<Value> {
+    let tools_value: Value = serde_json::from_str(&tools::tools_json())?;
+    Ok(json!({ "tools": tools_value }))
+}
+
+fn handle_tools_call_request(
+    request: &Value,
+    session_id: &str,
+    state: AppState,
+) -> Result<Value> {
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    handle_tool_call(name, &args, session_id, state)
+}
+
 fn handle_json_rpc_message(
     request: &Value,
     session_id: &str,
@@ -354,29 +386,9 @@ fn handle_json_rpc_message(
     let id = id.unwrap_or(Value::Null);
     let result = match method {
         "notifications/initialized" => json!({}),
-        "initialize" => json!({
-            "protocolVersion": request
-                .get("params")
-                .and_then(|params| params.get("protocolVersion"))
-                .and_then(Value::as_str)
-                .unwrap_or("2024-11-05"),
-            "serverInfo": { "name": "poke-around", "version": env!("CARGO_PKG_VERSION") },
-            "capabilities": { "tools": { "listChanged": false } },
-            "instructions": "This server gives you access to the user's machine. You can run shell commands, read/write files, list directories, use browser-style fetch tools, take screenshots, and get system info. Use these tools to help the user with OS-level tasks."
-        }),
-        "tools/list" => {
-            let tools_value: Value = serde_json::from_str(&tools::tools_json())?;
-            json!({ "tools": tools_value })
-        }
-        "tools/call" => {
-            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            let args = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            handle_tool_call(name, &args, session_id, state)?
-        }
+        "initialize" => handle_initialize(request),
+        "tools/list" => handle_tools_list()?,
+        "tools/call" => handle_tools_call_request(request, session_id, state)?,
         "ping" => json!({}),
         _ => {
             return Ok(Some(json!({
