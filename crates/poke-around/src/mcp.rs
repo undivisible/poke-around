@@ -1334,7 +1334,11 @@ mod tests {
         } else {
             // It could be missing screenshot tool or no X server, which is acceptable in some test environments
             let err = response.unwrap_err();
-            assert!(err.to_string().contains("CommandFailed") || err.to_string().contains("no screenshot tool found") || err.to_string().contains("X server"));
+            assert!(
+                err.to_string().contains("CommandFailed")
+                    || err.to_string().contains("no screenshot tool found")
+                    || err.to_string().contains("X server")
+            );
         }
     }
 
@@ -1342,8 +1346,12 @@ mod tests {
     fn image_with_args_should_return_mcp_image_content() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
 
-        let path = std::env::temp_dir().join(format!("poke-around-test-image-{}.png", std::process::id()));
-        let response = image(&json!({ "mode": "screen", "path": path, "retina": false }), &state);
+        let path =
+            std::env::temp_dir().join(format!("poke-around-test-image-{}.png", std::process::id()));
+        let response = image(
+            &json!({ "mode": "screen", "path": path, "retina": false }),
+            &state,
+        );
 
         if let Ok(response) = response {
             let content = response["content"].as_array().unwrap();
@@ -1356,12 +1364,19 @@ mod tests {
             let structured_content = &response["structuredContent"];
             assert_eq!(structured_content["mode"], "screen");
             assert_eq!(structured_content["ephemeral"], false);
-            assert_eq!(structured_content["path"].as_str().unwrap(), path.to_string_lossy());
+            assert_eq!(
+                structured_content["path"].as_str().unwrap(),
+                path.to_string_lossy()
+            );
 
             let _ = fs::remove_file(path);
         } else {
             let err = response.unwrap_err();
-            assert!(err.to_string().contains("CommandFailed") || err.to_string().contains("no screenshot tool found") || err.to_string().contains("X server"));
+            assert!(
+                err.to_string().contains("CommandFailed")
+                    || err.to_string().contains("no screenshot tool found")
+                    || err.to_string().contains("X server")
+            );
         }
     }
 
