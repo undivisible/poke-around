@@ -1,0 +1,6 @@
+interface:
+  display_name: "Poke Around"
+  short_description: "Repo-specific patterns and workflows for poke-around"
+  default_prompt: "Use the poke-around repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
