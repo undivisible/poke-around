@@ -122,32 +122,7 @@ pub fn evaluate_access_policy(
     }
 
     if tool_name == "run_command" {
-        let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-        if command.trim().is_empty() {
-            return Some("Command is empty.".to_string());
-        }
-        if has_dangerous_pattern(command) {
-            return Some("Command matches a dangerous pattern.".to_string());
-        }
-        let allowlist = match mode {
-            PermissionMode::Full => &[][..],
-            PermissionMode::Limited => LIMITED_COMMANDS,
-            PermissionMode::Sandbox => SANDBOX_COMMANDS,
-        };
-        for segment in split_command_segments(command) {
-            let executable = extract_executable(segment);
-            if executable.is_empty() || !allowlist.contains(&executable.as_str()) {
-                return Some(format!(
-                    "Command '{}' is not permitted in this mode.",
-                    if executable.is_empty() {
-                        "unknown"
-                    } else {
-                        executable.as_str()
-                    }
-                ));
-            }
-        }
-        return None;
+        return evaluate_run_command_policy(args, mode);
     }
 
     if matches!(
@@ -161,21 +136,54 @@ pub fn evaluate_access_policy(
     }
 
     if tool_name == "git_operations" {
-        let operation = args.get("operation").and_then(Value::as_str).unwrap_or("");
-        if matches!(
-            operation,
-            "status" | "diff" | "log" | "show" | "branch" | "rev-parse"
-        ) {
-            return None;
-        }
-        return Some(format!(
-            "git operation '{operation}' is not permitted in {} mode.",
-            mode.as_str()
-        ));
+        return evaluate_git_operations_policy(args, mode);
     }
 
     Some(format!(
         "Tool '{tool_name}' is not permitted in {} mode.",
+        mode.as_str()
+    ))
+}
+
+fn evaluate_run_command_policy(args: &Value, mode: PermissionMode) -> Option<String> {
+    let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+    if command.trim().is_empty() {
+        return Some("Command is empty.".to_string());
+    }
+    if has_dangerous_pattern(command) {
+        return Some("Command matches a dangerous pattern.".to_string());
+    }
+    let allowlist = match mode {
+        PermissionMode::Full => &[][..],
+        PermissionMode::Limited => LIMITED_COMMANDS,
+        PermissionMode::Sandbox => SANDBOX_COMMANDS,
+    };
+    for segment in split_command_segments(command) {
+        let executable = extract_executable(segment);
+        if executable.is_empty() || !allowlist.contains(&executable.as_str()) {
+            return Some(format!(
+                "Command '{}' is not permitted in this mode.",
+                if executable.is_empty() {
+                    "unknown"
+                } else {
+                    executable.as_str()
+                }
+            ));
+        }
+    }
+    None
+}
+
+fn evaluate_git_operations_policy(args: &Value, mode: PermissionMode) -> Option<String> {
+    let operation = args.get("operation").and_then(Value::as_str).unwrap_or("");
+    if matches!(
+        operation,
+        "status" | "diff" | "log" | "show" | "branch" | "rev-parse"
+    ) {
+        return None;
+    }
+    Some(format!(
+        "git operation '{operation}' is not permitted in {} mode.",
         mode.as_str()
     ))
 }
