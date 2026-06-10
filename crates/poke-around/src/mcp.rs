@@ -88,37 +88,7 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         .filter(|value| !value.is_empty())
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    let http_response = if request.method == "OPTIONS" {
-        HttpResponse::no_content()
-    } else if request.method == "GET" && path == "/mcp" {
-        HttpResponse::method_not_allowed()
-    } else if request.method == "GET" && matches!(path.as_str(), "/" | "/health") {
-        HttpResponse::json(200, json!({ "ok": true }))
-    } else if request.method == "DELETE" && matches!(path.as_str(), "/" | "/mcp") {
-        HttpResponse::method_not_allowed()
-    } else if request.method == "POST" && matches!(path.as_str(), "/" | "/mcp") {
-        match handle_json_rpc(&request.body, &session_id, state.clone())? {
-            Some(body) => {
-                let mut response = HttpResponse::json(200, body);
-                if request_contains_initialize(&request.body) {
-                    let new_session = new_mcp_session_id();
-                    response
-                        .headers
-                        .push(("Mcp-Session-Id".to_string(), new_session));
-                }
-                response
-            }
-            None => HttpResponse::accepted(),
-        }
-    } else {
-        write_http_response(
-            &mut stream,
-            404,
-            &json!({ "error": "not found" }).to_string(),
-            &[],
-        )?;
-        return Ok(());
-    };
+    let http_response = route_request(&request, &path, &session_id, state.clone())?;
     if state.inner.verbose {
         eprintln!(
             "http: response {} bytes={}",
@@ -173,6 +143,40 @@ impl HttpResponse {
             headers: Vec::new(),
         }
     }
+}
+
+fn route_request(
+    request: &HttpRequest,
+    path: &str,
+    session_id: &str,
+    state: AppState,
+) -> Result<HttpResponse> {
+    let response = if request.method == "OPTIONS" {
+        HttpResponse::no_content()
+    } else if request.method == "GET" && path == "/mcp" {
+        HttpResponse::method_not_allowed()
+    } else if request.method == "GET" && matches!(path, "/" | "/health") {
+        HttpResponse::json(200, json!({ "ok": true }))
+    } else if request.method == "DELETE" && matches!(path, "/" | "/mcp") {
+        HttpResponse::method_not_allowed()
+    } else if request.method == "POST" && matches!(path, "/" | "/mcp") {
+        match handle_json_rpc(&request.body, session_id, state)? {
+            Some(body) => {
+                let mut response = HttpResponse::json(200, body);
+                if request_contains_initialize(&request.body) {
+                    let new_session = new_mcp_session_id();
+                    response
+                        .headers
+                        .push(("Mcp-Session-Id".to_string(), new_session));
+                }
+                response
+            }
+            None => HttpResponse::accepted(),
+        }
+    } else {
+        HttpResponse::json(404, json!({ "error": "not found" }))
+    };
+    Ok(response)
 }
 
 fn request_contains_initialize(body: &str) -> bool {
