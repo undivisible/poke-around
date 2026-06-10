@@ -1,22 +1,23 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 // We will mock a simplified loop with a cloneable dummy state
 #[derive(Clone)]
 struct DummyState {
     // some data
+    #[allow(dead_code)]
     data: std::sync::Arc<Vec<u8>>,
 }
 
 fn handle_with_clone(items: &[u32], state: DummyState) {
     for item in items {
         let cloned_state = state.clone();
-        black_box(process_item(item, cloned_state));
+        std::hint::black_box(process_item(item, cloned_state));
     }
 }
 
 fn handle_with_borrow(items: &[u32], state: &DummyState) {
     for item in items {
-        black_box(process_item_borrow(item, state));
+        std::hint::black_box(process_item_borrow(item, state));
     }
 }
 
