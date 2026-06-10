@@ -1463,6 +1463,31 @@ mod tests {
     }
 
     #[test]
+    fn handle_connection_read_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+
+        // Set SO_LINGER via rustix to force TCP RST when dropped
+        rustix::net::sockopt::set_socket_linger(&client, Some(Duration::ZERO)).unwrap();
+
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100)); // Wait for RST
+
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let result = handle_connection(server_stream, state);
+
+        // When reading from a reset connection, handle_connection expects an Err internally,
+        // which it catches and writes a 400 response. But write_http_response will fail because
+        // the socket is broken/reset, causing handle_connection to return an Err overall.
+        assert!(
+            result.is_err(),
+            "Expected an error when handling a reset connection, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn execute_tool_unknown_tool_should_return_error() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
         let response = execute_tool("non_existent_tool", &json!({}), &state).unwrap();
@@ -1476,13 +1501,10 @@ mod tests {
     #[test]
     fn execute_tool_should_propagate_io_errors_from_tool_execution() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
-        // Use a path that is guaranteed not to exist
         let args = json!({ "path": "/path/does/not/exist/surely/poke_around_test_12345" });
 
-        // This should hit fs::read_to_string which will return a std::io::Error
         let response = execute_tool("read_file", &args, &state);
 
-        // Assert it returns an Err(...) containing the IO error
         assert!(response.is_err());
         match response.unwrap_err() {
             crate::Error::Io(_) => {}
