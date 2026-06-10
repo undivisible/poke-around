@@ -1310,6 +1310,62 @@ mod tests {
     }
 
     #[test]
+    fn image_should_return_mcp_image_content() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+
+        let response = image(&json!({}), &state);
+        // It could fail in CI without graphical session, but we still verify it works or returns error from peekaboo
+        // To be safe we will check if it runs or returns screenshot error but not panic.
+        if let Ok(response) = response {
+            let content = response["content"].as_array().unwrap();
+
+            assert_eq!(content.len(), 2);
+            assert_eq!(content[0]["type"], "text");
+            assert_eq!(content[1]["type"], "image");
+            assert_eq!(content[1]["mimeType"], "image/png");
+
+            let structured_content = &response["structuredContent"];
+            assert_eq!(structured_content["mode"], "screen");
+            assert_eq!(structured_content["ephemeral"], true);
+            assert!(structured_content["path"].as_str().is_some());
+
+            let path = std::path::PathBuf::from(structured_content["path"].as_str().unwrap());
+            let _ = fs::remove_file(path);
+        } else {
+            // It could be missing screenshot tool or no X server, which is acceptable in some test environments
+            let err = response.unwrap_err();
+            assert!(err.to_string().contains("CommandFailed") || err.to_string().contains("no screenshot tool found") || err.to_string().contains("X server"));
+        }
+    }
+
+    #[test]
+    fn image_with_args_should_return_mcp_image_content() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+
+        let path = std::env::temp_dir().join(format!("poke-around-test-image-{}.png", std::process::id()));
+        let response = image(&json!({ "mode": "screen", "path": path, "retina": false }), &state);
+
+        if let Ok(response) = response {
+            let content = response["content"].as_array().unwrap();
+
+            assert_eq!(content.len(), 2);
+            assert_eq!(content[0]["type"], "text");
+            assert_eq!(content[1]["type"], "image");
+            assert_eq!(content[1]["mimeType"], "image/png");
+
+            let structured_content = &response["structuredContent"];
+            assert_eq!(structured_content["mode"], "screen");
+            assert_eq!(structured_content["ephemeral"], false);
+            assert_eq!(structured_content["path"].as_str().unwrap(), path.to_string_lossy());
+
+            let _ = fs::remove_file(path);
+        } else {
+            let err = response.unwrap_err();
+            assert!(err.to_string().contains("CommandFailed") || err.to_string().contains("no screenshot tool found") || err.to_string().contains("X server"));
+        }
+    }
+
+    #[test]
     fn read_image_should_return_mcp_image_content() {
         let path =
             std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
