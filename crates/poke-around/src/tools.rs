@@ -54,282 +54,330 @@ pub fn tools_json() -> String {
 }
 
 fn computer_use_tools() -> Vec<Value> {
+    let mut tools = Vec::new();
+    tools.extend(screen_and_permission_tools());
+    tools.extend(input_and_gesture_tools());
+    tools.extend(ui_and_app_tools());
+    tools.extend(utility_tools());
+    tools
+}
+
+fn screen_and_permission_tools() -> Vec<Value> {
     vec![
         json!({
-            "name": "image",
-            "description": "Capture a screen or window image on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mode": {"type": "string", "description": "Capture mode: screen or window"},
-                    "path": {"type": "string", "description": "Optional output path"},
-                    "retina": {"type": "boolean", "description": "Capture at retina scale"}
+        "name": "image",
+                "description": "Capture a screen or window image on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string", "description": "Capture mode: screen or window"},
+                        "path": {"type": "string", "description": "Optional output path"},
+                        "retina": {"type": "boolean", "description": "Capture at retina scale"}
+                    }
                 }
-            }
-        }),
+
+            }),
         json!({
-            "name": "see",
-            "description": "Capture an image and cache a UI snapshot on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "app": {"type": "string", "description": "Optional app filter"},
-                    "mode": {"type": "string", "description": "Capture mode: screen or window"},
-                    "path": {"type": "string", "description": "Optional output path"},
-                    "retina": {"type": "boolean", "description": "Capture at retina scale"}
+        "name": "see",
+                "description": "Capture an image and cache a UI snapshot on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "app": {"type": "string", "description": "Optional app filter"},
+                        "mode": {"type": "string", "description": "Capture mode: screen or window"},
+                        "path": {"type": "string", "description": "Optional output path"},
+                        "retina": {"type": "boolean", "description": "Capture at retina scale"}
+                    }
                 }
-            }
-        }),
+
+            }),
         json!({
-            "name": "list_screens",
-            "description": "List display information for the user's machine.",
-            "inputSchema": {"type": "object", "properties": {}}
-        }),
+        "name": "list_screens",
+                "description": "List display information for the user's machine.",
+                "inputSchema": {"type": "object", "properties": {}}
+
+            }),
         json!({
-            "name": "permissions",
-            "description": "Probe or grant screen recording, accessibility, and clipboard access.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "Optional action: grant"}
+        "name": "permissions",
+                "description": "Probe or grant screen recording, accessibility, and clipboard access.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Optional action: grant"}
+                    }
                 }
-            }
-        }),
+
+            }),
+    ]
+}
+
+fn input_and_gesture_tools() -> Vec<Value> {
+    vec![
         json!({
-            "name": "click",
-            "description": "Click a coordinate or resolved UI element on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "element_id": {"type": "string", "description": "Stable element ID from see"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
-                    "x": {"type": "number", "description": "Screen x coordinate"},
-                    "y": {"type": "number", "description": "Screen y coordinate"},
-                    "button": {"type": "string", "description": "Mouse button: left or right"},
-                    "count": {"type": "number", "description": "Click count"}
+        "name": "click",
+                "description": "Click a coordinate or resolved UI element on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "element_id": {"type": "string", "description": "Stable element ID from see"},
+                        "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
+                        "x": {"type": "number", "description": "Screen x coordinate"},
+                        "y": {"type": "number", "description": "Screen y coordinate"},
+                        "button": {"type": "string", "description": "Mouse button: left or right"},
+                        "count": {"type": "number", "description": "Click count"}
+                    }
                 }
-            }
-        }),
+
+            }),
         json!({
-            "name": "press",
-            "description": "Press a named key on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string", "description": "Key name"},
-                    "count": {"type": "number", "description": "Repeat count"},
-                    "delay_ms": {"type": "number", "description": "Delay between repeats in milliseconds"}
-                },
-                "required": ["key"]
-            }
-        }),
-        json!({
-            "name": "type",
-            "description": "Type text on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Text to type"},
-                    "app": {"type": "string", "description": "Optional app name to focus before typing"},
-                    "clear": {"type": "boolean", "description": "Clear the current field first"},
-                    "return": {"type": "boolean", "description": "Press return after typing"},
-                    "delay_ms": {"type": "number", "description": "Delay between characters in milliseconds"}
-                },
-                "required": ["text"]
-            }
-        }),
-        json!({
-            "name": "paste",
-            "description": "Paste text into the active UI on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"text": {"type": "string", "description": "Text to paste"}},
-                "required": ["text"]
-            }
-        }),
-        json!({
-            "name": "hotkey",
-            "description": "Press a hotkey on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"keys": {"type": "string", "description": "Hotkey keys joined by plus signs"}},
-                "required": ["keys"]
-            }
-        }),
-        json!({
-            "name": "scroll",
-            "description": "Scroll on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "dx": {"type": "number", "description": "Horizontal scroll amount"},
-                    "dy": {"type": "number", "description": "Vertical scroll amount"}
+        "name": "press",
+                "description": "Press a named key on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "Key name"},
+                        "count": {"type": "number", "description": "Repeat count"},
+                        "delay_ms": {"type": "number", "description": "Delay between repeats in milliseconds"}
+                    },
+                    "required": ["key"]
                 }
-            }
-        }),
+
+            }),
         json!({
-            "name": "swipe",
-            "description": "Swipe between two coordinates on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "from": {"type": "string", "description": "Start coordinate as x,y"},
-                    "to": {"type": "string", "description": "End coordinate as x,y"},
-                    "duration_ms": {"type": "number", "description": "Swipe duration in milliseconds"}
-                },
-                "required": ["from", "to"]
-            }
-        }),
-        json!({
-            "name": "drag",
-            "description": "Drag between two coordinates on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "from": {"type": "string", "description": "Start coordinate as x,y"},
-                    "to": {"type": "string", "description": "End coordinate as x,y"},
-                    "duration_ms": {"type": "number", "description": "Drag duration in milliseconds"}
-                },
-                "required": ["from", "to"]
-            }
-        }),
-        json!({
-            "name": "move",
-            "description": "Move the pointer on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "element_id": {"type": "string", "description": "Stable element ID from see"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
-                    "x": {"type": "number", "description": "Screen x coordinate"},
-                    "y": {"type": "number", "description": "Screen y coordinate"}
+        "name": "type",
+                "description": "Type text on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to type"},
+                        "app": {"type": "string", "description": "Optional app name to focus before typing"},
+                        "clear": {"type": "boolean", "description": "Clear the current field first"},
+                        "return": {"type": "boolean", "description": "Press return after typing"},
+                        "delay_ms": {"type": "number", "description": "Delay between characters in milliseconds"}
+                    },
+                    "required": ["text"]
                 }
-            }
-        }),
+
+            }),
         json!({
-            "name": "set_value",
-            "description": "Set the value of a resolved UI element on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "on": {"type": "string", "description": "Stable element ID or label from see"},
-                    "value": {"type": "string", "description": "Value to set"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"}
-                },
-                "required": ["on", "value"]
-            }
-        }),
-        json!({
-            "name": "perform_action",
-            "description": "Perform an accessibility action on a resolved UI element on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "on": {"type": "string", "description": "Stable element ID or label from see"},
-                    "action": {"type": "string", "description": "Accessibility action to perform"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"}
-                },
-                "required": ["on", "action"]
-            }
-        }),
-        json!({
-            "name": "window",
-            "description": "List, focus, move, resize, minimize, close, or set bounds of windows on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "Window action"},
-                    "app": {"type": "string", "description": "Application name"},
-                    "title": {"type": "string", "description": "Window title"},
-                    "x": {"type": "number", "description": "Window x coordinate"},
-                    "y": {"type": "number", "description": "Window y coordinate"},
-                    "width": {"type": "number", "description": "Window width"},
-                    "height": {"type": "number", "description": "Window height"}
-                },
-                "required": ["action"]
-            }
-        }),
-        json!({
-            "name": "app",
-            "description": "List, launch, activate, switch, hide, unhide, or quit apps on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "App action"},
-                    "app": {"type": "string", "description": "Application name"}
-                },
-                "required": ["action"]
-            }
-        }),
-        json!({
-            "name": "open",
-            "description": "Open a path or URL on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "Path or URL to open"},
-                    "app": {"type": "string", "description": "Optional app to open with"},
-                    "no_focus": {"type": "boolean", "description": "Open without focusing the target app"}
-                },
-                "required": ["target"]
-            }
-        }),
-        json!({
-            "name": "menu",
-            "description": "Inspect or click menu items on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "Menu action"},
-                    "app": {"type": "string", "description": "Application name"},
-                    "menu": {"type": "string", "description": "Menu name"},
-                    "item": {"type": "string", "description": "Menu item name"}
-                },
-                "required": ["action"]
-            }
-        }),
-        json!({
-            "name": "clipboard_read",
-            "description": "Read the user's clipboard.",
-            "inputSchema": {"type": "object", "properties": {}}
-        }),
-        json!({
-            "name": "clipboard_write",
-            "description": "Write text to the user's clipboard.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"text": {"type": "string", "description": "Text to copy"}},
-                "required": ["text"]
-            }
-        }),
-        json!({
-            "name": "run",
-            "description": "Execute a JSON automation script on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"file": {"type": "string", "description": "Path to the script file"}},
-                "required": ["file"]
-            }
-        }),
-        json!({
-            "name": "sleep",
-            "description": "Sleep for a number of seconds on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"seconds": {"type": "number", "description": "Sleep duration in seconds"}},
-                "required": ["seconds"]
-            }
-        }),
-        json!({
-            "name": "clean",
-            "description": "Remove cached snapshots on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "all_snapshots": {"type": "boolean", "description": "Remove all cached snapshots"},
-                    "snapshot": {"type": "string", "description": "Remove a specific snapshot id"}
+        "name": "paste",
+                "description": "Paste text into the active UI on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string", "description": "Text to paste"}},
+                    "required": ["text"]
                 }
-            }
-        }),
+
+            }),
+        json!({
+        "name": "hotkey",
+                "description": "Press a hotkey on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"keys": {"type": "string", "description": "Hotkey keys joined by plus signs"}},
+                    "required": ["keys"]
+                }
+
+            }),
+        json!({
+        "name": "scroll",
+                "description": "Scroll on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "dx": {"type": "number", "description": "Horizontal scroll amount"},
+                        "dy": {"type": "number", "description": "Vertical scroll amount"}
+                    }
+                }
+
+            }),
+        json!({
+        "name": "swipe",
+                "description": "Swipe between two coordinates on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from": {"type": "string", "description": "Start coordinate as x,y"},
+                        "to": {"type": "string", "description": "End coordinate as x,y"},
+                        "duration_ms": {"type": "number", "description": "Swipe duration in milliseconds"}
+                    },
+                    "required": ["from", "to"]
+                }
+
+            }),
+        json!({
+        "name": "drag",
+                "description": "Drag between two coordinates on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from": {"type": "string", "description": "Start coordinate as x,y"},
+                        "to": {"type": "string", "description": "End coordinate as x,y"},
+                        "duration_ms": {"type": "number", "description": "Drag duration in milliseconds"}
+                    },
+                    "required": ["from", "to"]
+                }
+
+            }),
+        json!({
+        "name": "move",
+                "description": "Move the pointer on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "element_id": {"type": "string", "description": "Stable element ID from see"},
+                        "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
+                        "x": {"type": "number", "description": "Screen x coordinate"},
+                        "y": {"type": "number", "description": "Screen y coordinate"}
+                    }
+                }
+
+            }),
+    ]
+}
+
+fn ui_and_app_tools() -> Vec<Value> {
+    vec![
+        json!({
+        "name": "set_value",
+                "description": "Set the value of a resolved UI element on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "on": {"type": "string", "description": "Stable element ID or label from see"},
+                        "value": {"type": "string", "description": "Value to set"},
+                        "snapshot": {"type": "string", "description": "Optional snapshot id from see"}
+                    },
+                    "required": ["on", "value"]
+                }
+
+            }),
+        json!({
+        "name": "perform_action",
+                "description": "Perform an accessibility action on a resolved UI element on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "on": {"type": "string", "description": "Stable element ID or label from see"},
+                        "action": {"type": "string", "description": "Accessibility action to perform"},
+                        "snapshot": {"type": "string", "description": "Optional snapshot id from see"}
+                    },
+                    "required": ["on", "action"]
+                }
+
+            }),
+        json!({
+        "name": "window",
+                "description": "List, focus, move, resize, minimize, close, or set bounds of windows on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Window action"},
+                        "app": {"type": "string", "description": "Application name"},
+                        "title": {"type": "string", "description": "Window title"},
+                        "x": {"type": "number", "description": "Window x coordinate"},
+                        "y": {"type": "number", "description": "Window y coordinate"},
+                        "width": {"type": "number", "description": "Window width"},
+                        "height": {"type": "number", "description": "Window height"}
+                    },
+                    "required": ["action"]
+                }
+
+            }),
+        json!({
+        "name": "app",
+                "description": "List, launch, activate, switch, hide, unhide, or quit apps on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "App action"},
+                        "app": {"type": "string", "description": "Application name"}
+                    },
+                    "required": ["action"]
+                }
+
+            }),
+        json!({
+        "name": "open",
+                "description": "Open a path or URL on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "Path or URL to open"},
+                        "app": {"type": "string", "description": "Optional app to open with"},
+                        "no_focus": {"type": "boolean", "description": "Open without focusing the target app"}
+                    },
+                    "required": ["target"]
+                }
+
+            }),
+        json!({
+        "name": "menu",
+                "description": "Inspect or click menu items on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Menu action"},
+                        "app": {"type": "string", "description": "Application name"},
+                        "menu": {"type": "string", "description": "Menu name"},
+                        "item": {"type": "string", "description": "Menu item name"}
+                    },
+                    "required": ["action"]
+                }
+
+            }),
+    ]
+}
+
+fn utility_tools() -> Vec<Value> {
+    vec![
+        json!({
+        "name": "clipboard_read",
+                "description": "Read the user's clipboard.",
+                "inputSchema": {"type": "object", "properties": {}}
+
+            }),
+        json!({
+        "name": "clipboard_write",
+                "description": "Write text to the user's clipboard.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string", "description": "Text to copy"}},
+                    "required": ["text"]
+                }
+
+            }),
+        json!({
+        "name": "run",
+                "description": "Execute a JSON automation script on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"file": {"type": "string", "description": "Path to the script file"}},
+                    "required": ["file"]
+                }
+
+            }),
+        json!({
+        "name": "sleep",
+                "description": "Sleep for a number of seconds on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"seconds": {"type": "number", "description": "Sleep duration in seconds"}},
+                    "required": ["seconds"]
+                }
+
+            }),
+        json!({
+        "name": "clean",
+                "description": "Remove cached snapshots on the user's machine.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "all_snapshots": {"type": "boolean", "description": "Remove all cached snapshots"},
+                        "snapshot": {"type": "string", "description": "Remove a specific snapshot id"}
+                    }
+                }
+
+            }),
     ]
 }
