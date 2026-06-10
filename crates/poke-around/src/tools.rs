@@ -13,7 +13,6 @@ pub const TOOL_NAMES: &[&str] = &[
     "edit_file",
     "web_fetch",
     "http_request",
-    "git_operations",
     "delete_file",
     "image",
     "see",
