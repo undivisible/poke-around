@@ -21,6 +21,7 @@ fn daemon_starts_and_stops_gracefully() {
     for _ in 0..50 {
         line.clear();
         if let Ok(bytes) = reader.read_line(&mut line) {
+            #[allow(clippy::collapsible_if)]
             if bytes > 0 && line.contains("listening on") {
                 started = true;
                 break;
