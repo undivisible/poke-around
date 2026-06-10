@@ -324,7 +324,7 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Opti
     if let Some(items) = request.as_array() {
         let mut responses = Vec::new();
         for item in items {
-            if let Some(response) = handle_json_rpc_message(item, session_id, state.clone())? {
+            if let Some(response) = handle_json_rpc_message(item, session_id, &state)? {
                 responses.push(response);
             }
         }
@@ -334,13 +334,13 @@ fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Opti
             Ok(Some(Value::Array(responses)))
         };
     }
-    handle_json_rpc_message(&request, session_id, state)
+    handle_json_rpc_message(&request, session_id, &state)
 }
 
 fn handle_json_rpc_message(
     request: &Value,
     session_id: &str,
-    state: AppState,
+    state: &AppState,
 ) -> Result<Option<Value>> {
     let id = request.get("id").cloned();
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
@@ -395,7 +395,7 @@ fn handle_tool_call(
     tool_name: &str,
     args: &Value,
     session_id: &str,
-    state: AppState,
+    state: &AppState,
 ) -> Result<Value> {
     if state.inner.verbose {
         eprintln!("tool: {tool_name}");
@@ -406,9 +406,9 @@ fn handle_tool_call(
         )));
     }
     if needs_approval(tool_name, args, state.inner.mode)
-        && !is_approved(tool_name, args, session_id, &state)?
+        && !is_approved(tool_name, args, session_id, state)?
     {
-        let result = request_approval(tool_name, args, session_id, &state)?;
+        let result = request_approval(tool_name, args, session_id, state)?;
         if state.inner.verbose {
             let summary = result
                 .get("structuredContent")
@@ -419,7 +419,7 @@ fn handle_tool_call(
         }
         return Ok(result);
     }
-    let result = execute_tool(tool_name, args, &state)?;
+    let result = execute_tool(tool_name, args, state)?;
     if state.inner.verbose
         && let Some(text) = result
             .get("content")
