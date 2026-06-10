@@ -160,20 +160,6 @@ pub fn evaluate_access_policy(
         ));
     }
 
-    if tool_name == "git_operations" {
-        let operation = args.get("operation").and_then(Value::as_str).unwrap_or("");
-        if matches!(
-            operation,
-            "status" | "diff" | "log" | "show" | "branch" | "rev-parse"
-        ) {
-            return None;
-        }
-        return Some(format!(
-            "git operation '{operation}' is not permitted in {} mode.",
-            mode.as_str()
-        ));
-    }
-
     Some(format!(
         "Tool '{tool_name}' is not permitted in {} mode.",
         mode.as_str()
