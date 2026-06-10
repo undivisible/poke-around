@@ -40,5 +40,9 @@ fn daemon_starts_and_stops_gracefully() {
     let status = child.wait().expect("Failed to wait on child");
 
     use std::os::unix::process::ExitStatusExt;
-    assert!(status.success() || status.signal() == Some(libc::SIGINT), "Daemon did not exit successfully, status: {:?}", status);
+    assert!(
+        status.success() || status.signal() == Some(libc::SIGINT),
+        "Daemon did not exit successfully, status: {:?}",
+        status
+    );
 }
