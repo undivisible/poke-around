@@ -355,11 +355,7 @@ fn handle_tools_list() -> Result<Value> {
     Ok(json!({ "tools": tools_value }))
 }
 
-fn handle_tools_call_request(
-    request: &Value,
-    session_id: &str,
-    state: AppState,
-) -> Result<Value> {
+fn handle_tools_call_request(request: &Value, session_id: &str, state: AppState) -> Result<Value> {
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params
