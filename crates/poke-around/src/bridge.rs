@@ -531,37 +531,50 @@ fn make_poke(token: &str) -> Result<Poke> {
     .map_err(|err| Error::msg(err.to_string()))
 }
 
+async fn perform_sync_attempt(runner: &TunnelRunner, mcp_url: &str) -> (usize, usize) {
+    let last_synced = match runner.sync_tools().await {
+        Ok(count) => count,
+        Err(err) => {
+            log_status(&format!("Tool sync error: {err}"));
+            0
+        }
+    };
+    let local = local_tool_count(mcp_url).await;
+    (last_synced, local)
+}
+
+async fn handle_sync_retry(attempt: usize, local: usize) {
+    if attempt < SYNC_TOOLS_MAX_ATTEMPTS {
+        if local > 0 {
+            log_status(&format!(
+                "sync-tools API returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying in {}s...",
+                SYNC_TOOLS_RETRY_DELAY.as_secs()
+            ));
+        } else {
+            log_status(&format!(
+                "Tunnel not ready for sync-tools yet (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); retrying in {}s...",
+                SYNC_TOOLS_RETRY_DELAY.as_secs()
+            ));
+        }
+        tokio::time::sleep(SYNC_TOOLS_RETRY_DELAY).await;
+    }
+}
+
 async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
     let mut last_synced = 0usize;
     for attempt in 1..=SYNC_TOOLS_MAX_ATTEMPTS {
-        last_synced = match runner.sync_tools().await {
-            Ok(count) => count,
-            Err(err) => {
-                log_status(&format!("Tool sync error: {err}"));
-                0
-            }
-        };
-        let local = local_tool_count(mcp_url).await;
+        let (synced, local) = perform_sync_attempt(runner, mcp_url).await;
+        last_synced = synced;
+
         let reported = last_synced.max(local);
         if reported > 0 {
             log_status(&format!("Tools synced: {reported}"));
             return reported;
         }
-        if attempt < SYNC_TOOLS_MAX_ATTEMPTS {
-            if local > 0 {
-                log_status(&format!(
-                    "sync-tools API returned 0 (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); local MCP has {local} tools, retrying in {}s...",
-                    SYNC_TOOLS_RETRY_DELAY.as_secs()
-                ));
-            } else {
-                log_status(&format!(
-                    "Tunnel not ready for sync-tools yet (attempt {attempt}/{SYNC_TOOLS_MAX_ATTEMPTS}); retrying in {}s...",
-                    SYNC_TOOLS_RETRY_DELAY.as_secs()
-                ));
-            }
-            tokio::time::sleep(SYNC_TOOLS_RETRY_DELAY).await;
-        }
+
+        handle_sync_retry(attempt, local).await;
     }
+
     let local = local_tool_count(mcp_url).await;
     let reported = last_synced.max(local);
     if reported > 0 {
