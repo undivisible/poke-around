@@ -1322,4 +1322,32 @@ mod tests {
 
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn execute_tool_unknown_tool_should_return_error() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let response = execute_tool("non_existent_tool", &json!({}), &state).unwrap();
+
+        assert_eq!(response["isError"], true);
+        let content = response["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Unknown tool: non_existent_tool");
+    }
+
+    #[test]
+    fn execute_tool_should_propagate_io_errors_from_tool_execution() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        // Use a path that is guaranteed not to exist
+        let args = json!({ "path": "/path/does/not/exist/surely/poke_around_test_12345" });
+
+        // This should hit fs::read_to_string which will return a std::io::Error
+        let response = execute_tool("read_file", &args, &state);
+
+        // Assert it returns an Err(...) containing the IO error
+        assert!(response.is_err());
+        match response.unwrap_err() {
+            crate::Error::Io(_) => {}
+            _ => panic!("Expected IO error"),
+        }
+    }
 }
