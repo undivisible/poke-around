@@ -1310,6 +1310,74 @@ mod tests {
     }
 
     #[test]
+    fn is_approved_should_validate_tool_name_and_args() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let token = "test_token_123".to_string();
+        let tool_name = "test_tool";
+        let clean_args = json!({ "path": "/test.txt" });
+
+        let add_approval = |expires_in: i64| {
+            let mut approvals = state.inner.approvals.lock().unwrap();
+            let expires_at = if expires_in >= 0 {
+                Instant::now() + Duration::from_secs(expires_in as u64)
+            } else {
+                Instant::now() - Duration::from_secs((-expires_in) as u64)
+            };
+            approvals.insert(token.clone(), Approval {
+                token: token.clone(),
+                tool_name: tool_name.to_string(),
+                clean_args: clean_args.clone(),
+                expires_at,
+            });
+        };
+
+        let session_id = "session_1";
+
+        // Valid case
+        add_approval(60);
+        let valid_args = json!({
+            "approve": true,
+            "approval_token": token,
+            "path": "/test.txt"
+        });
+        assert!(is_approved(tool_name, &valid_args, session_id, &state).unwrap());
+
+        // Mismatched tool name
+        add_approval(60);
+        let mismatched_tool_args = json!({
+            "approve": true,
+            "approval_token": token,
+            "path": "/test.txt"
+        });
+        assert!(!is_approved("wrong_tool", &mismatched_tool_args, session_id, &state).unwrap());
+
+        // Mismatched args
+        add_approval(60);
+        let mismatched_args = json!({
+            "approve": true,
+            "approval_token": token,
+            "path": "/wrong.txt"
+        });
+        assert!(!is_approved(tool_name, &mismatched_args, session_id, &state).unwrap());
+
+        // Expired approval
+        add_approval(-60);
+        let valid_args_expired = json!({
+            "approve": true,
+            "approval_token": token,
+            "path": "/test.txt"
+        });
+        assert!(!is_approved(tool_name, &valid_args_expired, session_id, &state).unwrap());
+
+        // Missing token
+        let missing_token_args = json!({
+            "approve": true,
+            "path": "/test.txt"
+        });
+        assert!(!is_approved(tool_name, &missing_token_args, session_id, &state).unwrap());
+    }
+
+    #[test]
     fn read_image_should_return_mcp_image_content() {
         let path =
             std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
