@@ -48,7 +48,11 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
 pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
     let dir = config::agents_dir()?;
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join("custom.30m.js");
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("custom-{timestamp}.30m.js"));
     let message = prompt.unwrap_or("Hello from Poke Around");
     let body = format!(
         "import {{ Poke, getToken }} from \"poke\";\nconst poke = new Poke({{ apiKey: getToken() }});\nawait poke.sendMessage({message:?});\n"
@@ -82,14 +86,30 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn find_in_path(program: &str) -> bool {
+    #[cfg(windows)]
+    let lookup = "where";
+    #[cfg(not(windows))]
+    let lookup = "which";
+
+    Command::new(lookup)
+        .arg(program)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn find_js_runtime() -> &'static str {
-    for candidate in ["/opt/homebrew/bin/bun", "/usr/local/bin/bun", "bun", "node"] {
-        if candidate.contains('/') {
-            if Path::new(candidate).exists() {
-                return candidate;
-            }
-        } else {
+    for candidate in ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"] {
+        if Path::new(candidate).exists() {
             return candidate;
+        }
+    }
+    for name in ["bun", "node"] {
+        if find_in_path(name) {
+            return name;
         }
     }
     "node"
@@ -123,7 +143,7 @@ mod tests {
     }
 
     fn setup_test_env() -> EnvGuard {
-        let lock = ENV_MUTEX.lock().unwrap();
+        let lock = ENV_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
         let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
         let temp_dir = tempdir().unwrap();
         unsafe {
@@ -197,6 +217,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_find_js_runtime_returns_string() {
         let runtime = find_js_runtime();
         assert!(!runtime.is_empty());
