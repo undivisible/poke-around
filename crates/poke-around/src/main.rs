@@ -1,4 +1,4 @@
-use poke_around::{Error, Result, agents, bridge, config, daemon};
+use poke_around::{Error, Result, agents, bridge, config, daemon, policy::PermissionMode};
 
 fn main() {
     if let Err(err) = run() {
@@ -58,7 +58,10 @@ fn run() -> Result<()> {
             Ok(())
         }
         "status" => {
+            let saved = config::read_config()?.permission_mode;
+            let mode = PermissionMode::parse(saved.as_deref());
             println!("poke-around {}", env!("CARGO_PKG_VERSION"));
+            println!("permission mode: {}", mode.as_str());
             Ok(())
         }
         "--help" | "-h" | "help" => {
