@@ -48,6 +48,18 @@ fn restrict_private_file(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        if let Ok(username) = std::env::var("USERNAME") {
+            if !username.is_empty() {
+                let _ = Command::new("icacls")
+                    .arg(path)
+                    .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
+                    .status();
+            }
+        }
+    }
     Ok(())
 }
 
@@ -70,6 +82,7 @@ pub fn home_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     #[test]
@@ -119,6 +132,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_paths() {
         with_temp_env(|_| {
             let base = config_dir().unwrap();
@@ -136,6 +150,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_read_write_config() {
         with_temp_env(|_| {
             // Initially reading config should return default (NotFound -> Ok(Config::default()))
