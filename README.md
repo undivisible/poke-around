@@ -87,15 +87,22 @@ Config is stored at `~/.config/poke-around/config.json`.
 
 | Mode | Description |
 |------|-------------|
-| **full** (default) | All tools, no approval required. |
+| **full** (default) | All tools available; destructive shell commands, writes, deletes, screenshots, UI automation, and other risky operations require approval in chat. |
 | **limited** | Read-only tools plus a curated set of safe commands (`ls`, `cat`, `grep`, `curl`, etc.). |
 | **sandbox** | Broader command support, with destructive patterns blocked and write/delete/UI mutation tools requiring approval or blocked by policy. |
 
+Set the mode at startup or persist it in `~/.config/poke-around/config.json`:
+
 ```bash
 poke-around --mode sandbox
-# or
-POKE_GATE_PERMISSION_MODE=limited poke-around
+poke-around set-mode limited
 ```
+
+```json
+{ "permission_mode": "limited" }
+```
+
+The `--mode` flag overrides `config.json` for that daemon run. `poke-around set-mode` updates the config file so the next daemon start (and live reload) picks it up.
 
 ## Running as a service
 
@@ -128,14 +135,15 @@ systemctl --user enable --now poke-around
 
 ## Agents
 
-Agents are scheduled JS scripts in `~/.config/poke-around/agents/` named `<name>.<interval>.js`:
+Agents are JS scripts in `~/.config/poke-around/agents/`. Files may be named `<name>.js` or `<name>.<interval>.js` (the interval suffix is a naming convention only — Poke Around does not run agents on a schedule).
 
-| File | Runs |
-|------|------|
-| `beeper.1h.js` | every hour |
-| `health.10m.js` | every 10 minutes |
+Run an agent manually from the CLI or via the `run_agent` MCP tool:
 
-Minimum interval is 10 minutes. Agents can import the `poke` SDK and send messages back via `poke.sendMessage(...)`.
+```bash
+poke-around run-agent beeper
+```
+
+Schedule agents externally (for example with `cron`, `launchd`, or `systemd` timers) if you want periodic execution.
 
 ```javascript
 import { Poke, getToken } from "poke";

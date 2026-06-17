@@ -12,7 +12,7 @@ Poke Around is a Rust daemon that starts a local MCP server, runs an in-process 
 2. `crates/poke-around/src/daemon.rs` — daemon startup and bridge lifecycle
 3. `crates/poke-around/src/mcp.rs` — JSON-RPC over HTTP, tool dispatch and execution
 4. `crates/poke-around/src/policy.rs` — access modes, command filtering, approval classification
-5. `crates/poke-around/src/agents.rs` — discovers and runs scheduled agent scripts
+5. `crates/poke-around/src/agents.rs` — discovers agent scripts; runs them on demand via `poke-around run-agent` and the `run_agent` MCP tool (no built-in scheduler)
 6. `crates/poke-around/src/bridge.rs` — in-process tunnel bridge via `rs_poke`
 
 ## Commands
