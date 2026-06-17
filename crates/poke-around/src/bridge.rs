@@ -158,7 +158,15 @@ async fn run_bridge(
                     "Retrying tunnel in {}s (attempt {reconnect_attempt})...",
                     delay.as_secs()
                 ));
-                sleep_or_stop(&mut rx, delay, &mut stop_requested).await;
+                sleep_or_stop(
+                    &mut rx,
+                    delay,
+                    &mut stop_requested,
+                    &poke,
+                    &webhook_url,
+                    &webhook_token,
+                )
+                .await;
                 continue;
             }
         }
@@ -190,7 +198,15 @@ async fn run_bridge(
         if restart_tunnel {
             reconnect_attempt = 0;
             log_status("Restarting tunnel with refreshed credentials...");
-            sleep_or_stop(&mut rx, Duration::from_secs(1), &mut stop_requested).await;
+            sleep_or_stop(
+                &mut rx,
+                Duration::from_secs(1),
+                &mut stop_requested,
+                &poke,
+                &webhook_url,
+                &webhook_token,
+            )
+            .await;
             continue;
         }
         reconnect_attempt = reconnect_attempt.saturating_add(1);
@@ -199,7 +215,15 @@ async fn run_bridge(
             "Tunnel will retry in {}s (attempt {reconnect_attempt})...",
             delay.as_secs()
         ));
-        sleep_or_stop(&mut rx, delay, &mut stop_requested).await;
+        sleep_or_stop(
+            &mut rx,
+            delay,
+            &mut stop_requested,
+            &poke,
+            &webhook_url,
+            &webhook_token,
+        )
+        .await;
     }
     Ok(())
 }
@@ -324,7 +348,11 @@ async fn sleep_or_stop(
     rx: &mut async_mpsc::UnboundedReceiver<BridgeCommand>,
     duration: Duration,
     stop_requested: &mut bool,
+    poke: &Poke,
+    webhook_url: &str,
+    webhook_token: &str,
 ) {
+    let mut buffered = Vec::new();
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
         match rx.try_recv() {
@@ -332,10 +360,16 @@ async fn sleep_or_stop(
                 *stop_requested = true;
                 return;
             }
-            Ok(BridgeCommand::SendWebhook(_)) | Err(async_mpsc::error::TryRecvError::Empty) => {
+            Ok(BridgeCommand::SendWebhook(message)) => {
+                buffered.push(message);
+            }
+            Err(async_mpsc::error::TryRecvError::Empty) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+    }
+    for message in buffered {
+        send_webhook_message(poke, webhook_url, webhook_token, &message).await;
     }
 }
 
@@ -601,7 +635,7 @@ async fn send_webhook_message(poke: &Poke, webhook_url: &str, webhook_token: &st
         )
         .await
     {
-        Ok(_) => log_status("Notified Poke agent about connection."),
+        Ok(_) => log_status("Notified Poke agent."),
         Err(err) => log_status(&format!("Bridge error: {err}")),
     }
 }
@@ -689,10 +723,10 @@ async fn local_tool_count(mcp_url: &str) -> usize {
 
 fn ensure_integration_name(base: &str) -> Result<String> {
     let state = read_state()?;
-    if let Some(name) = state.get("integrationName").and_then(Value::as_str) {
-        if !name.is_empty() {
-            return Ok(name.to_string());
-        }
+    if let Some(name) = state.get("integrationName").and_then(Value::as_str)
+        && !name.is_empty()
+    {
+        return Ok(name.to_string());
     }
     let name = compute_integration_name(base);
     patch_state([("integrationName", Value::String(name.clone()))])?;
@@ -756,12 +790,22 @@ fn write_state(state: &Map<String, Value>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, serde_json::to_string_pretty(state)?)?;
+    let tmp_path = {
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("state.json");
+        path.parent()
+            .map(|parent| parent.join(format!("{file_name}.tmp")))
+            .unwrap_or_else(|| path.with_extension("tmp"))
+    };
+    std::fs::write(&tmp_path, serde_json::to_string_pretty(state)?)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
     }
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
