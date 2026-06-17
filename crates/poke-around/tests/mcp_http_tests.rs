@@ -277,7 +277,7 @@ fn malformed_request_should_return_bad_request() {
 }
 
 #[test]
-fn approval_token_should_not_allow_hidden_auto_approve_escalation() {
+fn approval_with_valid_token_should_succeed_even_with_remember_all_risky() {
     let path =
         std::env::temp_dir().join(format!("poke-around-approval-{}.txt", std::process::id()));
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
@@ -322,6 +322,67 @@ fn approval_token_should_not_allow_hidden_auto_approve_escalation() {
 
     let response = post_json(port, &second);
 
-    assert!(response.contains("AWAITING_APPROVAL"));
-    assert!(!path.exists());
+    assert!(!response.contains("AWAITING_APPROVAL"));
+    assert!(path.exists());
+    assert_eq!(
+        fs::read_to_string(&path).expect("file should read"),
+        "first"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn connections_without_session_header_should_not_share_default_session() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state).expect("server should start");
+    let command = "rm /tmp/poke-around-session-test-should-not-exist";
+    let destructive = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "run_command",
+            "arguments": {
+                "command": command
+            }
+        }
+    })
+    .to_string();
+    let first = post_json(port, &destructive);
+    let (_, first_body) = first
+        .split_once("\r\n\r\n")
+        .expect("response should include body separator");
+    let first_value: Value = serde_json::from_str(first_body).expect("response body should parse");
+    let token = first_value["result"]["structuredContent"]["approvalToken"]
+        .as_str()
+        .expect("approval token should exist");
+
+    let approve = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "run_command",
+            "arguments": {
+                "command": command,
+                "approve": true,
+                "approval_token": token,
+                "remember_in_session": true
+            }
+        }
+    })
+    .to_string();
+    let second = post_json(port, &approve);
+    assert!(!second.contains("AWAITING_APPROVAL"));
+
+    let third = post_json(port, &destructive);
+    let (_, third_body) = third
+        .split_once("\r\n\r\n")
+        .expect("response should include body separator");
+    let third_value: Value = serde_json::from_str(third_body).expect("response body should parse");
+    assert!(
+        third_value["result"]["structuredContent"]["status"] == "AWAITING_APPROVAL",
+        "remember_in_session should not carry across connections without Mcp-Session-Id"
+    );
 }

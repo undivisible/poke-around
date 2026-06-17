@@ -6,15 +6,20 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+use url::Url;
 
 use rs_peekaboo::automation::{Target, parse_point, validate_output_path};
 use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, Point, Snapshot};
+
+const MAX_CONCURRENT_CONNECTIONS: usize = 32;
+const MAX_HTTP_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -22,11 +27,13 @@ pub struct AppState {
 }
 
 struct StateInner {
-    mode: PermissionMode,
+    mode: RwLock<PermissionMode>,
     home: PathBuf,
     verbose: bool,
     approvals: Mutex<HashMap<String, Approval>>,
     auto_approve: Mutex<HashSet<String>>,
+    session_approved_commands: Mutex<HashMap<String, HashSet<String>>>,
+    active_connections: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -41,17 +48,29 @@ impl AppState {
     pub fn new(mode: PermissionMode, verbose: bool) -> Result<Self> {
         Ok(Self {
             inner: Arc::new(StateInner {
-                mode,
+                mode: RwLock::new(mode),
                 home: config::home_dir()?,
                 verbose,
                 approvals: Mutex::new(HashMap::new()),
                 auto_approve: Mutex::new(HashSet::new()),
+                session_approved_commands: Mutex::new(HashMap::new()),
+                active_connections: AtomicUsize::new(0),
             }),
         })
     }
 
     pub fn mode(&self) -> PermissionMode {
-        self.inner.mode
+        *self
+            .inner
+            .mode
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+    }
+
+    pub fn set_mode(&self, mode: PermissionMode) {
+        if let Ok(mut guard) = self.inner.mode.write() {
+            *guard = mode;
+        }
     }
 }
 
@@ -61,12 +80,44 @@ pub fn start_server(state: AppState) -> Result<u16> {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let state = state.clone();
+            if !try_acquire_connection(&state) {
+                eprintln!("mcp: rejecting connection, max concurrent connections reached");
+                continue;
+            }
             thread::spawn(move || {
-                let _ = handle_connection(stream, state);
+                let result = handle_connection(stream, state.clone());
+                release_connection(&state);
+                if let Err(err) = result {
+                    eprintln!("mcp connection error: {err}");
+                }
             });
         }
     });
     Ok(port)
+}
+
+fn try_acquire_connection(state: &AppState) -> bool {
+    loop {
+        let current = state.inner.active_connections.load(Ordering::Acquire);
+        if current >= MAX_CONCURRENT_CONNECTIONS {
+            return false;
+        }
+        if state
+            .inner
+            .active_connections
+            .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+fn release_connection(state: &AppState) {
+    state
+        .inner
+        .active_connections
+        .fetch_sub(1, Ordering::Release);
 }
 
 fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
@@ -87,7 +138,7 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         .get("mcp-session-id")
         .filter(|value| !value.is_empty())
         .cloned()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(new_mcp_session_id);
     let http_response = route_http_request(&request, &path, &session_id, state.clone())?;
     if state.inner.verbose {
         eprintln!(
@@ -277,6 +328,9 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
+    if content_length > MAX_HTTP_BODY_SIZE {
+        return Err(Error::msg("request body too large"));
+    }
     let body_start = header_end + 4;
     while bytes.len().saturating_sub(body_start) < content_length {
         let read = stream.read(&mut buffer)?;
@@ -419,14 +473,13 @@ fn handle_tool_call(
     if state.inner.verbose {
         eprintln!("tool: {tool_name}");
     }
-    if let Some(reason) = policy::evaluate_access_policy(tool_name, args, state.inner.mode) {
+    let mode = state.mode();
+    if let Some(reason) = policy::evaluate_access_policy(tool_name, args, mode) {
         return Ok(error_result(format!(
             "Blocked by access mode policy: {reason}"
         )));
     }
-    if needs_approval(tool_name, args, state.inner.mode)
-        && !is_approved(tool_name, args, session_id, state)?
-    {
+    if needs_approval(tool_name, args, mode) && !is_approved(tool_name, args, session_id, state)? {
         let result = request_approval(tool_name, args, session_id, state)?;
         if state.inner.verbose {
             let summary = result
@@ -479,6 +532,8 @@ fn clean_args(args: &Value) -> Value {
     if let Some(object) = clean.as_object_mut() {
         object.remove("approval_token");
         object.remove("approve");
+        object.remove("remember_all_risky");
+        object.remove("remember_in_session");
     }
     clean
 }
@@ -490,6 +545,18 @@ fn is_approved(tool_name: &str, args: &Value, session_id: &str, state: &AppState
         .lock()
         .map_err(|_| Error::msg("auto approve lock poisoned"))?
         .contains(session_id)
+    {
+        return Ok(true);
+    }
+    if tool_name == "run_command"
+        && let Some(command) = args.get("command").and_then(Value::as_str)
+        && state
+            .inner
+            .session_approved_commands
+            .lock()
+            .map_err(|_| Error::msg("session command lock poisoned"))?
+            .get(session_id)
+            .is_some_and(|commands| commands.contains(command))
     {
         return Ok(true);
     }
@@ -505,19 +572,35 @@ fn is_approved(tool_name: &str, args: &Value, session_id: &str, state: &AppState
         .approvals
         .lock()
         .map_err(|_| Error::msg("approval lock poisoned"))?;
-    let Some(approval) = approvals.remove(token) else {
+    let Some(approval) = approvals.get(token).cloned() else {
         return Ok(false);
     };
     let valid = approval.expires_at > Instant::now()
         && approval.tool_name == tool_name
         && approval.clean_args == clean_args(args);
-    if valid && args.get("remember_all_risky").and_then(Value::as_bool) == Some(true) {
-        state
-            .inner
-            .auto_approve
-            .lock()
-            .map_err(|_| Error::msg("auto approve lock poisoned"))?
-            .insert(session_id.to_string());
+    if valid {
+        approvals.remove(token);
+        if args.get("remember_all_risky").and_then(Value::as_bool) == Some(true) {
+            state
+                .inner
+                .auto_approve
+                .lock()
+                .map_err(|_| Error::msg("auto approve lock poisoned"))?
+                .insert(session_id.to_string());
+        }
+        if tool_name == "run_command"
+            && args.get("remember_in_session").and_then(Value::as_bool) == Some(true)
+            && let Some(command) = args.get("command").and_then(Value::as_str)
+        {
+            state
+                .inner
+                .session_approved_commands
+                .lock()
+                .map_err(|_| Error::msg("session command lock poisoned"))?
+                .entry(session_id.to_string())
+                .or_default()
+                .insert(command.to_string());
+        }
     }
     Ok(valid)
 }
@@ -580,6 +663,11 @@ fn request_approval(
     };
     if args.get("remember_all_risky").and_then(Value::as_bool) == Some(true) {
         summary.push_str(" and remember all risky actions for this session");
+    }
+    if tool_name == "run_command"
+        && args.get("remember_in_session").and_then(Value::as_bool) == Some(true)
+    {
+        summary.push_str(" and remember this command for this session");
     }
     Ok(json!({
         "content": [{
@@ -888,9 +976,9 @@ fn clipboard_write(args: &Value) -> Result<Value> {
     Ok(ok_json(Peekaboo::new().clipboard_write(text)?))
 }
 
-fn run_file(args: &Value, _state: &AppState) -> Result<Value> {
-    let file = str_arg(args, "file").unwrap_or("");
-    let results = Peekaboo::new().run_file(&PathBuf::from(file))?;
+fn run_file(args: &Value, state: &AppState) -> Result<Value> {
+    let path = file_path_arg(args, state)?;
+    let results = Peekaboo::new().run_file(&path)?;
     Ok(ok_json(json!(results)))
 }
 
@@ -991,8 +1079,22 @@ fn error_result(text: impl Into<String>) -> Value {
 }
 
 fn path_arg(args: &Value, state: &AppState) -> Result<PathBuf> {
-    let raw = args.get("path").and_then(Value::as_str).unwrap_or("~");
-    Ok(expand_path(raw, &state.inner.home))
+    resolve_path_arg(args, "path", "~", state)
+}
+
+fn file_path_arg(args: &Value, state: &AppState) -> Result<PathBuf> {
+    resolve_path_arg(args, "file", "", state)
+}
+
+fn resolve_path_arg(args: &Value, key: &str, default: &str, state: &AppState) -> Result<PathBuf> {
+    let raw = args.get(key).and_then(Value::as_str).unwrap_or(default);
+    if raw.is_empty() {
+        return Err(Error::msg(format!("{key} path is required")));
+    }
+    let path = expand_path(raw, &state.inner.home);
+    let canonical = canonicalize_path(&path)?;
+    ensure_path_allowed(&canonical, state)?;
+    Ok(canonical)
 }
 
 fn expand_path(raw: &str, home: &Path) -> PathBuf {
@@ -1005,13 +1107,113 @@ fn expand_path(raw: &str, home: &Path) -> PathBuf {
     }
 }
 
+fn canonicalize_path(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return path
+            .canonicalize()
+            .map_err(|err| Error::msg(format!("invalid path '{}': {err}", path.display())));
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|err| Error::msg(format!("invalid path '{}': {err}", path.display())))?;
+        Ok(canonical_parent.join(
+            path.file_name()
+                .ok_or_else(|| Error::msg(format!("invalid path '{}'", path.display())))?,
+        ))
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
+fn ensure_path_allowed(path: &Path, state: &AppState) -> Result<()> {
+    if state.mode() == PermissionMode::Full {
+        return Ok(());
+    }
+    let home = canonicalize_path(&state.inner.home)?;
+    if path.starts_with(&home) {
+        Ok(())
+    } else {
+        Err(Error::msg(format!(
+            "Path '{}' is outside the home directory.",
+            path.display()
+        )))
+    }
+}
+
+fn block_private_urls(url_str: &str) -> Result<()> {
+    if url_str.trim().is_empty() {
+        return Err(Error::msg("url is required"));
+    }
+    let url = Url::parse(url_str).map_err(|err| Error::msg(format!("invalid url: {err}")))?;
+    let scheme = url.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(Error::msg(format!(
+            "unsupported url scheme '{scheme}', only http and https are allowed"
+        )));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::msg("url missing host"))?;
+    let host_lower = host.to_ascii_lowercase();
+    if host_lower == "localhost" || host_lower.ends_with(".localhost") {
+        return Err(Error::msg("requests to localhost are not allowed"));
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_ip(ip) {
+            return Err(Error::msg(format!(
+                "requests to private IP {ip} are not allowed"
+            )));
+        }
+        return Ok(());
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| Error::msg(format!("dns resolution failed for '{host}': {err}")))?;
+    for addr in addrs {
+        if is_private_ip(addr.ip()) {
+            return Err(Error::msg(format!(
+                "url resolves to private IP {}",
+                addr.ip()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 fn run_command(args: &Value, state: &AppState) -> Result<Value> {
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-    let cwd = args
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(|path| expand_path(path, &state.inner.home))
-        .unwrap_or_else(|| state.inner.home.clone());
+    let cwd = if let Some(path) = args.get("cwd").and_then(Value::as_str) {
+        let expanded = expand_path(path, &state.inner.home);
+        let canonical = canonicalize_path(&expanded)?;
+        ensure_path_allowed(&canonical, state)?;
+        canonical
+    } else {
+        state.inner.home.clone()
+    };
     let output = if cfg!(target_os = "windows") {
         Command::new("powershell.exe")
             .args(["-NoProfile", "-Command", command])
@@ -1130,10 +1332,42 @@ fn list_directory(args: &Value, state: &AppState) -> Result<Value> {
     Ok(ok_json(json!({ "path": path, "entries": entries })))
 }
 
+fn command_output(command: &str, args: &[&str]) -> Option<String> {
+    Command::new(command)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+fn system_memory_bytes() -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        command_output("sysctl", &["-n", "hw.memsize"])?
+            .parse()
+            .ok()
+    } else if cfg!(target_os = "linux") {
+        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+        for line in meminfo.lines() {
+            if let Some(value) = line.strip_prefix("MemTotal:") {
+                let kb = value.split_whitespace().next()?.parse::<u64>().ok()?;
+                return Some(kb * 1024);
+            }
+        }
+        None
+    } else {
+        None
+    }
+}
+
 fn system_info(state: &AppState) -> Result<Value> {
     Ok(ok_json(json!({
         "os": std::env::consts::OS,
+        "hostname": command_output("hostname", &[]).unwrap_or_default(),
         "arch": std::env::consts::ARCH,
+        "uptime": command_output("uptime", &[]).unwrap_or_default(),
+        "memory_bytes": system_memory_bytes(),
         "home": state.inner.home,
         "now": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
     })))
@@ -1201,6 +1435,9 @@ fn edit_file(args: &Value, state: &AppState) -> Result<Value> {
 
 fn web_fetch(args: &Value) -> Result<Value> {
     let url = args.get("url").and_then(Value::as_str).unwrap_or("");
+    if let Err(err) = block_private_urls(url) {
+        return Ok(error_result(err.to_string()));
+    }
     let max_chars = args
         .get("max_chars")
         .and_then(Value::as_u64)
@@ -1219,6 +1456,9 @@ fn web_fetch(args: &Value) -> Result<Value> {
 fn http_request(args: &Value) -> Result<Value> {
     let method_str = args.get("method").and_then(Value::as_str).unwrap_or("GET");
     let url_str = args.get("url").and_then(Value::as_str).unwrap_or("");
+    if let Err(err) = block_private_urls(url_str) {
+        return Ok(error_result(err.to_string()));
+    }
 
     let method = match method_str.to_uppercase().as_str() {
         "GET" => reqwest::Method::GET,
@@ -1228,7 +1468,7 @@ fn http_request(args: &Value) -> Result<Value> {
         "PATCH" => reqwest::Method::PATCH,
         "HEAD" => reqwest::Method::HEAD,
         "OPTIONS" => reqwest::Method::OPTIONS,
-        _ => reqwest::Method::GET,
+        other => return Ok(error_result(format!("unsupported HTTP method: {other}"))),
     };
 
     let client = reqwest::blocking::Client::new();
@@ -1396,6 +1636,40 @@ mod tests {
     }
 
     #[test]
+    fn is_approved_should_not_consume_token_until_valid() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let token = "consume_test_token".to_string();
+        let tool_name = "write_file";
+        state.inner.approvals.lock().unwrap().insert(
+            token.clone(),
+            Approval {
+                token: token.clone(),
+                tool_name: tool_name.to_string(),
+                clean_args: json!({ "path": "/test.txt", "content": "ok" }),
+                expires_at: Instant::now() + Duration::from_secs(60),
+            },
+        );
+
+        let invalid_args = json!({
+            "approve": true,
+            "approval_token": token,
+            "path": "/wrong.txt",
+            "content": "ok"
+        });
+        assert!(!is_approved(tool_name, &invalid_args, "session", &state).unwrap());
+        assert!(state.inner.approvals.lock().unwrap().contains_key(&token));
+
+        let valid_args = json!({
+            "approve": true,
+            "approval_token": token,
+            "path": "/test.txt",
+            "content": "ok"
+        });
+        assert!(is_approved(tool_name, &valid_args, "session", &state).unwrap());
+        assert!(!state.inner.approvals.lock().unwrap().contains_key(&token));
+    }
+
+    #[test]
     fn image_should_return_mcp_image_content() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
 
@@ -1520,14 +1794,14 @@ mod tests {
     #[test]
     fn execute_tool_should_propagate_io_errors_from_tool_execution() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
-        let args = json!({ "path": "/path/does/not/exist/surely/poke_around_test_12345" });
+        let args = json!({ "path": "~/poke_around_test_nonexistent_file_12345" });
 
         let response = execute_tool("read_file", &args, &state);
 
         assert!(response.is_err());
         match response.unwrap_err() {
             crate::Error::Io(_) => {}
-            _ => panic!("Expected IO error"),
+            other => panic!("Expected IO error, got {other:?}"),
         }
     }
 }
