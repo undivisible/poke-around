@@ -40,6 +40,41 @@ fn sandbox_mode_blocks_dangerous_patterns() {
 #[test]
 fn destructive_commands_require_approval_in_full_mode() {
     assert!(is_destructive_command("rm -rf /tmp/example"));
+    assert!(is_destructive_command("rm -r /tmp/example"));
+    assert!(is_destructive_command("truncate -s 0 /tmp/file"));
+    assert!(is_destructive_command("dd if=/dev/zero of=/tmp/file"));
     assert!(is_destructive_command("cat file > /etc/hosts"));
     assert!(!is_destructive_command("git status"));
+}
+
+#[test]
+fn find_exec_is_blocked_as_dangerous_pattern() {
+    let reason = evaluate_access_policy(
+        "run_command",
+        &json!({ "command": "find . -name '*.txt' -exec rm {} \\;" }),
+        PermissionMode::Limited,
+    );
+    assert_eq!(
+        reason,
+        Some("Command matches a dangerous pattern.".to_string())
+    );
+}
+
+#[test]
+fn sandbox_mode_blocks_write_bypass_commands() {
+    for command in ["touch /tmp/test", "cp a b", "mv a b"] {
+        let reason = evaluate_access_policy(
+            "run_command",
+            &json!({ "command": command }),
+            PermissionMode::Sandbox,
+        );
+        assert_eq!(
+            reason,
+            Some(format!(
+                "Command '{}' is not permitted in this mode.",
+                command.split_whitespace().next().unwrap()
+            )),
+            "expected '{command}' to be blocked"
+        );
+    }
 }

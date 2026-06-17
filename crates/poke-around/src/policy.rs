@@ -85,9 +85,6 @@ const SANDBOX_COMMANDS: &[&str] = &[
     "curl",
     "mktemp",
     "mkdir",
-    "cp",
-    "mv",
-    "touch",
     "jq",
     "diff",
     "ls",
@@ -171,8 +168,15 @@ pub fn is_destructive_command(command: &str) -> bool {
     [
         "rm ",
         "rm\t",
+        "rm -r",
+        "rm -R",
         "rmdir ",
         "unlink ",
+        "truncate ",
+        "truncate\t",
+        "dd ",
+        "dd\t",
+        "dd if=",
         "mkfs",
         "diskutil erase",
         "> /",
@@ -195,21 +199,91 @@ pub fn has_dangerous_pattern(command: &str) -> bool {
         "reboot",
         "launchctl bootout",
         "chmod 777",
+        "$(rm",
+        "$( rm",
     ]
     .iter()
     .any(|pattern| lower.contains(pattern))
-        || lower.contains("| sh")
-        || lower.contains("| bash")
-        || lower.contains("| zsh")
+        || has_subshell_or_backtick_bypass(command)
+        || has_find_exec_or_xargs(&lower)
+        || has_shell_pipe_bypass(&lower)
 }
 
-pub fn split_command_segments(command: &str) -> impl Iterator<Item = &str> {
-    command
-        .split(&[';', '\n'][..])
-        .flat_map(|part| part.split("&&"))
-        .flat_map(|part| part.split("||"))
+fn has_subshell_or_backtick_bypass(command: &str) -> bool {
+    command.contains("$(") || command.contains('`')
+}
+
+fn has_find_exec_or_xargs(lower: &str) -> bool {
+    lower.contains("-exec ")
+        || lower.contains("-execdir ")
+        || lower.contains(" xargs ")
+        || lower.starts_with("xargs ")
+        || lower.contains("\txargs ")
+}
+
+fn has_shell_pipe_bypass(lower: &str) -> bool {
+    const SHELL_REDIRECTS: &[&str] = &[
+        "| sh",
+        "|sh",
+        "| bash",
+        "|bash",
+        "| zsh",
+        "|zsh",
+        "| dash",
+        "|dash",
+        "|/bin/sh",
+        "| /bin/sh",
+        "|/bin/bash",
+        "| /bin/bash",
+        "|/bin/zsh",
+        "| /bin/zsh",
+        "|/bin/dash",
+        "| /bin/dash",
+        "| sh -c",
+        "| bash -c",
+        "| zsh -c",
+    ];
+    SHELL_REDIRECTS
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+}
+
+pub fn split_command_segments(command: &str) -> impl Iterator<Item = &str> + '_ {
+    let mut parts = vec![command];
+    for delimiter in [";", "\n", "&&", "||"] {
+        parts = parts
+            .into_iter()
+            .flat_map(|part| part.split(delimiter))
+            .collect();
+    }
+    parts = parts
+        .into_iter()
+        .flat_map(|part| split_on_single_pipe(part).into_iter())
+        .collect();
+    parts
+        .into_iter()
         .map(str::trim)
         .filter(|part| !part.is_empty())
+}
+
+fn split_on_single_pipe(segment: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let bytes = segment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'|' {
+            if index + 1 < bytes.len() && bytes[index + 1] == b'|' {
+                index += 2;
+                continue;
+            }
+            parts.push(&segment[start..index]);
+            start = index + 1;
+        }
+        index += 1;
+    }
+    parts.push(&segment[start..]);
+    parts
 }
 
 pub fn extract_executable(segment: &str) -> String {
