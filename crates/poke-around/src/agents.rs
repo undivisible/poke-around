@@ -98,6 +98,7 @@ fn find_js_runtime() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
@@ -136,6 +137,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_find_agent_exact_match() {
         let _guard = setup_test_env();
         let agents_dir = config::agents_dir().unwrap();
@@ -149,6 +151,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_find_agent_js_extension() {
         let _guard = setup_test_env();
         let agents_dir = config::agents_dir().unwrap();
@@ -162,6 +165,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_find_agent_not_found() {
         let _guard = setup_test_env();
         let agents_dir = config::agents_dir().unwrap();
@@ -173,6 +177,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_create_agent() {
         let _guard = setup_test_env();
 

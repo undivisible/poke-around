@@ -11,12 +11,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as async_mpsc;
 
 const BRIDGE_STOP_TIMEOUT: Duration = Duration::from_secs(30);
-const RESTART_AFTER_DISCONNECT: Duration = Duration::from_secs(15);
+const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(15);
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
 const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNC_TOOLS_MAX_ATTEMPTS: usize = 8;
 const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const MAX_CONN_HISTORY: usize = 10;
 const TUNNEL_HEALTH_CHECK: Duration = Duration::from_secs(30);
+const DELETE_MAX_ATTEMPTS: usize = 3;
+const DELETE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub struct Bridge {
     tx: async_mpsc::UnboundedSender<BridgeCommand>,
@@ -87,12 +90,14 @@ async fn run_bridge(
 ) -> Result<()> {
     let token = ensure_auth(false).await?;
     let mut poke = make_poke(&token)?;
-    let tunnel_name = integration_name("poke-around");
+    let tunnel_name = ensure_integration_name("poke-around")?;
     let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
     log_status("Webhook ready.");
     cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
 
     let mut stop_requested = false;
+    let mut reconnect_attempt = 0u32;
+    let mut notified_agent = false;
     while !stop_requested {
         let mut runner = TunnelRunner::new(
             poke.clone(),
@@ -111,28 +116,31 @@ async fn run_bridge(
 
         match start_tunnel_runner(&mut runner, &mut rx, &poke, &webhook_url, &webhook_token).await {
             StartTunnelResult::StopRequested => {
-                if let Some(info) = runner.info() {
-                    let _ = runner.delete_connection(&info.connection_id).await;
-                }
-                let _ = runner.stop().await;
+                stop_tunnel(&mut runner, true).await;
                 return Ok(());
             }
             StartTunnelResult::Success(info) => {
+                reconnect_attempt = 0;
                 record_connection(&info.connection_id)?;
                 log_status(&format!(
                     "Tunnel connected ({}) -> {}",
                     info.connection_id, info.tunnel_url
                 ));
-                notify_poke(
-                    &poke,
-                    &webhook_url,
-                    &webhook_token,
-                    &permission_mode,
-                    &tunnel_name,
-                    &info.connection_id,
-                    Some(&info.tunnel_url),
-                )
-                .await;
+                if !notified_agent {
+                    notify_poke(
+                        &poke,
+                        &webhook_url,
+                        &webhook_token,
+                        &permission_mode,
+                        &tunnel_name,
+                        &info.connection_id,
+                        Some(&info.tunnel_url),
+                    )
+                    .await;
+                    notified_agent = true;
+                } else {
+                    log_status("Tunnel reconnected; skipping duplicate agent notification.");
+                }
                 let synced = sync_and_report_tools(&runner, &mcp_url).await;
                 if synced > 0 {
                     log_status("Ready - your Poke agent can now access this machine.");
@@ -142,11 +150,15 @@ async fn run_bridge(
             }
             StartTunnelResult::Error(err) => {
                 log_status(&format!("Bridge error: {err}"));
-                if let Some(info) = runner.info() {
-                    let _ = runner.delete_connection(&info.connection_id).await;
-                }
-                let _ = runner.stop().await;
-                sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
+                stop_tunnel(&mut runner, false).await;
+                cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                let delay = reconnect_backoff(reconnect_attempt);
+                log_status(&format!(
+                    "Retrying tunnel in {}s (attempt {reconnect_attempt})...",
+                    delay.as_secs()
+                ));
+                sleep_or_stop(&mut rx, delay, &mut stop_requested).await;
                 continue;
             }
         }
@@ -163,31 +175,31 @@ async fn run_bridge(
         .await?
         {
             MonitorTunnelResult::StopRequested => {
-                if let Some(info) = runner.info() {
-                    let _ = runner.delete_connection(&info.connection_id).await;
-                }
-                let _ = runner.stop().await;
+                stop_tunnel(&mut runner, true).await;
                 return Ok(());
             }
             MonitorTunnelResult::Restart { new_poke } => {
                 poke = new_poke;
                 restart_tunnel = true;
             }
-            MonitorTunnelResult::Disconnected => {
-                // Continue to regular cleanup and optional sleep
-            }
+            MonitorTunnelResult::Disconnected => {}
         }
 
-        if let Some(info) = runner.info() {
-            let _ = runner.delete_connection(&info.connection_id).await;
-        }
-        let _ = runner.stop().await;
+        stop_tunnel(&mut runner, false).await;
+        cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
         if restart_tunnel {
+            reconnect_attempt = 0;
             log_status("Restarting tunnel with refreshed credentials...");
             sleep_or_stop(&mut rx, Duration::from_secs(1), &mut stop_requested).await;
             continue;
         }
-        sleep_or_stop(&mut rx, RESTART_AFTER_DISCONNECT, &mut stop_requested).await;
+        reconnect_attempt = reconnect_attempt.saturating_add(1);
+        let delay = reconnect_backoff(reconnect_attempt);
+        log_status(&format!(
+            "Tunnel will retry in {}s (attempt {reconnect_attempt})...",
+            delay.as_secs()
+        ));
+        sleep_or_stop(&mut rx, delay, &mut stop_requested).await;
     }
     Ok(())
 }
@@ -243,7 +255,10 @@ async fn monitor_tunnel(
                                 return Ok(MonitorTunnelResult::Restart { new_poke });
                             }
                             OAuthRecoveryOutcome::Failed(message) => {
-                                log_status(&format!("Re-auth failed: {message}"));
+                                log_status(&format!(
+                                    "Re-auth failed: {message}{}",
+                                    oauth_failure_hint()
+                                ));
                             }
                         }
                         return Ok(MonitorTunnelResult::Disconnected);
@@ -438,21 +453,10 @@ async fn cleanup_stale_connections(
         "\x1b[2m[bridge] Cleaning up {} old connection(s)...\x1b[0m",
         ids.len()
     );
+    let poke = poke.clone();
     let futures = ids.into_iter().map(|id| {
-        let api_key = poke.api_key().to_string();
-        let base_url = poke.base_url().to_string();
-        async move {
-            let path = format!("/mcp/connections/{id}");
-            let _ = fetch_with_auth(FetchWithAuthOptions {
-                path: &path,
-                method: reqwest::Method::DELETE,
-                body: None,
-                token: Some(api_key),
-                base_url: Some(base_url),
-                client: None,
-            })
-            .await;
-        }
+        let poke = poke.clone();
+        async move { delete_remote_connection_with_retry(&poke, &id).await }
     });
     join_all(futures).await;
     patch_state([
@@ -462,6 +466,85 @@ async fn cleanup_stale_connections(
     ])?;
     remove_state_key("connectionId")?;
     Ok(())
+}
+
+async fn delete_remote_connection_with_retry(poke: &Poke, connection_id: &str) {
+    for attempt in 1..=DELETE_MAX_ATTEMPTS {
+        match delete_remote_connection(poke, connection_id).await {
+            Ok(()) => return,
+            Err(err) => {
+                log_status(&format!(
+                    "Failed to delete connection {connection_id} (attempt {attempt}/{DELETE_MAX_ATTEMPTS}): {err}"
+                ));
+                if attempt < DELETE_MAX_ATTEMPTS {
+                    tokio::time::sleep(DELETE_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+}
+
+async fn delete_remote_connection(poke: &Poke, connection_id: &str) -> Result<()> {
+    let response = fetch_with_auth(FetchWithAuthOptions {
+        path: &format!("/mcp/connections/{connection_id}"),
+        method: reqwest::Method::DELETE,
+        body: None,
+        token: Some(poke.api_key().to_string()),
+        base_url: Some(poke.base_url().to_string()),
+        client: None,
+    })
+    .await?;
+    let status = response.status();
+    if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    let body = response.text().await.unwrap_or_default();
+    Err(Error::msg(format!(
+        "delete-connection HTTP {}: {body}",
+        status.as_u16()
+    )))
+}
+
+async fn delete_connection_with_retry(runner: &TunnelRunner, connection_id: &str) {
+    for attempt in 1..=DELETE_MAX_ATTEMPTS {
+        match runner.delete_connection(connection_id).await {
+            Ok(()) => return,
+            Err(err) => {
+                log_status(&format!(
+                    "Failed to delete connection {connection_id} (attempt {attempt}/{DELETE_MAX_ATTEMPTS}): {err}"
+                ));
+                if attempt < DELETE_MAX_ATTEMPTS {
+                    tokio::time::sleep(DELETE_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+}
+
+async fn stop_tunnel(runner: &mut TunnelRunner, delete_remote: bool) {
+    if delete_remote && let Some(info) = runner.info() {
+        delete_connection_with_retry(runner, &info.connection_id).await;
+    }
+    let _ = runner.stop().await;
+}
+
+fn reconnect_backoff(attempt: u32) -> Duration {
+    let multiplier = 2u64.saturating_pow(attempt.saturating_sub(1).min(4));
+    let secs = RECONNECT_BASE_DELAY
+        .as_secs()
+        .saturating_mul(multiplier)
+        .min(RECONNECT_MAX_DELAY.as_secs());
+    Duration::from_secs(secs)
+}
+
+#[cfg(target_os = "windows")]
+fn oauth_failure_hint() -> &'static str {
+    " On Windows, run poke-around from an interactive desktop terminal (not session 0 or a service) so browser login can open."
+}
+
+#[cfg(not(target_os = "windows"))]
+fn oauth_failure_hint() -> &'static str {
+    ""
 }
 
 async fn notify_poke(
@@ -604,7 +687,19 @@ async fn local_tool_count(mcp_url: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn integration_name(base: &str) -> String {
+fn ensure_integration_name(base: &str) -> Result<String> {
+    let state = read_state()?;
+    if let Some(name) = state.get("integrationName").and_then(Value::as_str) {
+        if !name.is_empty() {
+            return Ok(name.to_string());
+        }
+    }
+    let name = compute_integration_name(base);
+    patch_state([("integrationName", Value::String(name.clone()))])?;
+    Ok(name)
+}
+
+fn compute_integration_name(base: &str) -> String {
     let raw = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
@@ -727,9 +822,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integration_name_appends_hostname_suffix() {
-        let name = integration_name("poke-around");
+    fn compute_integration_name_appends_hostname_suffix() {
+        let name = compute_integration_name("poke-around");
         assert!(name.starts_with("poke-around"));
+    }
+
+    #[test]
+    fn reconnect_backoff_grows_to_cap() {
+        assert_eq!(reconnect_backoff(1), Duration::from_secs(15));
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(30));
+        assert_eq!(reconnect_backoff(3), Duration::from_secs(60));
+        assert_eq!(reconnect_backoff(10), Duration::from_secs(60));
+    }
+
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn ensure_integration_name_persists_first_computed_value() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let original_env = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        }
+
+        let first = ensure_integration_name("poke-around").expect("first name");
+        let second = ensure_integration_name("poke-around").expect("cached name");
+        assert_eq!(first, second);
+
+        let state_path = temp_dir.path().join("poke-around/state.json");
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(&state_path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", state_path.display())),
+        )
+        .unwrap();
+        assert_eq!(state["integrationName"], first);
+
+        unsafe {
+            if let Some(val) = original_env {
+                std::env::set_var("XDG_CONFIG_HOME", val);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+        }
     }
 
     #[test]
@@ -774,8 +909,6 @@ mod tests {
             )
         );
     }
-
-    use serial_test::serial;
 
     #[tokio::test]
     #[serial]
