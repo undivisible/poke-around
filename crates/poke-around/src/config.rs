@@ -51,13 +51,13 @@ fn restrict_private_file(path: &std::path::Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::process::Command;
-        if let Ok(username) = std::env::var("USERNAME") {
-            if !username.is_empty() {
-                let _ = Command::new("icacls")
-                    .arg(path)
-                    .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
-                    .status();
-            }
+        if let Ok(username) = std::env::var("USERNAME")
+            && !username.is_empty()
+        {
+            let _ = Command::new("icacls")
+                .arg(path)
+                .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
+                .status();
         }
     }
     Ok(())
