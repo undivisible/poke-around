@@ -1,5 +1,8 @@
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
