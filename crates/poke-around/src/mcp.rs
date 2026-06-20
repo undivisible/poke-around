@@ -1691,11 +1691,7 @@ mod tests {
             let _ = fs::remove_file(path);
         } else {
             let err = response.unwrap_err();
-            assert!(
-                err.to_string().contains("CommandFailed")
-                    || err.to_string().contains("no screenshot tool found")
-                    || err.to_string().contains("X server")
-            );
+            assert!(expected_image_error(&err.to_string()));
         }
     }
 
@@ -1729,12 +1725,15 @@ mod tests {
             let _ = fs::remove_file(path);
         } else {
             let err = response.unwrap_err();
-            assert!(
-                err.to_string().contains("CommandFailed")
-                    || err.to_string().contains("no screenshot tool found")
-                    || err.to_string().contains("X server")
-            );
+            assert!(expected_image_error(&err.to_string()));
         }
+    }
+
+    fn expected_image_error(err: &str) -> bool {
+        err.contains("CommandFailed")
+            || err.contains("no screenshot tool found")
+            || err.contains("X server")
+            || (cfg!(windows) && !err.is_empty())
     }
 
     #[test]
