@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use url::Url;
 
 use rs_peekaboo::automation::{Target, parse_point, validate_output_path};
-use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, Point, Snapshot};
+use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point, Snapshot};
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
 const MAX_HTTP_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -733,7 +733,8 @@ fn image(args: &Value, _state: &AppState) -> Result<Value> {
     let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
     let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let capture = Peekaboo::new().image(mode, path, retina)?;
+    let peekaboo = Peekaboo::with_config(PeekabooConfig::default());
+    let capture = peekaboo.image(mode, path, retina)?;
     let metadata = json!({
         "path": capture.path,
         "mode": capture.mode,

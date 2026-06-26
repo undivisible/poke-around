@@ -16,7 +16,7 @@ dirs = "6.0"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 rs_poke = "0.2.4"
-rs_peekaboo = "0.2.4"
+rs_peekaboo = { path = "../rs_peekaboo" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
