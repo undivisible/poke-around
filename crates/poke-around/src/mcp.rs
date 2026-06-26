@@ -16,7 +16,9 @@ use std::time::{Duration, Instant, SystemTime};
 use url::Url;
 
 use rs_peekaboo::automation::{Target, parse_point, validate_output_path};
-use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point, Snapshot};
+use rs_peekaboo::{
+    Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point, Snapshot,
+};
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
 const MAX_HTTP_BODY_SIZE: usize = 10 * 1024 * 1024;
