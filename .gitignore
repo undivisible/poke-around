@@ -5,3 +5,4 @@ docs/.vitepress/cache/
 xcuserdata/
 superpowers/
 target/
+.cargo/config.toml

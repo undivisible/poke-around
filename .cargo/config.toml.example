@@ -1,0 +1,6 @@
+# Local development overrides.
+# This file is gitignored — copy from config.toml.example for local builds.
+# CI and release use crates.io versions exclusively.
+
+[patch.crates-io]
+rs_peekaboo = { path = "../rs_peekaboo" }
