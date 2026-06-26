@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "poke-around"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "base64",
  "chrono",
