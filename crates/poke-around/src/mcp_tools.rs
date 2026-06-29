@@ -1,7 +1,6 @@
 
 use serde_json::{Value, json};
 use std::fs;
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
@@ -14,6 +13,7 @@ use crate::mcp::{
 use crate::mcp::AppState;
 use crate::{Error, Result};
 use rs_peekaboo::automation::{Target, parse_point};
+use shlex::split as shlex_split;
 use rs_peekaboo::{
     Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point,
 };
@@ -986,20 +986,18 @@ fn run_command(args: &Value, state: &AppState) -> Result<Value> {
     } else {
         state.inner.home.clone()
     };
-    let output = if cfg!(target_os = "windows") {
-        Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", command])
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .output()?
-    } else {
-        Command::new(shell())
-            .arg(shell_flag())
-            .arg(command)
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .output()?
-    };
+    #[cfg(target_os = "windows")]
+    let parsed_args = windows_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
+    #[cfg(not(target_os = "windows"))]
+    let parsed_args = shlex_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
+    if parsed_args.is_empty() {
+        return Err(Error::msg("command is empty after parsing"));
+    }
+    let output = Command::new(&parsed_args[0])
+        .args(&parsed_args[1..])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .output()?;
     Ok(ok_json(json!({
         "stdout": String::from_utf8_lossy(&output.stdout),
         "stderr": String::from_utf8_lossy(&output.stderr),
@@ -1008,22 +1006,45 @@ fn run_command(args: &Value, state: &AppState) -> Result<Value> {
     })))
 }
 
-fn shell() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "cmd.exe"
-    } else if Path::new("/bin/zsh").exists() {
-        "/bin/zsh"
-    } else {
-        "/bin/bash"
+#[cfg(target_os = "windows")]
+fn windows_split(s: &str) -> Option<Vec<String>> {
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut in_double_quotes = false;
+    let mut in_single_quotes = false;
+    let mut escape_next = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if escape_next {
+            current_arg.push(c);
+            escape_next = false;
+            continue;
+        }
+        match c {
+            '\\' => {
+                if let Some(&next_c) = chars.peek() {
+                    if next_c == '"' || next_c == '\'' {
+                        escape_next = true;
+                        continue;
+                    }
+                }
+                current_arg.push(c);
+            }
+            '"' if !in_single_quotes => in_double_quotes = !in_double_quotes,
+            '\'' if !in_double_quotes => in_single_quotes = !in_single_quotes,
+            ' ' | '\t' | '\n' | '\r' if !in_double_quotes && !in_single_quotes => {
+                if !current_arg.is_empty() {
+                    args.push(current_arg.clone());
+                    current_arg.clear();
+                }
+            }
+            _ => current_arg.push(c),
+        }
     }
-}
-
-fn shell_flag() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "/C"
-    } else {
-        "-lc"
+    if !current_arg.is_empty() {
+        args.push(current_arg);
     }
+    Some(args)
 }
 
 fn read_file(args: &Value, state: &AppState) -> Result<Value> {
