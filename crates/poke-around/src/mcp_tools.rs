@@ -1066,12 +1066,14 @@ fn list_directory(args: &Value, state: &AppState) -> Result<Value> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(&path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
+        let file_type = entry.file_type()?;
+        let is_dir = file_type.is_dir();
+        let size = if is_dir { 0 } else { entry.metadata()?.len() };
         entries.push(json!({
             "name": entry.file_name().to_string_lossy(),
             "path": entry.path(),
-            "is_dir": metadata.is_dir(),
-            "size": metadata.len()
+            "is_dir": is_dir,
+            "size": size
         }));
     }
     Ok(ok_json(json!({ "path": path, "entries": entries })))
@@ -1177,7 +1179,7 @@ fn web_fetch(args: &Value) -> Result<Value> {
         return Ok(error_result(err.to_string()));
     }
     let max_chars = args.get("max_chars").and_then(Value::as_u64).unwrap_or(20000) as usize;
-    let output = Command::new("curl").arg("-fsSL").arg(url).output()?;
+    let output = Command::new("curl").arg("-fsSL").arg("--").arg(url).output()?;
     if !output.status.success() {
         return Ok(error_result(String::from_utf8_lossy(&output.stderr)));
     }
