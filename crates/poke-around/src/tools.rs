@@ -50,13 +50,13 @@ fn base_tools() -> Vec<Value> {
     vec![
         json!({
             "name": "run_command",
-            "description": "Execute a shell command on the user's machine and return stdout, stderr, and exit code.",
+            "description": "Execute a command directly on the user's machine and return stdout, stderr, and exit code. NOTE: This executes the executable directly, NOT via a shell. To use shell features (pipes, redirections, built-ins, env vars), you MUST explicitly wrap your command: use `sh -c '...'` on Unix/macOS or `powershell.exe -Command '...'` on Windows.",
             "inputSchema": {
                     "type": "object",
                     "properties": {
                         "command": {
                             "type": "string",
-                            "description": "The shell command to execute"
+                            "description": "The command to execute (e.g., `ls -l` or `sh -c 'echo $HOME'`)."
                         },
                         "cwd": {
                             "type": "string",
