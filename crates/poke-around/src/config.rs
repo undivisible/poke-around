@@ -172,4 +172,28 @@ mod tests {
             assert!(content.contains(r#""permission_mode": "full""#));
         });
     }
+
+    #[test]
+    #[serial]
+    fn test_save_permission_mode_permissions() {
+        with_temp_env(|_| {
+            let mode = "limited";
+            save_permission_mode(mode).unwrap();
+
+            let cfg_path = config_path().unwrap();
+            assert!(cfg_path.exists());
+            assert!(cfg_path.parent().unwrap().exists());
+
+            let config = read_config().unwrap();
+            assert_eq!(config.permission_mode, Some(mode.to_string()));
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = std::fs::metadata(&cfg_path).unwrap();
+                let permissions = metadata.permissions();
+                assert_eq!(permissions.mode() & 0o777, 0o600);
+            }
+        });
+    }
 }
