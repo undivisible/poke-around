@@ -177,7 +177,9 @@ mod tests {
         let original_path = std::env::var_os("PATH");
         let temp_dir = tempfile::tempdir().unwrap();
 
-        let mock_curl = temp_dir.path().join(if cfg!(windows) { "curl.bat" } else { "curl" });
+        let mock_curl = temp_dir
+            .path()
+            .join(if cfg!(windows) { "curl.bat" } else { "curl" });
         std::fs::write(&mock_curl, curl_script).unwrap();
 
         #[cfg(unix)]
