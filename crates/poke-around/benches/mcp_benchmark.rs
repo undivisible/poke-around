@@ -2,11 +2,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 // We will mock a simplified loop with a cloneable dummy state
 #[derive(Clone)]
-struct DummyState {
-    // some data
-    #[allow(dead_code)]
-    data: std::sync::Arc<Vec<u8>>,
-}
+struct DummyState;
 
 fn handle_with_clone(items: &[u32], state: DummyState) {
     for item in items {
@@ -31,9 +27,7 @@ fn process_item_borrow(_item: &u32, _state: &DummyState) -> u32 {
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     let items: Vec<u32> = (0..100).collect();
-    let state = DummyState {
-        data: std::sync::Arc::new(vec![0; 100]),
-    };
+    let state = DummyState;
 
     c.bench_function("loop_with_clone", |b| {
         b.iter(|| {
