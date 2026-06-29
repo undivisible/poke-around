@@ -26,17 +26,21 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
     if js_path.exists() {
         return Ok(js_path);
     }
+    let prefix = format!("{name}.");
     for entry in std::fs::read_dir(&dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("js") {
+        let entry = entry?;
+        let file_name_os = entry.file_name();
+        let Some(file_name_str) = file_name_os.to_str() else {
+            continue;
+        };
+
+        if !file_name_str.ends_with(".js") {
             continue;
         }
-        let file_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        if file_name == name || file_name.starts_with(&format!("{name}.")) {
-            return Ok(path);
+
+        let stem = &file_name_str[..file_name_str.len() - 3];
+        if stem == name || stem.starts_with(&prefix) {
+            return Ok(entry.path());
         }
     }
     Err(Error::msg(format!(
