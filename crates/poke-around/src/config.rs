@@ -151,6 +151,15 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_config_path() {
+        with_temp_env(|temp_dir| {
+            let path = config_path().unwrap();
+            assert_eq!(path, temp_dir.join("poke-around").join("config.json"));
+        });
+    }
+
+    #[test]
+    #[serial]
     fn test_read_write_config() {
         with_temp_env(|_| {
             // Initially reading config should return default (NotFound -> Ok(Config::default()))
