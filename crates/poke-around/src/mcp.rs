@@ -1324,12 +1324,14 @@ fn list_directory(args: &Value, state: &AppState) -> Result<Value> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(&path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
+        let file_type = entry.file_type()?;
+        let is_dir = file_type.is_dir();
+        let size = if is_dir { 0 } else { entry.metadata()?.len() };
         entries.push(json!({
             "name": entry.file_name().to_string_lossy(),
             "path": entry.path(),
-            "is_dir": metadata.is_dir(),
-            "size": metadata.len()
+            "is_dir": is_dir,
+            "size": size
         }));
     }
     Ok(ok_json(json!({ "path": path, "entries": entries })))
