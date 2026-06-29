@@ -648,9 +648,12 @@ mod tests {
     #[test]
     fn test_tools_json_output() {
         let json_str = tools_json();
-        let parsed: Value = serde_json::from_str(&json_str).expect("tools_json should return valid JSON");
+        let parsed: Value =
+            serde_json::from_str(&json_str).expect("tools_json should return valid JSON");
 
-        let tools_array = parsed.as_array().expect("tools_json should return a JSON array");
+        let tools_array = parsed
+            .as_array()
+            .expect("tools_json should return a JSON array");
         assert_eq!(tools_array.len(), TOOL_NAMES.len());
 
         let mut output_names = std::collections::HashSet::new();
@@ -658,9 +661,21 @@ mod tests {
         for tool in tools_array {
             let obj = tool.as_object().expect("each tool should be a JSON object");
 
-            assert!(obj.contains_key("name"), "tool missing 'name' field: {:?}", obj);
-            assert!(obj.contains_key("description"), "tool missing 'description' field: {:?}", obj);
-            assert!(obj.contains_key("inputSchema"), "tool missing 'inputSchema' field: {:?}", obj);
+            assert!(
+                obj.contains_key("name"),
+                "tool missing 'name' field: {:?}",
+                obj
+            );
+            assert!(
+                obj.contains_key("description"),
+                "tool missing 'description' field: {:?}",
+                obj
+            );
+            assert!(
+                obj.contains_key("inputSchema"),
+                "tool missing 'inputSchema' field: {:?}",
+                obj
+            );
 
             let name = obj["name"].as_str().expect("name should be a string");
             output_names.insert(name.to_string());
