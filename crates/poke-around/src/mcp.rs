@@ -14,7 +14,9 @@ use url::Url;
 
 // used by optional_output_path
 use rs_peekaboo::automation::validate_output_path;
-use rs_peekaboo::{ImageCapture, ImageMode, Point};
+use rs_peekaboo::{ImageCapture, Point};
+#[cfg(test)]
+use rs_peekaboo::ImageMode;
 use rs_peekaboo::automation::Target;
 
 #[derive(Clone)]

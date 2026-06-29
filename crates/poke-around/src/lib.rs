@@ -1,5 +1,7 @@
 pub mod agents;
 pub mod bridge;
+pub mod bridge_auth;
+pub mod bridge_state;
 pub mod config;
 pub mod daemon;
 pub mod error;

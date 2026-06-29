@@ -1,10 +1,12 @@
-use crate::{Error, Result, config};
+use crate::{Error, Result};
+use crate::bridge_state::{read_state, patch_state, remove_state_key, record_connection, log_status};
+use crate::bridge_auth::{self, ensure_auth, make_poke, recover_from_oauth_required, OAuthRecoveryOutcome};
 use futures::future::join_all;
 use rs_poke::{
-    CreateWebhook, CredentialsStore, FetchWithAuthOptions, LoginOptions, Poke, PokeOptions,
+    CreateWebhook, FetchWithAuthOptions, Poke,
     TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,7 +18,6 @@ const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
 const TUNNEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNC_TOOLS_MAX_ATTEMPTS: usize = 8;
 const SYNC_TOOLS_RETRY_DELAY: Duration = Duration::from_secs(3);
-const MAX_CONN_HISTORY: usize = 10;
 const TUNNEL_HEALTH_CHECK: Duration = Duration::from_secs(30);
 const DELETE_MAX_ATTEMPTS: usize = 3;
 const DELETE_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -64,7 +65,6 @@ impl Bridge {
         })
     }
 
-    /// Send a notification to the Poke agent through the cached webhook.
     pub fn notify_via_webhook(&self, message: &str) -> Result<()> {
         self.tx
             .send(BridgeCommand::SendWebhook(message.to_string()))
@@ -90,7 +90,7 @@ async fn run_bridge(
 ) -> Result<()> {
     let token = ensure_auth(false).await?;
     let mut poke = make_poke(&token)?;
-    let tunnel_name = ensure_integration_name("poke-around")?;
+    let tunnel_name = bridge_auth::ensure_integration_name("poke-around")?;
     let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
     log_status("Webhook ready.");
     cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
@@ -281,7 +281,7 @@ async fn monitor_tunnel(
                             OAuthRecoveryOutcome::Failed(message) => {
                                 log_status(&format!(
                                     "Re-auth failed: {message}{}",
-                                    oauth_failure_hint()
+                                    bridge_auth::oauth_failure_hint()
                                 ));
                             }
                         }
@@ -373,65 +373,6 @@ async fn sleep_or_stop(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum OAuthRecoveryOutcome {
-    Restart { token: String },
-    Failed(String),
-}
-
-fn plan_oauth_recovery(
-    cached_reauth: std::result::Result<String, String>,
-    fresh_login: std::result::Result<String, String>,
-) -> OAuthRecoveryOutcome {
-    match cached_reauth {
-        Ok(token) => OAuthRecoveryOutcome::Restart { token },
-        Err(cached_err) => match fresh_login {
-            Ok(token) => OAuthRecoveryOutcome::Restart { token },
-            Err(fresh_err) => OAuthRecoveryOutcome::Failed(format!(
-                "{cached_err}; fresh login failed: {fresh_err}"
-            )),
-        },
-    }
-}
-
-async fn recover_from_oauth_required() -> OAuthRecoveryOutcome {
-    let cached = ensure_auth(false).await.map_err(|err| err.to_string());
-    if cached.is_ok() {
-        return plan_oauth_recovery(cached, Err("skipped".into()));
-    }
-    log_status("Cached credentials invalid - opening browser for fresh Poke login...");
-    let fresh = ensure_auth(true).await.map_err(|err| err.to_string());
-    plan_oauth_recovery(cached, fresh)
-}
-
-async fn ensure_auth(force_fresh: bool) -> Result<String> {
-    if !force_fresh {
-        if let Some(token) = rs_poke::get_token()? {
-            return Ok(token);
-        }
-    } else {
-        rs_poke::logout()
-            .await
-            .map_err(|err| Error::msg(err.to_string()))?;
-    }
-    log_status("Opening browser for Poke login...");
-    let store = CredentialsStore::default_store().map_err(|err| Error::msg(err.to_string()))?;
-    let options = LoginOptions::new(store).on_code(|info| {
-        log_status(&format!(
-            "Enter code {} at {}",
-            info.user_code, info.login_url
-        ));
-    });
-    let login = if force_fresh {
-        rs_poke::login_fresh(options).await
-    } else {
-        rs_poke::login(options).await
-    };
-    login
-        .map(|result| result.token)
-        .map_err(|err| Error::msg(err.to_string()))
-}
-
 async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, String)> {
     let state = read_state()?;
     let webhook_url = state.get("webhookUrl").and_then(Value::as_str);
@@ -440,10 +381,10 @@ async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, Strin
     if let (Some(url), Some(token), Some(name)) = (webhook_url, webhook_token, webhook_name)
         && name == tunnel_name
     {
-        eprintln!("\x1b[2m[bridge] Reusing cached webhook.\x1b[0m");
+        log_status("Reusing cached webhook.");
         return Ok((url.to_string(), token.to_string()));
     }
-    eprintln!("\x1b[2m[bridge] Creating webhook (first run)...\x1b[0m");
+    log_status("Creating webhook (first run)...");
     let webhook = poke
         .create_webhook(CreateWebhook {
             condition: tunnel_name,
@@ -483,10 +424,10 @@ async fn cleanup_stale_connections(
     if ids.is_empty() {
         return Ok(());
     }
-    eprintln!(
-        "\x1b[2m[bridge] Cleaning up {} old connection(s)...\x1b[0m",
+    log_status(&format!(
+        "Cleaning up {} old connection(s)...",
         ids.len()
-    );
+    ));
     let poke = poke.clone();
     let futures = ids.into_iter().map(|id| {
         let poke = poke.clone();
@@ -571,16 +512,6 @@ fn reconnect_backoff(attempt: u32) -> Duration {
     Duration::from_secs(secs)
 }
 
-#[cfg(target_os = "windows")]
-fn oauth_failure_hint() -> &'static str {
-    " On Windows, run poke-around from an interactive desktop terminal (not session 0 or a service) so browser login can open."
-}
-
-#[cfg(not(target_os = "windows"))]
-fn oauth_failure_hint() -> &'static str {
-    ""
-}
-
 async fn notify_poke(
     poke: &Poke,
     webhook_url: &str,
@@ -638,14 +569,6 @@ async fn send_webhook_message(poke: &Poke, webhook_url: &str, webhook_token: &st
         Ok(_) => log_status("Notified Poke agent."),
         Err(err) => log_status(&format!("Bridge error: {err}")),
     }
-}
-
-fn make_poke(token: &str) -> Result<Poke> {
-    Poke::new(PokeOptions {
-        api_key: Some(token.to_string()),
-        ..PokeOptions::default()
-    })
-    .map_err(|err| Error::msg(err.to_string()))
 }
 
 async fn perform_sync_attempt(runner: &TunnelRunner, mcp_url: &str) -> (usize, usize) {
@@ -721,122 +644,8 @@ async fn local_tool_count(mcp_url: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn ensure_integration_name(base: &str) -> Result<String> {
-    let state = read_state()?;
-    if let Some(name) = state.get("integrationName").and_then(Value::as_str)
-        && !name.is_empty()
-    {
-        return Ok(name.to_string());
-    }
-    let name = compute_integration_name(base);
-    patch_state([("integrationName", Value::String(name.clone()))])?;
-    Ok(name)
-}
-
-fn compute_integration_name(base: &str) -> String {
-    let raw = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            std::process::Command::new("hostname")
-                .output()
-                .ok()
-                .and_then(|output| String::from_utf8(output.stdout).ok())
-                .unwrap_or_default()
-        });
-    let suffix = raw
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    if suffix.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}-{suffix}")
-    }
-}
-
-fn read_state() -> Result<Map<String, Value>> {
-    match std::fs::read_to_string(config::state_path()?) {
-        Ok(data) => Ok(serde_json::from_str::<Value>(&data)?
-            .as_object()
-            .cloned()
-            .unwrap_or_default()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn patch_state<const N: usize>(updates: [(&str, Value); N]) -> Result<()> {
-    let mut state = read_state()?;
-    for (key, value) in updates {
-        state.insert(key.to_string(), value);
-    }
-    write_state(&state)
-}
-
-fn remove_state_key(key: &str) -> Result<()> {
-    let mut state = read_state()?;
-    state.remove(key);
-    write_state(&state)
-}
-
-fn write_state(state: &Map<String, Value>) -> Result<()> {
-    let path = config::state_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_path = {
-        let file_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("state.json");
-        path.parent()
-            .map(|parent| parent.join(format!("{file_name}.tmp")))
-            .unwrap_or_else(|| path.with_extension("tmp"))
-    };
-    std::fs::write(&tmp_path, serde_json::to_string_pretty(state)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    std::fs::rename(&tmp_path, &path)?;
-    Ok(())
-}
-
-fn record_connection(connection_id: &str) -> Result<()> {
-    let state = read_state()?;
-    let mut history = state
-        .get("connectionHistory")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if !history
-        .iter()
-        .filter_map(Value::as_str)
-        .any(|known| known == connection_id)
-    {
-        history.insert(0, Value::String(connection_id.to_string()));
-    }
-    history.truncate(MAX_CONN_HISTORY);
-    patch_state([
-        ("connectionId", Value::String(connection_id.to_string())),
-        ("connectionHistory", Value::Array(history)),
-    ])
-}
-
 fn is_non_fatal_bridge_error(message: &str) -> bool {
     message.contains("activate-tunnel") || message.contains("sync-tools")
-}
-
-fn log_status(message: &str) {
-    let now = chrono::Local::now().format("%H:%M:%S");
-    eprintln!("[{now}] {message}");
 }
 
 impl Drop for Bridge {
@@ -866,17 +675,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compute_integration_name_appends_hostname_suffix() {
-        let name = compute_integration_name("poke-around");
-        assert!(name.starts_with("poke-around"));
-    }
-
-    #[test]
     fn reconnect_backoff_grows_to_cap() {
         assert_eq!(reconnect_backoff(1), Duration::from_secs(15));
         assert_eq!(reconnect_backoff(2), Duration::from_secs(30));
         assert_eq!(reconnect_backoff(3), Duration::from_secs(60));
         assert_eq!(reconnect_backoff(10), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn non_fatal_errors_include_activate_and_sync_tools() {
+        assert!(is_non_fatal_bridge_error("activate-tunnel failed"));
+        assert!(is_non_fatal_bridge_error("sync-tools returned 0"));
+        assert!(!is_non_fatal_bridge_error("connection timeout"));
     }
 
     use serial_test::serial;
@@ -890,12 +700,12 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
         }
 
-        let first = ensure_integration_name("poke-around").expect("first name");
-        let second = ensure_integration_name("poke-around").expect("cached name");
+        let first = bridge_auth::ensure_integration_name("poke-around").expect("first name");
+        let second = bridge_auth::ensure_integration_name("poke-around").expect("cached name");
         assert_eq!(first, second);
 
         let state_path = temp_dir.path().join("poke-around/state.json");
-        let state: Value = serde_json::from_str(
+        let state: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&state_path)
                 .unwrap_or_else(|err| panic!("read {}: {err}", state_path.display())),
         )
@@ -912,15 +722,11 @@ mod tests {
     }
 
     #[test]
-    fn non_fatal_errors_include_activate_and_sync_tools() {
-        assert!(is_non_fatal_bridge_error("activate-tunnel failed"));
-        assert!(is_non_fatal_bridge_error("sync-tools returned 0"));
-        assert!(!is_non_fatal_bridge_error("connection timeout"));
-    }
-
-    #[test]
     fn oauth_recovery_restarts_when_cached_token_is_valid() {
-        let outcome = plan_oauth_recovery(Ok("pk_cached".into()), Err("skipped".into()));
+        let outcome = crate::bridge_auth::plan_oauth_recovery(
+            Ok("pk_cached".into()),
+            Err("skipped".into()),
+        );
         assert_eq!(
             outcome,
             OAuthRecoveryOutcome::Restart {
@@ -931,7 +737,10 @@ mod tests {
 
     #[test]
     fn oauth_recovery_falls_back_to_fresh_login() {
-        let outcome = plan_oauth_recovery(Err("cached invalid".into()), Ok("pk_fresh".into()));
+        let outcome = crate::bridge_auth::plan_oauth_recovery(
+            Err("cached invalid".into()),
+            Ok("pk_fresh".into()),
+        );
         assert_eq!(
             outcome,
             OAuthRecoveryOutcome::Restart {
@@ -942,7 +751,7 @@ mod tests {
 
     #[test]
     fn oauth_recovery_reports_both_failures() {
-        let outcome = plan_oauth_recovery(
+        let outcome = crate::bridge_auth::plan_oauth_recovery(
             Err("cached invalid".into()),
             Err("browser login timed out".into()),
         );
@@ -967,7 +776,7 @@ mod tests {
         std::fs::create_dir(&poke_dir).unwrap();
         std::fs::write(poke_dir.join("credentials.json"), b"not json").unwrap();
 
-        let result = ensure_auth(false).await;
+        let result = crate::bridge_auth::ensure_auth(false).await;
         let is_err = result.is_err();
 
         unsafe {
