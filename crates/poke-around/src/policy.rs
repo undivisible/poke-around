@@ -298,3 +298,54 @@ pub fn extract_executable(segment: &str) -> String {
         .trim_matches(|c| c == '(' || c == ')');
     raw.rsplit('/').next().unwrap_or("").to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_executable_simple() {
+        assert_eq!(extract_executable("ls -l"), "ls");
+        assert_eq!(extract_executable("cat file.txt"), "cat");
+        assert_eq!(extract_executable("echo 'hello world'"), "echo");
+    }
+
+    #[test]
+    fn test_extract_executable_with_whitespace() {
+        assert_eq!(extract_executable("  grep pattern  "), "grep");
+        assert_eq!(extract_executable("\t awk '{print}' \n"), "awk");
+    }
+
+    #[test]
+    fn test_extract_executable_with_sudo() {
+        assert_eq!(extract_executable("sudo apt update"), "apt");
+        assert_eq!(extract_executable("  sudo systemctl restart  "), "systemctl");
+        assert_eq!(extract_executable("sudo   docker run"), "docker");
+    }
+
+    #[test]
+    fn test_extract_executable_with_parentheses() {
+        assert_eq!(extract_executable("(ls)"), "ls");
+        assert_eq!(extract_executable(" ( echo hello ) "), "");
+        assert_eq!(extract_executable("(sudo rm -rf)"), "rm");
+        assert_eq!(extract_executable("((pwd))"), "pwd");
+    }
+
+    #[test]
+    fn test_extract_executable_paths() {
+        assert_eq!(extract_executable("/bin/bash"), "bash");
+        assert_eq!(extract_executable("/usr/local/bin/node script.js"), "node");
+        assert_eq!(extract_executable("./script.sh"), "script.sh");
+        assert_eq!(extract_executable("../bin/tool --flag"), "tool");
+        assert_eq!(extract_executable("sudo /opt/bin/daemon start"), "daemon");
+    }
+
+    #[test]
+    fn test_extract_executable_empty_and_invalid() {
+        assert_eq!(extract_executable(""), "");
+        assert_eq!(extract_executable("   "), "");
+        assert_eq!(extract_executable("()"), "");
+        assert_eq!(extract_executable(" ( ) "), "");
+        assert_eq!(extract_executable("sudo "), "");
+    }
+}
