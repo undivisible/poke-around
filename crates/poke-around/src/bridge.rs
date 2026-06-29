@@ -90,7 +90,7 @@ async fn run_bridge(
 ) -> Result<()> {
     let token = ensure_auth(false).await?;
     let mut poke = make_poke(&token)?;
-    let tunnel_name = ensure_integration_name("poke-around")?;
+    let tunnel_name = ensure_integration_name("poke-around").await?;
     let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
     log_status("Webhook ready.");
     cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
@@ -121,7 +121,7 @@ async fn run_bridge(
             }
             StartTunnelResult::Success(info) => {
                 reconnect_attempt = 0;
-                record_connection(&info.connection_id)?;
+                record_connection(&info.connection_id).await?;
                 log_status(&format!(
                     "Tunnel connected ({}) -> {}",
                     info.connection_id, info.tunnel_url
@@ -433,7 +433,7 @@ async fn ensure_auth(force_fresh: bool) -> Result<String> {
 }
 
 async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, String)> {
-    let state = read_state()?;
+    let state = read_state().await?;
     let webhook_url = state.get("webhookUrl").and_then(Value::as_str);
     let webhook_token = state.get("webhookToken").and_then(Value::as_str);
     let webhook_name = state.get("webhookName").and_then(Value::as_str);
@@ -456,7 +456,8 @@ async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, Strin
         ("webhookToken", Value::String(webhook.webhook_token.clone())),
         ("triggerId", Value::String(webhook.trigger_id.clone())),
         ("webhookName", Value::String(tunnel_name.to_string())),
-    ])?;
+    ])
+    .await?;
     Ok((webhook.webhook_url, webhook.webhook_token))
 }
 
@@ -465,7 +466,7 @@ async fn cleanup_stale_connections(
     webhook_url: &str,
     webhook_token: &str,
 ) -> Result<()> {
-    let state = read_state()?;
+    let state = read_state().await?;
     let mut ids = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
@@ -497,8 +498,9 @@ async fn cleanup_stale_connections(
         ("webhookUrl", Value::String(webhook_url.to_string())),
         ("webhookToken", Value::String(webhook_token.to_string())),
         ("connectionHistory", Value::Array(Vec::new())),
-    ])?;
-    remove_state_key("connectionId")?;
+    ])
+    .await?;
+    remove_state_key("connectionId").await?;
     Ok(())
 }
 
@@ -721,15 +723,15 @@ async fn local_tool_count(mcp_url: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn ensure_integration_name(base: &str) -> Result<String> {
-    let state = read_state()?;
+async fn ensure_integration_name(base: &str) -> Result<String> {
+    let state = read_state().await?;
     if let Some(name) = state.get("integrationName").and_then(Value::as_str)
         && !name.is_empty()
     {
         return Ok(name.to_string());
     }
     let name = compute_integration_name(base);
-    patch_state([("integrationName", Value::String(name.clone()))])?;
+    patch_state([("integrationName", Value::String(name.clone()))]).await?;
     Ok(name)
 }
 
@@ -760,8 +762,8 @@ fn compute_integration_name(base: &str) -> String {
     }
 }
 
-fn read_state() -> Result<Map<String, Value>> {
-    match std::fs::read_to_string(config::state_path()?) {
+async fn read_state() -> Result<Map<String, Value>> {
+    match tokio::fs::read_to_string(config::state_path()?).await {
         Ok(data) => Ok(serde_json::from_str::<Value>(&data)?
             .as_object()
             .cloned()
@@ -771,24 +773,24 @@ fn read_state() -> Result<Map<String, Value>> {
     }
 }
 
-fn patch_state<const N: usize>(updates: [(&str, Value); N]) -> Result<()> {
-    let mut state = read_state()?;
+async fn patch_state<const N: usize>(updates: [(&str, Value); N]) -> Result<()> {
+    let mut state = read_state().await?;
     for (key, value) in updates {
         state.insert(key.to_string(), value);
     }
-    write_state(&state)
+    write_state(&state).await
 }
 
-fn remove_state_key(key: &str) -> Result<()> {
-    let mut state = read_state()?;
+async fn remove_state_key(key: &str) -> Result<()> {
+    let mut state = read_state().await?;
     state.remove(key);
-    write_state(&state)
+    write_state(&state).await
 }
 
-fn write_state(state: &Map<String, Value>) -> Result<()> {
+async fn write_state(state: &Map<String, Value>) -> Result<()> {
     let path = config::state_path()?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
     let tmp_path = {
         let file_name = path
@@ -799,18 +801,18 @@ fn write_state(state: &Map<String, Value>) -> Result<()> {
             .map(|parent| parent.join(format!("{file_name}.tmp")))
             .unwrap_or_else(|| path.with_extension("tmp"))
     };
-    std::fs::write(&tmp_path, serde_json::to_string_pretty(state)?)?;
+    tokio::fs::write(&tmp_path, serde_json::to_string_pretty(state)?).await?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+        tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).await?;
     }
-    std::fs::rename(&tmp_path, &path)?;
+    tokio::fs::rename(&tmp_path, &path).await?;
     Ok(())
 }
 
-fn record_connection(connection_id: &str) -> Result<()> {
-    let state = read_state()?;
+async fn record_connection(connection_id: &str) -> Result<()> {
+    let state = read_state().await?;
     let mut history = state
         .get("connectionHistory")
         .and_then(Value::as_array)
@@ -828,6 +830,7 @@ fn record_connection(connection_id: &str) -> Result<()> {
         ("connectionId", Value::String(connection_id.to_string())),
         ("connectionHistory", Value::Array(history)),
     ])
+    .await
 }
 
 fn is_non_fatal_bridge_error(message: &str) -> bool {
@@ -881,17 +884,21 @@ mod tests {
 
     use serial_test::serial;
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn ensure_integration_name_persists_first_computed_value() {
+    async fn ensure_integration_name_persists_first_computed_value() {
         let temp_dir = tempfile::tempdir().unwrap();
         let original_env = std::env::var_os("XDG_CONFIG_HOME");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
         }
 
-        let first = ensure_integration_name("poke-around").expect("first name");
-        let second = ensure_integration_name("poke-around").expect("cached name");
+        let first = ensure_integration_name("poke-around")
+            .await
+            .expect("first name");
+        let second = ensure_integration_name("poke-around")
+            .await
+            .expect("cached name");
         assert_eq!(first, second);
 
         let state_path = temp_dir.path().join("poke-around/state.json");

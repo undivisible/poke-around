@@ -1,0 +1,7 @@
+The `write_state` function in `crates/poke-around/src/bridge.rs` was executing standard, blocking file I/O operations (`std::fs::create_dir_all`, `std::fs::write`, `std::fs::rename`) directly on the Tokio async runtime worker threads.
+
+When standard `std::fs` methods are called inside an `async` context without using `tokio::task::spawn_blocking` or the `tokio::fs` equivalents, they block the OS thread backing the async runtime worker. This effectively starves the runtime, preventing it from making progress on other concurrent tasks until the file I/O operations complete, leading to increased latency and decreased overall throughput under load.
+
+By replacing the synchronous I/O with their non-blocking counterparts from `tokio::fs`, the I/O operations yield to the Tokio executor while waiting for completion, freeing the worker thread to handle other async work.
+
+We cannot easily provide a precise performance benchmark because isolating this file I/O performance in the current application framework requires significant structural rewrites of `bridge.rs` components, but theoretically and practically, making these file operations async improves concurrency.
