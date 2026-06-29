@@ -172,4 +172,44 @@ mod tests {
             assert!(content.contains(r#""permission_mode": "full""#));
         });
     }
+
+    #[test]
+    #[serial]
+    fn test_read_config_scenarios() {
+        with_temp_env(|_| {
+            let cfg_path = config_path().unwrap();
+
+            // Ensure directory exists for our manual writes
+            if let Some(parent) = cfg_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+
+            // Scenario 1: file not found returns default Config
+            if cfg_path.exists() {
+                std::fs::remove_file(&cfg_path).unwrap();
+            }
+            let config = read_config().unwrap();
+            assert_eq!(config.permission_mode, None);
+
+            // Scenario 2: read valid json
+            let valid_json = r#"{"permission_mode": "test_mode"}"#;
+            std::fs::write(&cfg_path, valid_json).unwrap();
+            let config = read_config().unwrap();
+            assert_eq!(config.permission_mode, Some("test_mode".to_string()));
+
+            // Scenario 3: read invalid json returns error
+            let invalid_json = "invalid json";
+            std::fs::write(&cfg_path, invalid_json).unwrap();
+            let result = read_config();
+            assert!(result.is_err());
+
+            // Scenario 4: path is a directory
+            std::fs::remove_file(&cfg_path).unwrap();
+            std::fs::create_dir_all(&cfg_path).unwrap();
+            let result = read_config();
+            assert!(result.is_err());
+            // Cleanup the directory so it doesn't pollute
+            std::fs::remove_dir(&cfg_path).unwrap();
+        });
+    }
 }
