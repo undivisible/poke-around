@@ -1445,7 +1445,11 @@ fn web_fetch(args: &Value) -> Result<Value> {
         .get("max_chars")
         .and_then(Value::as_u64)
         .unwrap_or(20000) as usize;
-    let output = Command::new("curl").arg("-fsSL").arg(url).output()?;
+    let output = Command::new("curl")
+        .arg("-fsSL")
+        .arg("--")
+        .arg(url)
+        .output()?;
     if !output.status.success() {
         return Ok(error_result(String::from_utf8_lossy(&output.stderr)));
     }
