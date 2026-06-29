@@ -298,3 +298,43 @@ pub fn extract_executable(segment: &str) -> String {
         .trim_matches(|c| c == '(' || c == ')');
     raw.rsplit('/').next().unwrap_or("").to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_executable() {
+        // Simple commands
+        assert_eq!(extract_executable("ls"), "ls");
+        assert_eq!(extract_executable("echo"), "echo");
+
+        // Commands with arguments
+        assert_eq!(extract_executable("ls -la"), "ls");
+        assert_eq!(extract_executable("echo hello world"), "echo");
+
+        // Commands with absolute or relative paths
+        assert_eq!(extract_executable("/usr/bin/python3"), "python3");
+        assert_eq!(extract_executable("./script.sh"), "script.sh");
+        assert_eq!(extract_executable("../bin/test"), "test");
+
+        // Commands with preceding whitespace
+        assert_eq!(extract_executable("   grep"), "grep");
+        assert_eq!(extract_executable("\tcat"), "cat");
+
+        // Commands prefixed with sudo
+        assert_eq!(extract_executable("sudo ls"), "ls");
+        assert_eq!(extract_executable("sudo /usr/bin/apt"), "apt");
+
+        // Commands wrapped in parentheses
+        assert_eq!(extract_executable("(ls)"), "ls");
+        assert_eq!(extract_executable("( ls )"), "");
+        assert_eq!(extract_executable("(((echo)))"), "echo");
+        assert_eq!(extract_executable("(sudo rm)"), "rm");
+
+        // Empty or blank strings
+        assert_eq!(extract_executable(""), "");
+        assert_eq!(extract_executable("   "), "");
+        assert_eq!(extract_executable("()"), "");
+    }
+}
