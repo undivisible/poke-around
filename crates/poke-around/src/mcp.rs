@@ -66,6 +66,18 @@ impl AppState {
             *guard = mode;
         }
     }
+
+    pub(crate) fn approvals_lock(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, Approval>>> {
+        self.inner.approvals.lock().map_err(|_| Error::msg("approvals lock poisoned"))
+    }
+
+    pub(crate) fn auto_approve_lock(&self) -> Result<std::sync::MutexGuard<'_, HashSet<String>>> {
+        self.inner.auto_approve.lock().map_err(|_| Error::msg("auto approve lock poisoned"))
+    }
+
+    pub(crate) fn session_commands_lock(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, HashSet<String>>>> {
+        self.inner.session_approved_commands.lock().map_err(|_| Error::msg("session command lock poisoned"))
+    }
 }
 
 // MCP routing ---
@@ -199,10 +211,7 @@ fn is_approved(
     state: &AppState,
 ) -> Result<bool> {
     if state
-        .inner
-        .auto_approve
-        .lock()
-        .map_err(|_| Error::msg("auto approve lock poisoned"))?
+        .auto_approve_lock()?
         .contains(session_id)
     {
         return Ok(true);
@@ -210,10 +219,7 @@ fn is_approved(
     if tool_name == "run_command"
         && let Some(command) = args.get("command").and_then(Value::as_str)
         && state
-            .inner
-            .session_approved_commands
-            .lock()
-            .map_err(|_| Error::msg("session command lock poisoned"))?
+            .session_commands_lock()?
             .get(session_id)
             .is_some_and(|commands| commands.contains(command))
     {
@@ -226,11 +232,7 @@ fn is_approved(
         .get("approval_token")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let mut approvals = state
-        .inner
-        .approvals
-        .lock()
-        .map_err(|_| Error::msg("approval lock poisoned"))?;
+    let mut approvals = state.approvals_lock()?;
     let Some(approval) = approvals.get(token).cloned() else {
         return Ok(false);
     };
@@ -241,10 +243,7 @@ fn is_approved(
         approvals.remove(token);
         if args.get("remember_all_risky").and_then(Value::as_bool) == Some(true) {
             state
-                .inner
-                .auto_approve
-                .lock()
-                .map_err(|_| Error::msg("auto approve lock poisoned"))?
+                .auto_approve_lock()?
                 .insert(session_id.to_string());
         }
         if tool_name == "run_command"
@@ -252,10 +251,7 @@ fn is_approved(
             && let Some(command) = args.get("command").and_then(Value::as_str)
         {
             state
-                .inner
-                .session_approved_commands
-                .lock()
-                .map_err(|_| Error::msg("session command lock poisoned"))?
+                .session_commands_lock()?
                 .entry(session_id.to_string())
                 .or_default()
                 .insert(command.to_string());
@@ -278,10 +274,7 @@ fn request_approval(
         expires_at: Instant::now() + Duration::from_secs(300),
     };
     state
-        .inner
-        .approvals
-        .lock()
-        .map_err(|_| Error::msg("approval lock poisoned"))?
+        .approvals_lock()?
         .insert(token.clone(), approval.clone());
 
     let mut summary = mcp_tools::tool_summary(tool_name, args);
