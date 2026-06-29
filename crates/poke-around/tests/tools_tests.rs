@@ -1,4 +1,4 @@
-use poke_around::tools::tools_json;
+use poke_around::mcp_tools::tools_json;
 use serde_json::Value;
 
 #[test]

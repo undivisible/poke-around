@@ -1,5 +1,6 @@
 use crate::bridge::Bridge;
-use crate::mcp::{AppState, start_server};
+use crate::mcp::AppState;
+use crate::mcp_server::start_server;
 use crate::policy::PermissionMode;
 use crate::{Result, config};
 use std::sync::mpsc;

@@ -1,0 +1,324 @@
+use crate::{Error, Result};
+use crate::mcp::handle_json_rpc;
+use rand::Rng;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use crate::mcp::AppState;
+
+const MAX_CONCURRENT_CONNECTIONS: usize = 32;
+const MAX_HTTP_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+pub fn start_server(state: AppState) -> Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let state = state.clone();
+            let connections = connections.clone();
+            if connections.load(Ordering::Acquire) >= MAX_CONCURRENT_CONNECTIONS {
+                eprintln!("mcp: rejecting connection, max concurrent connections reached");
+                continue;
+            }
+            connections.fetch_add(1, Ordering::Release);
+            thread::spawn(move || {
+                let result = handle_connection(stream, state);
+                connections.fetch_sub(1, Ordering::Release);
+                if let Err(err) = result {
+                    eprintln!("mcp connection error: {err}");
+                }
+            });
+        }
+    });
+    Ok(port)
+}
+
+fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
+    let request = match read_http_request(&mut stream) {
+        Ok(request) => request,
+        Err(err) => {
+            let body = json!({ "error": err.to_string() }).to_string();
+            write_http_response(&mut stream, 400, &body, &[])?;
+            return Ok(());
+        }
+    };
+    let path = normalized_path(&request.path);
+    let session_id = request
+        .headers
+        .get("mcp-session-id")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .unwrap_or_else(new_mcp_session_id);
+    let http_response = route_http_request(&request, &path, &session_id, state)?;
+    write_http_response(
+        &mut stream,
+        http_response.status,
+        &http_response.body,
+        &http_response.headers,
+    )?;
+    Ok(())
+}
+
+fn route_http_request(
+    request: &HttpRequest,
+    path: &str,
+    session_id: &str,
+    state: AppState,
+) -> Result<HttpResponse> {
+    if request.method == "OPTIONS" {
+        Ok(HttpResponse::no_content())
+    } else if request.method == "GET" && path == "/mcp" {
+        Ok(HttpResponse::method_not_allowed())
+    } else if request.method == "GET" && matches!(path, "/" | "/health") {
+        Ok(HttpResponse::json(200, json!({ "ok": true })))
+    } else if request.method == "DELETE" && matches!(path, "/" | "/mcp") {
+        Ok(HttpResponse::method_not_allowed())
+    } else if request.method == "POST" && matches!(path, "/" | "/mcp") {
+        match handle_json_rpc(&request.body, session_id, state)? {
+            Some(body) => {
+                let mut response = HttpResponse::json(200, body);
+                if request_contains_initialize(&request.body) {
+                    let new_session = new_mcp_session_id();
+                    response
+                        .headers
+                        .push(("Mcp-Session-Id".to_string(), new_session));
+                }
+                Ok(response)
+            }
+            None => Ok(HttpResponse::accepted()),
+        }
+    } else {
+        Ok(HttpResponse::not_found())
+    }
+}
+
+fn request_contains_initialize(body: &str) -> bool {
+    let Ok(request) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    if let Some(items) = request.as_array() {
+        return items
+            .iter()
+            .any(|item| item.get("method").and_then(Value::as_str) == Some("initialize"));
+    }
+    request.get("method").and_then(Value::as_str) == Some("initialize")
+}
+
+fn new_mcp_session_id() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::rng().fill(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn normalized_path(raw: &str) -> String {
+    let path = if raw.starts_with('/') {
+        raw.to_string()
+    } else if let Some((_, rest)) = raw.split_once("://")
+        && let Some(path_start) = rest.find('/')
+    {
+        rest[path_start..].to_string()
+    } else {
+        raw.to_string()
+    };
+    if path.starts_with("/.well-known/") {
+        return path;
+    }
+    if tunnel_prefixed_mcp_path(&path) {
+        "/mcp".to_string()
+    } else {
+        path
+    }
+}
+
+fn tunnel_prefixed_mcp_path(path: &str) -> bool {
+    let Some(prefix) = path.strip_suffix("/mcp") else {
+        return false;
+    };
+    prefix.is_empty() || prefix.starts_with('/') && prefix.len() > 1
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if bytes.len() > 1024 * 1024 {
+            return Err(Error::msg("request headers too large"));
+        }
+    }
+    let header_end = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| Error::msg("invalid http request"))?;
+    let header_text = String::from_utf8_lossy(&bytes[..header_end]);
+    let mut lines = header_text.lines();
+    let request_line = lines
+        .next()
+        .ok_or_else(|| Error::msg("missing request line"))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut headers = HashMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    if content_length > MAX_HTTP_BODY_SIZE {
+        return Err(Error::msg("request body too large"));
+    }
+    let body_start = header_end + 4;
+    while bytes.len().saturating_sub(body_start) < content_length {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    if bytes.len().saturating_sub(body_start) < content_length {
+        return Err(Error::msg("incomplete request body"));
+    }
+    let body = String::from_utf8_lossy(&bytes[body_start..body_start + content_length]).to_string();
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    extra_headers: &[(String, String)],
+) -> Result<()> {
+    let reason = match status {
+        200 => "OK",
+        202 => "Accepted",
+        204 => "No Content",
+        405 => "Method Not Allowed",
+        _ => "Error",
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, Accept, MCP-Protocol-Version\r\nAccess-Control-Expose-Headers: Mcp-Session-Id\r\n",
+    )?;
+    for (name, value) in extra_headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    if body.is_empty() && status != 200 {
+        write!(stream, "Content-Length: 0\r\nConnection: close\r\n\r\n")?;
+    } else {
+        write!(
+            stream,
+            "Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )?;
+    }
+    Ok(())
+}
+
+struct HttpResponse {
+    status: u16,
+    body: String,
+    headers: Vec<(String, String)>,
+}
+
+impl HttpResponse {
+    fn json(status: u16, body: Value) -> Self {
+        Self {
+            status,
+            body: body.to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn no_content() -> Self {
+        Self {
+            status: 204,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn accepted() -> Self {
+        Self {
+            status: 202,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn method_not_allowed() -> Self {
+        Self {
+            status: 405,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn not_found() -> Self {
+        Self {
+            status: 404,
+            body: json!({ "error": "not found" }).to_string(),
+            headers: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::AppState;
+    use crate::policy::PermissionMode;
+    use std::time::Duration;
+
+    #[test]
+    fn handle_connection_read_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+
+        rustix::net::sockopt::set_socket_linger(&client, Some(Duration::ZERO)).unwrap();
+
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100));
+
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let result = handle_connection(server_stream, state);
+
+        assert!(
+            result.is_err(),
+            "Expected an error when handling a reset connection, got {:?}",
+            result
+        );
+    }
+}
