@@ -156,6 +156,55 @@ mod tests {
         }
     }
 
+    struct PathGuard {
+        original_path: Option<std::ffi::OsString>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(ref val) = self.original_path {
+                    std::env::set_var("PATH", val);
+                } else {
+                    std::env::remove_var("PATH");
+                }
+            }
+        }
+    }
+
+    fn setup_mock_path(curl_script: &str) -> PathGuard {
+        let original_path = std::env::var_os("PATH");
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let mock_curl = temp_dir
+            .path()
+            .join(if cfg!(windows) { "curl.bat" } else { "curl" });
+        std::fs::write(&mock_curl, curl_script).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&mock_curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut paths = match &original_path {
+            Some(p) => std::env::split_paths(p).collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+        paths.insert(0, temp_dir.path().to_path_buf());
+        let new_path = std::env::join_paths(paths).unwrap();
+
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+
+        PathGuard {
+            original_path,
+            _temp_dir: temp_dir,
+        }
+    }
+
     #[test]
     #[serial]
     fn test_find_agent_exact_match() {
@@ -221,5 +270,49 @@ mod tests {
     fn test_find_js_runtime_returns_string() {
         let runtime = find_js_runtime();
         assert!(!runtime.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn test_download_agent_invalid_name() {
+        let invalid_names = ["bad/name", "name with spaces", "name&", ".name", "name#1"];
+        for name in invalid_names {
+            let result = download_agent(name);
+            assert!(result.is_err(), "Expected error for name '{}'", name);
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "invalid agent name: only alphanumeric, dash, and underscore are allowed"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_download_agent_mocked_success() {
+        let _env_guard = setup_test_env();
+        let _path_guard = setup_mock_path("#!/bin/sh\necho 'console.log(\"mocked agent\");'\n");
+
+        let agent_name = "test-agent";
+        let path = download_agent(agent_name).unwrap();
+
+        assert!(path.exists());
+        assert_eq!(path.file_name().unwrap(), "test-agent.js");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "console.log(\"mocked agent\");\n");
+    }
+
+    #[test]
+    #[serial]
+    fn test_download_agent_mocked_failure() {
+        let _env_guard = setup_test_env();
+        let _path_guard = setup_mock_path("#!/bin/sh\necho 'curl error mock' >&2\nexit 1\n");
+
+        let agent_name = "fail-agent";
+        let result = download_agent(agent_name);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("failed to download agent 'fail-agent'"));
+        assert!(err_msg.contains("curl error mock"));
     }
 }
