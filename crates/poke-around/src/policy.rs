@@ -298,3 +298,62 @@ pub fn extract_executable(segment: &str) -> String {
         .trim_matches(|c| c == '(' || c == ')');
     raw.rsplit('/').next().unwrap_or("").to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_command_segments() {
+        // Simple command
+        assert_eq!(
+            split_command_segments("ls -l").collect::<Vec<_>>(),
+            vec!["ls -l"]
+        );
+
+        // Pipe
+        assert_eq!(
+            split_command_segments("ls -l | grep 'foo'").collect::<Vec<_>>(),
+            vec!["ls -l", "grep 'foo'"]
+        );
+
+        // Logical AND
+        assert_eq!(
+            split_command_segments("build && test").collect::<Vec<_>>(),
+            vec!["build", "test"]
+        );
+
+        // Logical OR
+        assert_eq!(
+            split_command_segments("cat file.txt || echo 'failed'").collect::<Vec<_>>(),
+            vec!["cat file.txt", "echo 'failed'"]
+        );
+
+        // Semicolon
+        assert_eq!(
+            split_command_segments("cd dir; ls").collect::<Vec<_>>(),
+            vec!["cd dir", "ls"]
+        );
+
+        // Newline
+        assert_eq!(
+            split_command_segments("echo 'line 1'\necho 'line 2'").collect::<Vec<_>>(),
+            vec!["echo 'line 1'", "echo 'line 2'"]
+        );
+
+        // Combination
+        assert_eq!(
+            split_command_segments("ls -l | grep 'foo' && echo 'bar'; pwd").collect::<Vec<_>>(),
+            vec!["ls -l", "grep 'foo'", "echo 'bar'", "pwd"]
+        );
+
+        // Empty segments and whitespace
+        assert_eq!(
+            split_command_segments("  ls -l  |  || && ; \n ").collect::<Vec<_>>(),
+            vec!["ls -l"]
+        );
+
+        // Empty command
+        assert!(split_command_segments("").collect::<Vec<_>>().is_empty());
+    }
+}
