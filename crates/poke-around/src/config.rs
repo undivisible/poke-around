@@ -172,4 +172,41 @@ mod tests {
             assert!(content.contains(r#""permission_mode": "full""#));
         });
     }
+
+    #[test]
+    #[serial]
+    fn test_save_permission_mode_creates_dir_and_restricts_perms() {
+        with_temp_env(|_| {
+            let cfg_path = config_path().unwrap();
+
+            // Ensure the parent directory doesn't exist initially
+            let parent = cfg_path.parent().unwrap();
+            if parent.exists() {
+                std::fs::remove_dir_all(parent).unwrap();
+            }
+            assert!(!parent.exists());
+
+            // Save mode
+            save_permission_mode("restricted").unwrap();
+
+            // Directory should be created
+            assert!(parent.exists());
+            assert!(cfg_path.exists());
+
+            // Mode should be correct
+            let config = read_config().unwrap();
+            assert_eq!(config.permission_mode, Some("restricted".to_string()));
+
+            // Check permissions on unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = std::fs::metadata(&cfg_path).unwrap();
+                let mode = metadata.permissions().mode();
+                // Check that only owner has read/write permissions (0o600)
+                // The mode includes file type bits, so we mask with 0o777
+                assert_eq!(mode & 0o777, 0o600);
+            }
+        });
+    }
 }
