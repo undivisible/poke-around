@@ -327,4 +327,39 @@ mod tests {
         assert_eq!(extract_executable("./script.sh"), "script.sh");
         assert_eq!(extract_executable("../bin/run"), "run");
     }
+
+    #[test]
+    fn test_split_command_segments() {
+        assert_eq!(
+            split_command_segments("ls -l").collect::<Vec<_>>(),
+            vec!["ls -l"]
+        );
+        assert_eq!(
+            split_command_segments("ls -l | grep 'foo'").collect::<Vec<_>>(),
+            vec!["ls -l", "grep 'foo'"]
+        );
+        assert_eq!(
+            split_command_segments("build && test").collect::<Vec<_>>(),
+            vec!["build", "test"]
+        );
+        assert_eq!(
+            split_command_segments("cat file.txt || echo 'failed'").collect::<Vec<_>>(),
+            vec!["cat file.txt", "echo 'failed'"]
+        );
+        assert_eq!(
+            split_command_segments("cd dir; ls").collect::<Vec<_>>(),
+            vec!["cd dir", "ls"]
+        );
+        assert_eq!(
+            split_command_segments("echo 'line 1'\necho 'line 2'").collect::<Vec<_>>(),
+            vec!["echo 'line 1'", "echo 'line 2'"]
+        );
+        assert_eq!(
+            split_command_segments("ls -l | grep 'foo' && echo 'bar'; pwd").collect::<Vec<_>>(),
+            vec!["ls -l", "grep 'foo'", "echo 'bar'", "pwd"]
+        );
+        assert!(
+            split_command_segments("").collect::<Vec<_>>().is_empty()
+        );
+    }
 }
