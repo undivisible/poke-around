@@ -319,7 +319,10 @@ mod tests {
     #[test]
     fn test_extract_executable_with_sudo() {
         assert_eq!(extract_executable("sudo apt update"), "apt");
-        assert_eq!(extract_executable("  sudo systemctl restart  "), "systemctl");
+        assert_eq!(
+            extract_executable("  sudo systemctl restart  "),
+            "systemctl"
+        );
         assert_eq!(extract_executable("sudo   docker run"), "docker");
     }
 
