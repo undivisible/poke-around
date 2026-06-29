@@ -298,3 +298,33 @@ pub fn extract_executable(segment: &str) -> String {
         .trim_matches(|c| c == '(' || c == ')');
     raw.rsplit('/').next().unwrap_or("").to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_executable_empty() {
+        assert_eq!(extract_executable(""), "");
+        assert_eq!(extract_executable("   "), "");
+    }
+
+    #[test]
+    fn test_extract_executable_plain() {
+        assert_eq!(extract_executable("ls"), "ls");
+        assert_eq!(extract_executable("ls -la"), "ls");
+        assert_eq!(extract_executable("  ls  -la  "), "ls");
+    }
+
+    #[test]
+    fn test_extract_executable_absolute_path() {
+        assert_eq!(extract_executable("/bin/ls"), "ls");
+        assert_eq!(extract_executable("/usr/bin/python3 script.py"), "python3");
+    }
+
+    #[test]
+    fn test_extract_executable_relative_path() {
+        assert_eq!(extract_executable("./script.sh"), "script.sh");
+        assert_eq!(extract_executable("../bin/run"), "run");
+    }
+}
