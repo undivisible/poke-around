@@ -1626,17 +1626,26 @@ mod tests {
         // Test single quotes
         let cmd = "powershell.exe -Command 'echo \"hello world\"'";
         let parsed = windows_split(cmd).unwrap();
-        assert_eq!(parsed, vec!["powershell.exe", "-Command", "echo \"hello world\""]);
+        assert_eq!(
+            parsed,
+            vec!["powershell.exe", "-Command", "echo \"hello world\""]
+        );
 
         // Test double quotes with escaping
         let cmd = "powershell.exe -Command \"echo \\\"hello world\\\"\"";
         let parsed = windows_split(cmd).unwrap();
-        assert_eq!(parsed, vec!["powershell.exe", "-Command", "echo \"hello world\""]);
+        assert_eq!(
+            parsed,
+            vec!["powershell.exe", "-Command", "echo \"hello world\""]
+        );
 
         // Test path with spaces and backslashes
         let cmd = "\"C:\\Program Files\\app.exe\" --arg1 value";
         let parsed = windows_split(cmd).unwrap();
-        assert_eq!(parsed, vec!["C:\\Program Files\\app.exe", "--arg1", "value"]);
+        assert_eq!(
+            parsed,
+            vec!["C:\\Program Files\\app.exe", "--arg1", "value"]
+        );
     }
 
     #[test]
