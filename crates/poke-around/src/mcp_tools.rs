@@ -1257,11 +1257,11 @@ fn windows_split(s: &str) -> Option<Vec<String>> {
         }
         match c {
             '\\' => {
-                if let Some(&next_c) = chars.peek() {
-                    if next_c == '"' || next_c == '\'' {
-                        escape_next = true;
-                        continue;
-                    }
+                if let Some(&next_c) = chars.peek()
+                    && (next_c == '"' || next_c == '\'')
+                {
+                    escape_next = true;
+                    continue;
                 }
                 current_arg.push(c);
             }
