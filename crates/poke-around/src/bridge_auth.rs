@@ -56,7 +56,9 @@ pub(crate) async fn recover_from_oauth_required() -> OAuthRecoveryOutcome {
     if cached.is_ok() {
         return plan_oauth_recovery(cached, Err("skipped".into()));
     }
-    bridge_state::log_status("Cached credentials invalid - opening browser for fresh Poke login...");
+    bridge_state::log_status(
+        "Cached credentials invalid - opening browser for fresh Poke login...",
+    );
     let fresh = ensure_auth(true).await.map_err(|err| err.to_string());
     plan_oauth_recovery(cached, fresh)
 }

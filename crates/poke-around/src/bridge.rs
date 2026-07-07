@@ -1,10 +1,14 @@
+use crate::bridge_auth::{
+    self, OAuthRecoveryOutcome, ensure_auth, make_poke, recover_from_oauth_required,
+};
+use crate::bridge_state::{
+    log_status, patch_state, read_state, record_connection, remove_state_key,
+};
 use crate::{Error, Result};
-use crate::bridge_state::{read_state, patch_state, remove_state_key, record_connection, log_status};
-use crate::bridge_auth::{self, ensure_auth, make_poke, recover_from_oauth_required, OAuthRecoveryOutcome};
 use futures::future::join_all;
 use rs_poke::{
-    CreateWebhook, FetchWithAuthOptions, Poke,
-    TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
+    CreateWebhook, FetchWithAuthOptions, Poke, TunnelEvent, TunnelOptions, TunnelRunner,
+    fetch_with_auth,
 };
 use serde_json::Value;
 use std::sync::mpsc;
@@ -397,7 +401,8 @@ async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, Strin
         ("webhookToken", Value::String(webhook.webhook_token.clone())),
         ("triggerId", Value::String(webhook.trigger_id.clone())),
         ("webhookName", Value::String(tunnel_name.to_string())),
-    ]).await?;
+    ])
+    .await?;
     Ok((webhook.webhook_url, webhook.webhook_token))
 }
 
@@ -424,10 +429,7 @@ async fn cleanup_stale_connections(
     if ids.is_empty() {
         return Ok(());
     }
-    log_status(&format!(
-        "Cleaning up {} old connection(s)...",
-        ids.len()
-    ));
+    log_status(&format!("Cleaning up {} old connection(s)...", ids.len()));
     let poke = poke.clone();
     let futures = ids.into_iter().map(|id| {
         let poke = poke.clone();
@@ -438,7 +440,8 @@ async fn cleanup_stale_connections(
         ("webhookUrl", Value::String(webhook_url.to_string())),
         ("webhookToken", Value::String(webhook_token.to_string())),
         ("connectionHistory", Value::Array(Vec::new())),
-    ]).await?;
+    ])
+    .await?;
     remove_state_key("connectionId").await?;
     Ok(())
 }
@@ -700,8 +703,12 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
         }
 
-        let first = bridge_auth::ensure_integration_name("poke-around").await.expect("first name");
-        let second = bridge_auth::ensure_integration_name("poke-around").await.expect("cached name");
+        let first = bridge_auth::ensure_integration_name("poke-around")
+            .await
+            .expect("first name");
+        let second = bridge_auth::ensure_integration_name("poke-around")
+            .await
+            .expect("cached name");
         assert_eq!(first, second);
 
         let state_path = temp_dir.path().join("poke-around/state.json");
@@ -723,10 +730,8 @@ mod tests {
 
     #[test]
     fn oauth_recovery_restarts_when_cached_token_is_valid() {
-        let outcome = crate::bridge_auth::plan_oauth_recovery(
-            Ok("pk_cached".into()),
-            Err("skipped".into()),
-        );
+        let outcome =
+            crate::bridge_auth::plan_oauth_recovery(Ok("pk_cached".into()), Err("skipped".into()));
         assert_eq!(
             outcome,
             OAuthRecoveryOutcome::Restart {

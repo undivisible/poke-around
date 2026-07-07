@@ -57,7 +57,9 @@ async fn write_state(state: &Map<String, Value>) -> Result<()> {
         }
         std::fs::rename(&tmp_path, &path)?;
         Ok(())
-    }).await.unwrap()?;
+    })
+    .await
+    .unwrap()?;
     Ok(())
 }
 
@@ -79,7 +81,8 @@ pub(crate) async fn record_connection(connection_id: &str) -> Result<()> {
     patch_state([
         ("connectionId", Value::String(connection_id.to_string())),
         ("connectionHistory", Value::Array(history)),
-    ]).await
+    ])
+    .await
 }
 
 pub(crate) fn log_status(message: &str) {
