@@ -77,8 +77,9 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
     let dir = config::agents_dir()?;
     std::fs::create_dir_all(&dir)?;
 
-    let base_url = std::env::var("POKE_AROUND_AGENT_BASE_URL")
-        .unwrap_or_else(|_| "https://raw.githubusercontent.com/f/poke-gate/main/examples/agents".to_string());
+    let base_url = std::env::var("POKE_AROUND_AGENT_BASE_URL").unwrap_or_else(|_| {
+        "https://raw.githubusercontent.com/f/poke-gate/main/examples/agents".to_string()
+    });
     let url = format!("{base_url}/{name}.js");
 
     let response = reqwest::blocking::get(&url)
@@ -90,7 +91,8 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
         )));
     }
     let path = dir.join(format!("{name}.js"));
-    let bytes = response.bytes()
+    let bytes = response
+        .bytes()
         .map_err(|e| Error::msg(format!("failed to read agent body: {}", e)))?;
     std::fs::write(&path, bytes)?;
     Ok(path)
@@ -247,7 +249,7 @@ mod tests {
         }
     }
 
-    use httptest::{Server, Expectation, matchers::*, responders::*};
+    use httptest::{Expectation, Server, matchers::*, responders::*};
 
     #[test]
     #[serial]
@@ -263,7 +265,10 @@ mod tests {
 
         // Set the environment variable to point to our local mock server
         unsafe {
-            std::env::set_var("POKE_AROUND_AGENT_BASE_URL", server.url_str("/").trim_end_matches('/'));
+            std::env::set_var(
+                "POKE_AROUND_AGENT_BASE_URL",
+                server.url_str("/").trim_end_matches('/'),
+            );
         }
 
         let agent_name = "test-agent";
@@ -287,7 +292,10 @@ mod tests {
         );
 
         unsafe {
-            std::env::set_var("POKE_AROUND_AGENT_BASE_URL", server.url_str("/").trim_end_matches('/'));
+            std::env::set_var(
+                "POKE_AROUND_AGENT_BASE_URL",
+                server.url_str("/").trim_end_matches('/'),
+            );
         }
 
         let agent_name = "fail-agent";
