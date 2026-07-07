@@ -1,14 +1,10 @@
-use crate::bridge_auth::{
-    self, OAuthRecoveryOutcome, ensure_auth, make_poke, recover_from_oauth_required,
-};
-use crate::bridge_state::{
-    log_status, patch_state, read_state, record_connection, remove_state_key,
-};
 use crate::{Error, Result};
+use crate::bridge_state::{read_state, patch_state, remove_state_key, record_connection, log_status};
+use crate::bridge_auth::{self, ensure_auth, make_poke, recover_from_oauth_required, OAuthRecoveryOutcome};
 use futures::future::join_all;
 use rs_poke::{
-    CreateWebhook, FetchWithAuthOptions, Poke, TunnelEvent, TunnelOptions, TunnelRunner,
-    fetch_with_auth,
+    CreateWebhook, FetchWithAuthOptions, Poke,
+    TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
 };
 use serde_json::Value;
 use std::sync::mpsc;
@@ -428,7 +424,10 @@ async fn cleanup_stale_connections(
     if ids.is_empty() {
         return Ok(());
     }
-    log_status(&format!("Cleaning up {} old connection(s)...", ids.len()));
+    log_status(&format!(
+        "Cleaning up {} old connection(s)...",
+        ids.len()
+    ));
     let poke = poke.clone();
     let futures = ids.into_iter().map(|id| {
         let poke = poke.clone();
@@ -724,8 +723,10 @@ mod tests {
 
     #[test]
     fn oauth_recovery_restarts_when_cached_token_is_valid() {
-        let outcome =
-            crate::bridge_auth::plan_oauth_recovery(Ok("pk_cached".into()), Err("skipped".into()));
+        let outcome = crate::bridge_auth::plan_oauth_recovery(
+            Ok("pk_cached".into()),
+            Err("skipped".into()),
+        );
         assert_eq!(
             outcome,
             OAuthRecoveryOutcome::Restart {

@@ -358,6 +358,8 @@ mod tests {
             split_command_segments("ls -l | grep 'foo' && echo 'bar'; pwd").collect::<Vec<_>>(),
             vec!["ls -l", "grep 'foo'", "echo 'bar'", "pwd"]
         );
-        assert!(split_command_segments("").collect::<Vec<_>>().is_empty());
+        assert!(
+            split_command_segments("").collect::<Vec<_>>().is_empty()
+        );
     }
 }
