@@ -76,17 +76,23 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
     }
     let dir = config::agents_dir()?;
     std::fs::create_dir_all(&dir)?;
-    let url =
-        format!("https://raw.githubusercontent.com/f/poke-gate/main/examples/agents/{name}.js");
-    let output = Command::new("curl").arg("-fsSL").arg(&url).output()?;
-    if !output.status.success() {
+
+    let base_url = std::env::var("POKE_AROUND_AGENT_BASE_URL")
+        .unwrap_or_else(|_| "https://raw.githubusercontent.com/f/poke-gate/main/examples/agents".to_string());
+    let url = format!("{base_url}/{name}.js");
+
+    let response = reqwest::blocking::get(&url)
+        .map_err(|e| Error::msg(format!("failed to fetch agent: {}", e)))?;
+    if !response.status().is_success() {
         return Err(Error::msg(format!(
-            "failed to download agent '{name}': {}",
-            String::from_utf8_lossy(&output.stderr)
+            "failed to download agent '{name}': HTTP status {}",
+            response.status()
         )));
     }
     let path = dir.join(format!("{name}.js"));
-    std::fs::write(&path, output.stdout)?;
+    let bytes = response.bytes()
+        .map_err(|e| Error::msg(format!("failed to read agent body: {}", e)))?;
+    std::fs::write(&path, bytes)?;
     Ok(path)
 }
 
@@ -156,55 +162,6 @@ mod tests {
         EnvGuard {
             _lock: lock,
             original_xdg,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    struct PathGuard {
-        original_path: Option<std::ffi::OsString>,
-        _temp_dir: tempfile::TempDir,
-    }
-
-    impl Drop for PathGuard {
-        fn drop(&mut self) {
-            unsafe {
-                if let Some(ref val) = self.original_path {
-                    std::env::set_var("PATH", val);
-                } else {
-                    std::env::remove_var("PATH");
-                }
-            }
-        }
-    }
-
-    fn setup_mock_path(curl_script: &str) -> PathGuard {
-        let original_path = std::env::var_os("PATH");
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let mock_curl = temp_dir
-            .path()
-            .join(if cfg!(windows) { "curl.bat" } else { "curl" });
-        std::fs::write(&mock_curl, curl_script).unwrap();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&mock_curl, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let mut paths = match &original_path {
-            Some(p) => std::env::split_paths(p).collect::<Vec<_>>(),
-            None => Vec::new(),
-        };
-        paths.insert(0, temp_dir.path().to_path_buf());
-        let new_path = std::env::join_paths(paths).unwrap();
-
-        unsafe {
-            std::env::set_var("PATH", new_path);
-        }
-
-        PathGuard {
-            original_path,
             _temp_dir: temp_dir,
         }
     }
@@ -290,11 +247,24 @@ mod tests {
         }
     }
 
+    use httptest::{Server, Expectation, matchers::*, responders::*};
+
     #[test]
     #[serial]
     fn test_download_agent_mocked_success() {
         let _env_guard = setup_test_env();
-        let _path_guard = setup_mock_path("#!/bin/sh\necho 'console.log(\"mocked agent\");'\n");
+
+        // Use a mock HTTP server instead of a path override
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/test-agent.js"))
+                .respond_with(status_code(200).body("console.log(\"mocked agent\");\n")),
+        );
+
+        // Set the environment variable to point to our local mock server
+        unsafe {
+            std::env::set_var("POKE_AROUND_AGENT_BASE_URL", server.url_str("/").trim_end_matches('/'));
+        }
 
         let agent_name = "test-agent";
         let path = download_agent(agent_name).unwrap();
@@ -309,7 +279,16 @@ mod tests {
     #[serial]
     fn test_download_agent_mocked_failure() {
         let _env_guard = setup_test_env();
-        let _path_guard = setup_mock_path("#!/bin/sh\necho 'curl error mock' >&2\nexit 1\n");
+
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/fail-agent.js"))
+                .respond_with(status_code(500)),
+        );
+
+        unsafe {
+            std::env::set_var("POKE_AROUND_AGENT_BASE_URL", server.url_str("/").trim_end_matches('/'));
+        }
 
         let agent_name = "fail-agent";
         let result = download_agent(agent_name);
@@ -317,6 +296,6 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("failed to download agent 'fail-agent'"));
-        assert!(err_msg.contains("curl error mock"));
+        assert!(err_msg.contains("HTTP status 500"));
     }
 }
