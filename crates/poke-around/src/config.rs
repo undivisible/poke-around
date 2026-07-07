@@ -151,6 +151,17 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_state_path() {
+        with_temp_env(|_| {
+            let state = state_path().unwrap();
+            let base = config_dir().unwrap();
+            assert_eq!(state, base.join("state.json"));
+            assert!(state.ends_with("state.json"));
+        });
+    }
+
+    #[test]
+    #[serial]
     fn test_read_write_config() {
         with_temp_env(|_| {
             // Initially reading config should return default (NotFound -> Ok(Config::default()))
