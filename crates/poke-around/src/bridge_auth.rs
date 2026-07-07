@@ -79,15 +79,15 @@ pub(crate) fn oauth_failure_hint() -> &'static str {
     ""
 }
 
-pub(crate) fn ensure_integration_name(base: &str) -> Result<String> {
-    let state = bridge_state::read_state()?;
+pub(crate) async fn ensure_integration_name(base: &str) -> Result<String> {
+    let state = bridge_state::read_state().await?;
     if let Some(name) = state.get("integrationName").and_then(Value::as_str)
         && !name.is_empty()
     {
         return Ok(name.to_string());
     }
     let name = compute_integration_name(base);
-    bridge_state::patch_state([("integrationName", Value::String(name.clone()))])?;
+    bridge_state::patch_state([("integrationName", Value::String(name.clone()))]).await?;
     Ok(name)
 }
 
