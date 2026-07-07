@@ -361,5 +361,25 @@ mod tests {
         assert!(
             split_command_segments("").collect::<Vec<_>>().is_empty()
         );
+        // Added edge cases based on current robust implementation
+        assert!(
+            split_command_segments("   ;   \n   &&   ||   ").collect::<Vec<_>>().is_empty()
+        );
+        assert_eq!(
+            split_command_segments("echo 1 && echo 2 || echo 3 ; echo 4 \n echo 5").collect::<Vec<_>>(),
+            vec!["echo 1", "echo 2", "echo 3", "echo 4", "echo 5"]
+        );
+        assert_eq!(
+            split_command_segments(";;cmd1\n\ncmd2&&cmd3||cmd4;;").collect::<Vec<_>>(),
+            vec!["cmd1", "cmd2", "cmd3", "cmd4"]
+        );
+        assert_eq!(
+            split_command_segments("ls -l ||| grep 'foo'").collect::<Vec<_>>(),
+            vec!["ls -l", "grep 'foo'"]
+        );
+        assert_eq!(
+            split_command_segments("echo 1 | echo 2 || echo 3").collect::<Vec<_>>(),
+            vec!["echo 1", "echo 2", "echo 3"]
+        );
     }
 }
