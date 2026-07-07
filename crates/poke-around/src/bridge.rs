@@ -1,10 +1,14 @@
+use crate::bridge_auth::{
+    self, OAuthRecoveryOutcome, ensure_auth, make_poke, recover_from_oauth_required,
+};
+use crate::bridge_state::{
+    log_status, patch_state, read_state, record_connection, remove_state_key,
+};
 use crate::{Error, Result};
-use crate::bridge_state::{read_state, patch_state, remove_state_key, record_connection, log_status};
-use crate::bridge_auth::{self, ensure_auth, make_poke, recover_from_oauth_required, OAuthRecoveryOutcome};
 use futures::future::join_all;
 use rs_poke::{
-    CreateWebhook, FetchWithAuthOptions, Poke,
-    TunnelEvent, TunnelOptions, TunnelRunner, fetch_with_auth,
+    CreateWebhook, FetchWithAuthOptions, Poke, TunnelEvent, TunnelOptions, TunnelRunner,
+    fetch_with_auth,
 };
 use serde_json::Value;
 use std::sync::mpsc;
@@ -121,7 +125,10 @@ async fn run_bridge(
             }
             StartTunnelResult::Success(info) => {
                 reconnect_attempt = 0;
-                record_connection(&info.connection_id)?;
+                let connection_id = info.connection_id.clone();
+                tokio::task::spawn_blocking(move || record_connection(&connection_id))
+                    .await
+                    .unwrap()?;
                 log_status(&format!(
                     "Tunnel connected ({}) -> {}",
                     info.connection_id, info.tunnel_url
@@ -374,7 +381,7 @@ async fn sleep_or_stop(
 }
 
 async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, String)> {
-    let state = read_state()?;
+    let state = tokio::task::spawn_blocking(read_state).await.unwrap()?;
     let webhook_url = state.get("webhookUrl").and_then(Value::as_str);
     let webhook_token = state.get("webhookToken").and_then(Value::as_str);
     let webhook_name = state.get("webhookName").and_then(Value::as_str);
@@ -392,12 +399,21 @@ async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, Strin
         })
         .await
         .map_err(|err| Error::msg(err.to_string()))?;
-    patch_state([
-        ("webhookUrl", Value::String(webhook.webhook_url.clone())),
-        ("webhookToken", Value::String(webhook.webhook_token.clone())),
-        ("triggerId", Value::String(webhook.trigger_id.clone())),
-        ("webhookName", Value::String(tunnel_name.to_string())),
-    ])?;
+    let webhook_url_clone = webhook.webhook_url.clone();
+    let webhook_token_clone = webhook.webhook_token.clone();
+    let trigger_id_clone = webhook.trigger_id.clone();
+    let tunnel_name_string = tunnel_name.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        patch_state([
+            ("webhookUrl", Value::String(webhook_url_clone)),
+            ("webhookToken", Value::String(webhook_token_clone)),
+            ("triggerId", Value::String(trigger_id_clone)),
+            ("webhookName", Value::String(tunnel_name_string)),
+        ])
+    })
+    .await
+    .unwrap()?;
     Ok((webhook.webhook_url, webhook.webhook_token))
 }
 
@@ -406,7 +422,7 @@ async fn cleanup_stale_connections(
     webhook_url: &str,
     webhook_token: &str,
 ) -> Result<()> {
-    let state = read_state()?;
+    let state = tokio::task::spawn_blocking(read_state).await.unwrap()?;
     let mut ids = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
@@ -424,22 +440,26 @@ async fn cleanup_stale_connections(
     if ids.is_empty() {
         return Ok(());
     }
-    log_status(&format!(
-        "Cleaning up {} old connection(s)...",
-        ids.len()
-    ));
+    log_status(&format!("Cleaning up {} old connection(s)...", ids.len()));
     let poke = poke.clone();
     let futures = ids.into_iter().map(|id| {
         let poke = poke.clone();
         async move { delete_remote_connection_with_retry(&poke, &id).await }
     });
     join_all(futures).await;
-    patch_state([
-        ("webhookUrl", Value::String(webhook_url.to_string())),
-        ("webhookToken", Value::String(webhook_token.to_string())),
-        ("connectionHistory", Value::Array(Vec::new())),
-    ])?;
-    remove_state_key("connectionId")?;
+
+    let webhook_url_string = webhook_url.to_string();
+    let webhook_token_string = webhook_token.to_string();
+    tokio::task::spawn_blocking(move || {
+        patch_state([
+            ("webhookUrl", Value::String(webhook_url_string)),
+            ("webhookToken", Value::String(webhook_token_string)),
+            ("connectionHistory", Value::Array(Vec::new())),
+        ])?;
+        remove_state_key("connectionId")
+    })
+    .await
+    .unwrap()?;
     Ok(())
 }
 
@@ -723,10 +743,8 @@ mod tests {
 
     #[test]
     fn oauth_recovery_restarts_when_cached_token_is_valid() {
-        let outcome = crate::bridge_auth::plan_oauth_recovery(
-            Ok("pk_cached".into()),
-            Err("skipped".into()),
-        );
+        let outcome =
+            crate::bridge_auth::plan_oauth_recovery(Ok("pk_cached".into()), Err("skipped".into()));
         assert_eq!(
             outcome,
             OAuthRecoveryOutcome::Restart {
