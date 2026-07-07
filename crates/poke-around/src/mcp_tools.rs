@@ -1367,6 +1367,22 @@ mod tests {
     }
 
     #[test]
+    fn tools_json_should_return_valid_json_array() {
+        let json_str = tools_json();
+        let value: serde_json::Value = serde_json::from_str(&json_str).expect("Should parse as valid JSON");
+
+        let array = value.as_array().expect("Should be a JSON array");
+        assert!(!array.is_empty(), "Tools list should not be empty");
+
+        // Check if a known tool exists
+        let has_run_command = array.iter().any(|tool| {
+            tool.get("name").and_then(|n| n.as_str()) == Some("run_command")
+        });
+
+        assert!(has_run_command, "tools_json should contain run_command tool");
+    }
+
+    #[test]
     fn execute_tool_should_propagate_io_errors_from_tool_execution() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
         let args = json!({ "path": "~/poke_around_test_nonexistent_file_12345" });
