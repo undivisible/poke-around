@@ -52,6 +52,7 @@ static TOOLS: &[ToolDef] = &[
     ToolDef { name: "see", handler: |a, s| see(a, s), approval: ApprovalCategory::Always, summary: "Capture image with snapshot" },
     ToolDef { name: "list_screens", handler: |a, _| list_screens(a), approval: ApprovalCategory::None, summary: "List screens" },
     ToolDef { name: "permissions", handler: |a, _| permissions(a), approval: ApprovalCategory::None, summary: "Check permissions" },
+    ToolDef { name: "doctor", handler: |_, _| doctor(), approval: ApprovalCategory::None, summary: "Computer-use health report" },
     ToolDef { name: "click", handler: |a, s| click(a, s), approval: ApprovalCategory::Always, summary: "Click on screen" },
     ToolDef { name: "press", handler: |a, s| press(a, s), approval: ApprovalCategory::Always, summary: "Press key" },
     ToolDef { name: "type", handler: |a, s| type_text(a, s), approval: ApprovalCategory::Always, summary: "Type text" },
@@ -433,7 +434,8 @@ fn computer_use_tools() -> Vec<Value> {
                 "properties": {
                     "mode": {"type": "string", "description": "Capture mode: screen or window"},
                     "path": {"type": "string", "description": "Optional output path"},
-                    "retina": {"type": "boolean", "description": "Capture at retina scale"}
+                    "retina": {"type": "boolean", "description": "Capture at retina scale"},
+                    "app": {"type": "string", "description": "Optional app name for window-scoped capture"}
                 }
             }
         }),
@@ -466,17 +468,24 @@ fn computer_use_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "doctor",
+            "description": "Health report for computer-use readiness (permissions, tools, capabilities).",
+            "inputSchema": {"type": "object", "properties": {}}
+        }),
+        json!({
             "name": "click",
             "description": "Click a coordinate or resolved UI element on the user's machine.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "element_id": {"type": "string", "description": "Stable element ID from see"},
+                    "index": {"type": "number", "description": "Stable snapshot element index from see"},
                     "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
                     "x": {"type": "number", "description": "Screen x coordinate"},
                     "y": {"type": "number", "description": "Screen y coordinate"},
                     "button": {"type": "string", "description": "Mouse button: left or right"},
-                    "count": {"type": "number", "description": "Click count"}
+                    "count": {"type": "number", "description": "Click count"},
+                    "background": {"type": "boolean", "description": "Prefer AX/background click without focus steal"}
                 }
             }
         }),
@@ -705,12 +714,22 @@ fn computer_use_tools() -> Vec<Value> {
 }
 
 // Tool handlers
+fn peekaboo() -> Peekaboo {
+    Peekaboo::with_config(PeekabooConfig {
+        background: true,
+        ..PeekabooConfig::default()
+    })
+}
+
 fn image(args: &Value, _state: &AppState) -> Result<Value> {
-    let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
     let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let peekaboo = Peekaboo::with_config(PeekabooConfig::default());
-    let capture = peekaboo.image(mode, path, retina)?;
+    let capture = if let Some(app) = str_arg(args, "app") {
+        peekaboo().image_app(app, path, retina)?
+    } else {
+        let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
+        peekaboo().image(mode, path, retina)?
+    };
     let metadata = json!({
         "path": capture.path,
         "mode": capture.mode,
@@ -726,14 +745,9 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
     let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
     let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let peekaboo = Peekaboo::new();
-    let capture = peekaboo.image(mode, path, retina)?;
-    let snapshot_id = rs_peekaboo::cache::new_snapshot_id();
-    let snapshot = rs_peekaboo::Snapshot {
-        snapshot_id,
-        elements: peekaboo.ui_elements(app)?,
-    };
-    rs_peekaboo::cache::save_snapshot(&snapshot)?;
+    // see() assigns stable element indices and caches the snapshot.
+    let snapshot = peekaboo().see(app, mode, path.clone(), retina)?;
+    let capture = peekaboo().image(mode, path, retina)?;
     let metadata = json!({
         "snapshot_id": snapshot.snapshot_id,
         "elements": snapshot.elements,
@@ -749,24 +763,33 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
 }
 
 fn list_screens(_args: &Value) -> Result<Value> {
-    Ok(ok_json(Peekaboo::new().list_screens()?))
+    Ok(ok_json(peekaboo().list_screens()?))
 }
 
 fn permissions(args: &Value) -> Result<Value> {
     if str_arg(args, "action") == Some("grant") {
-        Ok(ok_json(Peekaboo::new().grant_permissions()?))
+        Ok(ok_json(peekaboo().grant_permissions()?))
     } else {
-        Ok(ok_json(Peekaboo::new().permissions()))
+        Ok(ok_json(peekaboo().permissions()))
     }
+}
+
+fn doctor() -> Result<Value> {
+    Ok(ok_json(peekaboo().doctor()?))
 }
 
 fn click(args: &Value, _state: &AppState) -> Result<Value> {
     let button = str_arg(args, "button").unwrap_or("left");
     let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
-    Ok(ok_json(Peekaboo::new().click(
+    let background = args
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    Ok(ok_json(peekaboo().click_with_options(
         target_from_args(args)?,
         button,
         count,
+        background,
     )?))
 }
 
@@ -774,7 +797,7 @@ fn press(args: &Value, _state: &AppState) -> Result<Value> {
     let key = str_arg(args, "key").unwrap_or("");
     let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
     let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
-    Ok(ok_json(Peekaboo::new().press(key, count, delay_ms)?))
+    Ok(ok_json(peekaboo().press(key, count, delay_ms)?))
 }
 
 fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
@@ -783,7 +806,7 @@ fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
     let press_return = args.get("return").and_then(Value::as_bool).unwrap_or(false);
     let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
     let app = str_arg(args, "app");
-    Ok(ok_json(Peekaboo::new().type_text(
+    Ok(ok_json(peekaboo().type_text(
         text,
         clear,
         press_return,
@@ -794,7 +817,7 @@ fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
 
 fn paste(args: &Value, _state: &AppState) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().paste(text)?))
+    Ok(ok_json(peekaboo().paste(text)?))
 }
 
 fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
@@ -804,7 +827,7 @@ fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
-    Ok(ok_json(Peekaboo::new().hotkey(&parts)?))
+    Ok(ok_json(peekaboo().hotkey(&parts)?))
 }
 
 fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
@@ -817,14 +840,14 @@ fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
         let direction = if dy < 0 { Direction::Down } else { Direction::Up };
         (direction, dy.unsigned_abs().max(1) as u32)
     };
-    Ok(ok_json(Peekaboo::new().scroll(direction, amount)?))
+    Ok(ok_json(peekaboo().scroll(direction, amount)?))
 }
 
 fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
     let from = parse_point(str_arg(args, "from").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
     let to = parse_point(str_arg(args, "to").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
     let duration_ms = args.get("duration_ms").and_then(Value::as_u64).unwrap_or(250);
-    Ok(ok_json(Peekaboo::new().swipe(
+    Ok(ok_json(peekaboo().swipe(
         Target::Point(from),
         Target::Point(to),
         duration_ms,
@@ -835,7 +858,7 @@ fn drag(args: &Value, _state: &AppState) -> Result<Value> {
     let from = parse_point(str_arg(args, "from").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
     let to = parse_point(str_arg(args, "to").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
     let duration_ms = args.get("duration_ms").and_then(Value::as_u64).unwrap_or(250);
-    Ok(ok_json(Peekaboo::new().drag(
+    Ok(ok_json(peekaboo().drag(
         Target::Point(from),
         Target::Point(to),
         duration_ms,
@@ -843,17 +866,17 @@ fn drag(args: &Value, _state: &AppState) -> Result<Value> {
 }
 
 fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
-    Ok(ok_json(Peekaboo::new().move_cursor(target_from_args(args)?)?))
+    Ok(ok_json(peekaboo().move_cursor(target_from_args(args)?)?))
 }
 
 fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
     let value = str_arg(args, "value").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().set_value(query_target_from_args(args)?, value)?))
+    Ok(ok_json(peekaboo().set_value(query_target_from_args(args)?, value)?))
 }
 
 fn perform_action(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().perform_action(query_target_from_args(args)?, action)?))
+    Ok(ok_json(peekaboo().perform_action(query_target_from_args(args)?, action)?))
 }
 
 fn window(args: &Value, _state: &AppState) -> Result<Value> {
@@ -879,7 +902,7 @@ fn window(args: &Value, _state: &AppState) -> Result<Value> {
         }),
         _ => None,
     };
-    Ok(ok_json(Peekaboo::new().window(
+    Ok(ok_json(peekaboo().window(
         action,
         str_arg(args, "app"),
         str_arg(args, "title"),
@@ -890,17 +913,17 @@ fn window(args: &Value, _state: &AppState) -> Result<Value> {
 fn app(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
     if action == "list" {
-        return Ok(ok_json(Peekaboo::new().app("list", None)?));
+        return Ok(ok_json(peekaboo().app("list", None)?));
     }
     let app = str_arg(args, "app").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().app(action, Some(app))?))
+    Ok(ok_json(peekaboo().app(action, Some(app))?))
 }
 
 fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
     let target = str_arg(args, "target").unwrap_or("");
     let app = str_arg(args, "app");
     let no_focus = args.get("no_focus").and_then(Value::as_bool).unwrap_or(false);
-    Ok(ok_json(Peekaboo::new().open(target, app, no_focus)?))
+    Ok(ok_json(peekaboo().open(target, app, no_focus)?))
 }
 
 fn menu(args: &Value, _state: &AppState) -> Result<Value> {
@@ -908,26 +931,26 @@ fn menu(args: &Value, _state: &AppState) -> Result<Value> {
     let app = str_arg(args, "app").unwrap_or("");
     if matches!(action, "list" | "list-all" | "inspect") {
         let action = if action == "inspect" { "list" } else { action };
-        return Ok(ok_json(Peekaboo::new().menu(action, app, None, None)?));
+        return Ok(ok_json(peekaboo().menu(action, app, None, None)?));
     }
     let menu = str_arg(args, "menu").unwrap_or("");
     let item = str_arg(args, "item").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().menu("click", app, Some(menu), Some(item))?))
+    Ok(ok_json(peekaboo().menu("click", app, Some(menu), Some(item))?))
 }
 
 fn clipboard_read() -> Result<Value> {
-    let text = Peekaboo::new().clipboard_read()?;
+    let text = peekaboo().clipboard_read()?;
     Ok(ok_json(json!({ "text": text })))
 }
 
 fn clipboard_write(args: &Value) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().clipboard_write(text)?))
+    Ok(ok_json(peekaboo().clipboard_write(text)?))
 }
 
 fn run_file(args: &Value, state: &AppState) -> Result<Value> {
     let path = file_path_arg(args, state)?;
-    let results = Peekaboo::new().run_file(&path)?;
+    let results = peekaboo().run_file(&path)?;
     Ok(ok_json(json!(results)))
 }
 
@@ -1149,7 +1172,7 @@ fn run_agent(args: &Value) -> Result<Value> {
 fn take_screenshot(args: &Value) -> Result<Value> {
     let mode = ImageMode::Screen;
     let path = optional_output_path(args)?;
-    let capture = rs_peekaboo::Peekaboo::new().image(mode, path, true)?;
+    let capture = peekaboo().image(mode, path, true)?;
     let metadata = json!({
         "path": capture.path,
         "bytes": capture.bytes,
