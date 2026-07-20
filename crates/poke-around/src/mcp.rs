@@ -498,6 +498,12 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
 }
 
 pub(crate) fn target_from_args(args: &Value) -> Result<Target> {
+    if let Some(index) = int_arg(args, "index") {
+        return Ok(Target::Query {
+            query: format!("index={index}"),
+            snapshot: str_arg(args, "snapshot").map(str::to_string),
+        });
+    }
     if let Some(element_id) = str_arg(args, "element_id")
         .or_else(|| str_arg(args, "on"))
         .map(str::to_string)
@@ -514,6 +520,12 @@ pub(crate) fn target_from_args(args: &Value) -> Result<Target> {
 }
 
 pub(crate) fn query_target_from_args(args: &Value) -> Result<Target> {
+    if let Some(index) = int_arg(args, "index") {
+        return Ok(Target::Query {
+            query: format!("index={index}"),
+            snapshot: str_arg(args, "snapshot").map(str::to_string),
+        });
+    }
     let query = str_arg(args, "on")
         .or_else(|| str_arg(args, "element_id"))
         .unwrap_or("")

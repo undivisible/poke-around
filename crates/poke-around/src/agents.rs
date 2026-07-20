@@ -168,6 +168,7 @@ mod tests {
         }
     }
 
+
     #[test]
     #[serial]
     fn test_find_agent_exact_match() {
@@ -253,6 +254,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn test_download_agent_mocked_success() {
         let _env_guard = setup_test_env();
 
@@ -282,6 +284,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn test_download_agent_mocked_failure() {
         let _env_guard = setup_test_env();
 

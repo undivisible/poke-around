@@ -30,6 +30,7 @@ fn tool_schema_includes_poke_gate_and_poke_around_tools() {
             "see",
             "list_screens",
             "permissions",
+            "doctor",
             "click",
             "press",
             "type",

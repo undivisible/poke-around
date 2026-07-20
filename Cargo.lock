@@ -1371,9 +1371,9 @@ dependencies = [
 
 [[package]]
 name = "rs_peekaboo"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "529ded5ade3efe4bf4cd8a92fd7b6b39393250f6ffefe988d2de5141fbbe1d1d"
+checksum = "cb3b6cee06958658cf293dba931ab36fea624db8315ac5011f5521db660272c0"
 dependencies = [
  "clap",
  "clap_complete",
