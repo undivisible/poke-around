@@ -160,11 +160,13 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     struct PathGuard {
         original_path: Option<std::ffi::OsString>,
         _temp_dir: tempfile::TempDir,
     }
 
+    #[cfg(not(windows))]
     impl Drop for PathGuard {
         fn drop(&mut self) {
             unsafe {
@@ -177,6 +179,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     fn setup_mock_path(curl_script: &str) -> PathGuard {
         let original_path = std::env::var_os("PATH");
         let temp_dir = tempfile::tempdir().unwrap();
