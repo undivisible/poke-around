@@ -292,6 +292,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn test_download_agent_mocked_success() {
         let _env_guard = setup_test_env();
         let _path_guard = setup_mock_path("#!/bin/sh\necho 'console.log(\"mocked agent\");'\n");
@@ -307,6 +308,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn test_download_agent_mocked_failure() {
         let _env_guard = setup_test_env();
         let _path_guard = setup_mock_path("#!/bin/sh\necho 'curl error mock' >&2\nexit 1\n");
