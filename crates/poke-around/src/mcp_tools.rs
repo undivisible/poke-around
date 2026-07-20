@@ -1,22 +1,19 @@
-
 use serde_json::{Value, json};
 use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
-use crate::mcp::{
-    str_arg, int_arg, ok_text, ok_json, ok_json_with_image, error_result,
-    path_arg, file_path_arg, optional_output_path, target_from_args,
-    query_target_from_args, block_private_urls, expand_path,
-    canonicalize_path, ensure_path_allowed,
-};
 use crate::mcp::AppState;
+use crate::mcp::{
+    block_private_urls, canonicalize_path, ensure_path_allowed, error_result, expand_path,
+    file_path_arg, int_arg, ok_json, ok_json_with_image, ok_text, optional_output_path, path_arg,
+    query_target_from_args, str_arg, target_from_args,
+};
 use crate::{Error, Result};
 use rs_peekaboo::automation::{Target, parse_point};
+use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point};
+#[cfg(not(target_os = "windows"))]
 use shlex::split as shlex_split;
-use rs_peekaboo::{
-    Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point,
-};
 
 // ponytail: single registry for all tools. Adding a tool = 1 entry, not 5 scattered lists.
 #[derive(Clone, Copy)]
@@ -35,43 +32,234 @@ pub(crate) enum ApprovalCategory {
 }
 
 static TOOLS: &[ToolDef] = &[
-    ToolDef { name: "run_command", handler: |a, s| run_command(a, s), approval: ApprovalCategory::DestructiveOnly, summary: "Run command" },
-    ToolDef { name: "network_speed", handler: |a, _| network_speed(a), approval: ApprovalCategory::None, summary: "Test network speed" },
-    ToolDef { name: "read_file", handler: |a, s| read_file(a, s), approval: ApprovalCategory::None, summary: "Read file" },
-    ToolDef { name: "write_file", handler: |a, s| write_file(a, s), approval: ApprovalCategory::Always, summary: "Write file" },
-    ToolDef { name: "list_directory", handler: |a, s| list_directory(a, s), approval: ApprovalCategory::None, summary: "List directory" },
-    ToolDef { name: "system_info", handler: |_, s| system_info(s), approval: ApprovalCategory::None, summary: "Get system info" },
-    ToolDef { name: "read_image", handler: |a, s| read_image(a, s), approval: ApprovalCategory::None, summary: "Read image file" },
-    ToolDef { name: "run_agent", handler: |a, _| run_agent(a), approval: ApprovalCategory::None, summary: "Run agent" },
-    ToolDef { name: "take_screenshot", handler: |a, _| take_screenshot(a), approval: ApprovalCategory::Always, summary: "Take screenshot" },
-    ToolDef { name: "edit_file", handler: |a, s| edit_file(a, s), approval: ApprovalCategory::Always, summary: "Edit file" },
-    ToolDef { name: "web_fetch", handler: |a, _| web_fetch(a), approval: ApprovalCategory::None, summary: "Fetch URL" },
-    ToolDef { name: "http_request", handler: |a, _| http_request(a), approval: ApprovalCategory::None, summary: "HTTP request" },
-    ToolDef { name: "delete_file", handler: |a, s| delete_file(a, s), approval: ApprovalCategory::Always, summary: "Delete file" },
-    ToolDef { name: "image", handler: |a, s| image(a, s), approval: ApprovalCategory::Always, summary: "Capture screen image" },
-    ToolDef { name: "see", handler: |a, s| see(a, s), approval: ApprovalCategory::Always, summary: "Capture image with snapshot" },
-    ToolDef { name: "list_screens", handler: |a, _| list_screens(a), approval: ApprovalCategory::None, summary: "List screens" },
-    ToolDef { name: "permissions", handler: |a, _| permissions(a), approval: ApprovalCategory::None, summary: "Check permissions" },
-    ToolDef { name: "click", handler: |a, s| click(a, s), approval: ApprovalCategory::Always, summary: "Click on screen" },
-    ToolDef { name: "press", handler: |a, s| press(a, s), approval: ApprovalCategory::Always, summary: "Press key" },
-    ToolDef { name: "type", handler: |a, s| type_text(a, s), approval: ApprovalCategory::Always, summary: "Type text" },
-    ToolDef { name: "paste", handler: |a, s| paste(a, s), approval: ApprovalCategory::Always, summary: "Paste text" },
-    ToolDef { name: "hotkey", handler: |a, s| hotkey(a, s), approval: ApprovalCategory::Always, summary: "Press hotkey" },
-    ToolDef { name: "scroll", handler: |a, s| scroll(a, s), approval: ApprovalCategory::Always, summary: "Scroll screen" },
-    ToolDef { name: "swipe", handler: |a, s| swipe(a, s), approval: ApprovalCategory::Always, summary: "Swipe on screen" },
-    ToolDef { name: "drag", handler: |a, s| drag(a, s), approval: ApprovalCategory::Always, summary: "Drag on screen" },
-    ToolDef { name: "move", handler: |a, s| move_pointer(a, s), approval: ApprovalCategory::Always, summary: "Move pointer" },
-    ToolDef { name: "set_value", handler: |a, s| set_value(a, s), approval: ApprovalCategory::Always, summary: "Set UI element value" },
-    ToolDef { name: "perform_action", handler: |a, s| perform_action(a, s), approval: ApprovalCategory::Always, summary: "Perform UI action" },
-    ToolDef { name: "window", handler: |a, s| window(a, s), approval: ApprovalCategory::Always, summary: "Manage window" },
-    ToolDef { name: "app", handler: |a, s| app(a, s), approval: ApprovalCategory::Always, summary: "Manage app" },
-    ToolDef { name: "open", handler: |a, s| open_target(a, s), approval: ApprovalCategory::Always, summary: "Open target" },
-    ToolDef { name: "menu", handler: |a, s| menu(a, s), approval: ApprovalCategory::Always, summary: "Click menu item" },
-    ToolDef { name: "clipboard_read", handler: |_, _| clipboard_read(), approval: ApprovalCategory::None, summary: "Read clipboard" },
-    ToolDef { name: "clipboard_write", handler: |a, _| clipboard_write(a), approval: ApprovalCategory::Always, summary: "Write clipboard" },
-    ToolDef { name: "run", handler: |a, s| run_file(a, s), approval: ApprovalCategory::Always, summary: "Run automation script" },
-    ToolDef { name: "sleep", handler: |a, _| sleep_cmd(a), approval: ApprovalCategory::None, summary: "Sleep" },
-    ToolDef { name: "clean", handler: |a, s| clean(a, s), approval: ApprovalCategory::Always, summary: "Clean snapshots" },
+    ToolDef {
+        name: "run_command",
+        handler: |a, s| run_command(a, s),
+        approval: ApprovalCategory::DestructiveOnly,
+        summary: "Run command",
+    },
+    ToolDef {
+        name: "network_speed",
+        handler: |a, _| network_speed(a),
+        approval: ApprovalCategory::None,
+        summary: "Test network speed",
+    },
+    ToolDef {
+        name: "read_file",
+        handler: |a, s| read_file(a, s),
+        approval: ApprovalCategory::None,
+        summary: "Read file",
+    },
+    ToolDef {
+        name: "write_file",
+        handler: |a, s| write_file(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Write file",
+    },
+    ToolDef {
+        name: "list_directory",
+        handler: |a, s| list_directory(a, s),
+        approval: ApprovalCategory::None,
+        summary: "List directory",
+    },
+    ToolDef {
+        name: "system_info",
+        handler: |_, s| system_info(s),
+        approval: ApprovalCategory::None,
+        summary: "Get system info",
+    },
+    ToolDef {
+        name: "read_image",
+        handler: |a, s| read_image(a, s),
+        approval: ApprovalCategory::None,
+        summary: "Read image file",
+    },
+    ToolDef {
+        name: "run_agent",
+        handler: |a, _| run_agent(a),
+        approval: ApprovalCategory::None,
+        summary: "Run agent",
+    },
+    ToolDef {
+        name: "take_screenshot",
+        handler: |a, _| take_screenshot(a),
+        approval: ApprovalCategory::Always,
+        summary: "Take screenshot",
+    },
+    ToolDef {
+        name: "edit_file",
+        handler: |a, s| edit_file(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Edit file",
+    },
+    ToolDef {
+        name: "web_fetch",
+        handler: |a, _| web_fetch(a),
+        approval: ApprovalCategory::None,
+        summary: "Fetch URL",
+    },
+    ToolDef {
+        name: "http_request",
+        handler: |a, _| http_request(a),
+        approval: ApprovalCategory::None,
+        summary: "HTTP request",
+    },
+    ToolDef {
+        name: "delete_file",
+        handler: |a, s| delete_file(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Delete file",
+    },
+    ToolDef {
+        name: "image",
+        handler: |a, s| image(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Capture screen image",
+    },
+    ToolDef {
+        name: "see",
+        handler: |a, s| see(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Capture image with snapshot",
+    },
+    ToolDef {
+        name: "list_screens",
+        handler: |a, _| list_screens(a),
+        approval: ApprovalCategory::None,
+        summary: "List screens",
+    },
+    ToolDef {
+        name: "permissions",
+        handler: |a, _| permissions(a),
+        approval: ApprovalCategory::None,
+        summary: "Check permissions",
+    },
+    ToolDef {
+        name: "doctor",
+        handler: |_, _| doctor(),
+        approval: ApprovalCategory::None,
+        summary: "Computer-use health report",
+    },
+    ToolDef {
+        name: "click",
+        handler: |a, s| click(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Click on screen",
+    },
+    ToolDef {
+        name: "press",
+        handler: |a, s| press(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Press key",
+    },
+    ToolDef {
+        name: "type",
+        handler: |a, s| type_text(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Type text",
+    },
+    ToolDef {
+        name: "paste",
+        handler: |a, s| paste(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Paste text",
+    },
+    ToolDef {
+        name: "hotkey",
+        handler: |a, s| hotkey(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Press hotkey",
+    },
+    ToolDef {
+        name: "scroll",
+        handler: |a, s| scroll(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Scroll screen",
+    },
+    ToolDef {
+        name: "swipe",
+        handler: |a, s| swipe(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Swipe on screen",
+    },
+    ToolDef {
+        name: "drag",
+        handler: |a, s| drag(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Drag on screen",
+    },
+    ToolDef {
+        name: "move",
+        handler: |a, s| move_pointer(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Move pointer",
+    },
+    ToolDef {
+        name: "set_value",
+        handler: |a, s| set_value(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Set UI element value",
+    },
+    ToolDef {
+        name: "perform_action",
+        handler: |a, s| perform_action(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Perform UI action",
+    },
+    ToolDef {
+        name: "window",
+        handler: |a, s| window(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Manage window",
+    },
+    ToolDef {
+        name: "app",
+        handler: |a, s| app(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Manage app",
+    },
+    ToolDef {
+        name: "open",
+        handler: |a, s| open_target(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Open target",
+    },
+    ToolDef {
+        name: "menu",
+        handler: |a, s| menu(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Click menu item",
+    },
+    ToolDef {
+        name: "clipboard_read",
+        handler: |_, _| clipboard_read(),
+        approval: ApprovalCategory::None,
+        summary: "Read clipboard",
+    },
+    ToolDef {
+        name: "clipboard_write",
+        handler: |a, _| clipboard_write(a),
+        approval: ApprovalCategory::Always,
+        summary: "Write clipboard",
+    },
+    ToolDef {
+        name: "run",
+        handler: |a, s| run_file(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Run automation script",
+    },
+    ToolDef {
+        name: "sleep",
+        handler: |a, _| sleep_cmd(a),
+        approval: ApprovalCategory::None,
+        summary: "Sleep",
+    },
+    ToolDef {
+        name: "clean",
+        handler: |a, s| clean(a, s),
+        approval: ApprovalCategory::Always,
+        summary: "Clean snapshots",
+    },
 ];
 
 pub fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value> {
@@ -91,7 +279,10 @@ pub(crate) fn tool_summary(tool_name: &str, args: &Value) -> String {
         "write_file" => format!("Write file: {}", str_arg(args, "path").unwrap_or("?")),
         "edit_file" => format!("Edit file: {}", str_arg(args, "path").unwrap_or("?")),
         "delete_file" => format!("Delete: {}", str_arg(args, "path").unwrap_or("?")),
-        _ => find_tool(tool_name).map(|t| t.summary).unwrap_or("Take screenshot").to_string(),
+        _ => find_tool(tool_name)
+            .map(|t| t.summary)
+            .unwrap_or("Take screenshot")
+            .to_string(),
     }
 }
 
@@ -433,7 +624,8 @@ fn computer_use_tools() -> Vec<Value> {
                 "properties": {
                     "mode": {"type": "string", "description": "Capture mode: screen or window"},
                     "path": {"type": "string", "description": "Optional output path"},
-                    "retina": {"type": "boolean", "description": "Capture at retina scale"}
+                    "retina": {"type": "boolean", "description": "Capture at retina scale"},
+                    "app": {"type": "string", "description": "Optional app name for window-scoped capture"}
                 }
             }
         }),
@@ -466,17 +658,24 @@ fn computer_use_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "doctor",
+            "description": "Health report for computer-use readiness (permissions, tools, capabilities).",
+            "inputSchema": {"type": "object", "properties": {}}
+        }),
+        json!({
             "name": "click",
             "description": "Click a coordinate or resolved UI element on the user's machine.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "element_id": {"type": "string", "description": "Stable element ID from see"},
+                    "index": {"type": "number", "description": "Stable snapshot element index from see"},
                     "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
                     "x": {"type": "number", "description": "Screen x coordinate"},
                     "y": {"type": "number", "description": "Screen y coordinate"},
                     "button": {"type": "string", "description": "Mouse button: left or right"},
-                    "count": {"type": "number", "description": "Click count"}
+                    "count": {"type": "number", "description": "Click count"},
+                    "background": {"type": "boolean", "description": "Prefer AX/background click without focus steal"}
                 }
             }
         }),
@@ -705,12 +904,22 @@ fn computer_use_tools() -> Vec<Value> {
 }
 
 // Tool handlers
+fn peekaboo() -> Peekaboo {
+    Peekaboo::with_config(PeekabooConfig {
+        background: true,
+        ..PeekabooConfig::default()
+    })
+}
+
 fn image(args: &Value, _state: &AppState) -> Result<Value> {
-    let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
     let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let peekaboo = Peekaboo::with_config(PeekabooConfig::default());
-    let capture = peekaboo.image(mode, path, retina)?;
+    let capture = if let Some(app) = str_arg(args, "app") {
+        peekaboo().image_app(app, path, retina)?
+    } else {
+        let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
+        peekaboo().image(mode, path, retina)?
+    };
     let metadata = json!({
         "path": capture.path,
         "mode": capture.mode,
@@ -726,14 +935,9 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
     let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
     let path = optional_output_path(args)?;
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let peekaboo = Peekaboo::new();
-    let capture = peekaboo.image(mode, path, retina)?;
-    let snapshot_id = rs_peekaboo::cache::new_snapshot_id();
-    let snapshot = rs_peekaboo::Snapshot {
-        snapshot_id,
-        elements: peekaboo.ui_elements(app)?,
-    };
-    rs_peekaboo::cache::save_snapshot(&snapshot)?;
+    // see() assigns stable element indices and caches the snapshot.
+    let snapshot = peekaboo().see(app, mode, path.clone(), retina)?;
+    let capture = peekaboo().image(mode, path, retina)?;
     let metadata = json!({
         "snapshot_id": snapshot.snapshot_id,
         "elements": snapshot.elements,
@@ -749,24 +953,33 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
 }
 
 fn list_screens(_args: &Value) -> Result<Value> {
-    Ok(ok_json(Peekaboo::new().list_screens()?))
+    Ok(ok_json(peekaboo().list_screens()?))
 }
 
 fn permissions(args: &Value) -> Result<Value> {
     if str_arg(args, "action") == Some("grant") {
-        Ok(ok_json(Peekaboo::new().grant_permissions()?))
+        Ok(ok_json(peekaboo().grant_permissions()?))
     } else {
-        Ok(ok_json(Peekaboo::new().permissions()))
+        Ok(ok_json(peekaboo().permissions()))
     }
+}
+
+fn doctor() -> Result<Value> {
+    Ok(ok_json(peekaboo().doctor()?))
 }
 
 fn click(args: &Value, _state: &AppState) -> Result<Value> {
     let button = str_arg(args, "button").unwrap_or("left");
     let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
-    Ok(ok_json(Peekaboo::new().click(
+    let background = args
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    Ok(ok_json(peekaboo().click_with_options(
         target_from_args(args)?,
         button,
         count,
+        background,
     )?))
 }
 
@@ -774,7 +987,7 @@ fn press(args: &Value, _state: &AppState) -> Result<Value> {
     let key = str_arg(args, "key").unwrap_or("");
     let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
     let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
-    Ok(ok_json(Peekaboo::new().press(key, count, delay_ms)?))
+    Ok(ok_json(peekaboo().press(key, count, delay_ms)?))
 }
 
 fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
@@ -783,7 +996,7 @@ fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
     let press_return = args.get("return").and_then(Value::as_bool).unwrap_or(false);
     let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
     let app = str_arg(args, "app");
-    Ok(ok_json(Peekaboo::new().type_text(
+    Ok(ok_json(peekaboo().type_text(
         text,
         clear,
         press_return,
@@ -794,7 +1007,7 @@ fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
 
 fn paste(args: &Value, _state: &AppState) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().paste(text)?))
+    Ok(ok_json(peekaboo().paste(text)?))
 }
 
 fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
@@ -804,27 +1017,38 @@ fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
-    Ok(ok_json(Peekaboo::new().hotkey(&parts)?))
+    Ok(ok_json(peekaboo().hotkey(&parts)?))
 }
 
 fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
     let dx = int_arg(args, "dx").unwrap_or(0);
     let dy = int_arg(args, "dy").unwrap_or(0);
     let (direction, amount) = if dx != 0 {
-        let direction = if dx < 0 { Direction::Left } else { Direction::Right };
+        let direction = if dx < 0 {
+            Direction::Left
+        } else {
+            Direction::Right
+        };
         (direction, dx.unsigned_abs().max(1) as u32)
     } else {
-        let direction = if dy < 0 { Direction::Down } else { Direction::Up };
+        let direction = if dy < 0 {
+            Direction::Down
+        } else {
+            Direction::Up
+        };
         (direction, dy.unsigned_abs().max(1) as u32)
     };
-    Ok(ok_json(Peekaboo::new().scroll(direction, amount)?))
+    Ok(ok_json(peekaboo().scroll(direction, amount)?))
 }
 
 fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
     let from = parse_point(str_arg(args, "from").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
     let to = parse_point(str_arg(args, "to").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
-    let duration_ms = args.get("duration_ms").and_then(Value::as_u64).unwrap_or(250);
-    Ok(ok_json(Peekaboo::new().swipe(
+    let duration_ms = args
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(250);
+    Ok(ok_json(peekaboo().swipe(
         Target::Point(from),
         Target::Point(to),
         duration_ms,
@@ -834,8 +1058,11 @@ fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
 fn drag(args: &Value, _state: &AppState) -> Result<Value> {
     let from = parse_point(str_arg(args, "from").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
     let to = parse_point(str_arg(args, "to").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
-    let duration_ms = args.get("duration_ms").and_then(Value::as_u64).unwrap_or(250);
-    Ok(ok_json(Peekaboo::new().drag(
+    let duration_ms = args
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(250);
+    Ok(ok_json(peekaboo().drag(
         Target::Point(from),
         Target::Point(to),
         duration_ms,
@@ -843,17 +1070,21 @@ fn drag(args: &Value, _state: &AppState) -> Result<Value> {
 }
 
 fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
-    Ok(ok_json(Peekaboo::new().move_cursor(target_from_args(args)?)?))
+    Ok(ok_json(peekaboo().move_cursor(target_from_args(args)?)?))
 }
 
 fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
     let value = str_arg(args, "value").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().set_value(query_target_from_args(args)?, value)?))
+    Ok(ok_json(
+        peekaboo().set_value(query_target_from_args(args)?, value)?,
+    ))
 }
 
 fn perform_action(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().perform_action(query_target_from_args(args)?, action)?))
+    Ok(ok_json(
+        peekaboo().perform_action(query_target_from_args(args)?, action)?,
+    ))
 }
 
 fn window(args: &Value, _state: &AppState) -> Result<Value> {
@@ -879,7 +1110,7 @@ fn window(args: &Value, _state: &AppState) -> Result<Value> {
         }),
         _ => None,
     };
-    Ok(ok_json(Peekaboo::new().window(
+    Ok(ok_json(peekaboo().window(
         action,
         str_arg(args, "app"),
         str_arg(args, "title"),
@@ -890,17 +1121,20 @@ fn window(args: &Value, _state: &AppState) -> Result<Value> {
 fn app(args: &Value, _state: &AppState) -> Result<Value> {
     let action = str_arg(args, "action").unwrap_or("");
     if action == "list" {
-        return Ok(ok_json(Peekaboo::new().app("list", None)?));
+        return Ok(ok_json(peekaboo().app("list", None)?));
     }
     let app = str_arg(args, "app").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().app(action, Some(app))?))
+    Ok(ok_json(peekaboo().app(action, Some(app))?))
 }
 
 fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
     let target = str_arg(args, "target").unwrap_or("");
     let app = str_arg(args, "app");
-    let no_focus = args.get("no_focus").and_then(Value::as_bool).unwrap_or(false);
-    Ok(ok_json(Peekaboo::new().open(target, app, no_focus)?))
+    let no_focus = args
+        .get("no_focus")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(ok_json(peekaboo().open(target, app, no_focus)?))
 }
 
 fn menu(args: &Value, _state: &AppState) -> Result<Value> {
@@ -908,26 +1142,31 @@ fn menu(args: &Value, _state: &AppState) -> Result<Value> {
     let app = str_arg(args, "app").unwrap_or("");
     if matches!(action, "list" | "list-all" | "inspect") {
         let action = if action == "inspect" { "list" } else { action };
-        return Ok(ok_json(Peekaboo::new().menu(action, app, None, None)?));
+        return Ok(ok_json(peekaboo().menu(action, app, None, None)?));
     }
     let menu = str_arg(args, "menu").unwrap_or("");
     let item = str_arg(args, "item").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().menu("click", app, Some(menu), Some(item))?))
+    Ok(ok_json(peekaboo().menu(
+        "click",
+        app,
+        Some(menu),
+        Some(item),
+    )?))
 }
 
 fn clipboard_read() -> Result<Value> {
-    let text = Peekaboo::new().clipboard_read()?;
+    let text = peekaboo().clipboard_read()?;
     Ok(ok_json(json!({ "text": text })))
 }
 
 fn clipboard_write(args: &Value) -> Result<Value> {
     let text = str_arg(args, "text").unwrap_or("");
-    Ok(ok_json(Peekaboo::new().clipboard_write(text)?))
+    Ok(ok_json(peekaboo().clipboard_write(text)?))
 }
 
 fn run_file(args: &Value, state: &AppState) -> Result<Value> {
     let path = file_path_arg(args, state)?;
-    let results = Peekaboo::new().run_file(&path)?;
+    let results = peekaboo().run_file(&path)?;
     Ok(ok_json(json!(results)))
 }
 
@@ -939,7 +1178,10 @@ fn sleep_cmd(args: &Value) -> Result<Value> {
 }
 
 fn clean(args: &Value, _state: &AppState) -> Result<Value> {
-    let all = args.get("all_snapshots").and_then(Value::as_bool).unwrap_or(false);
+    let all = args
+        .get("all_snapshots")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let snapshot = str_arg(args, "snapshot");
     let removed = rs_peekaboo::cache::clean_snapshots(all, snapshot)?;
     Ok(ok_json(json!({ "removed": removed })))
@@ -949,17 +1191,34 @@ fn network_speed(args: &Value) -> Result<Value> {
     let tests = args.get("tests").and_then(Value::as_str).unwrap_or("both");
     let mut result = serde_json::Map::new();
     if matches!(tests, "download" | "both") {
-        result.insert("download_mbps".to_string(), json!(measure_curl_speed(&[
-            "-o", "/dev/null", "-sS", "-w", "%{speed_download}",
-            "https://speed.cloudflare.com/__down?bytes=10000000",
-        ])?));
+        result.insert(
+            "download_mbps".to_string(),
+            json!(measure_curl_speed(&[
+                "-o",
+                "/dev/null",
+                "-sS",
+                "-w",
+                "%{speed_download}",
+                "https://speed.cloudflare.com/__down?bytes=10000000",
+            ])?),
+        );
     }
     if matches!(tests, "upload" | "both") {
-        result.insert("upload_mbps".to_string(), json!(measure_curl_speed(&[
-            "-o", "/dev/null", "-sS", "-w", "%{speed_upload}", "-X", "POST",
-            "--data-binary", "poke-around-speed-test",
-            "https://speed.cloudflare.com/__up",
-        ])?));
+        result.insert(
+            "upload_mbps".to_string(),
+            json!(measure_curl_speed(&[
+                "-o",
+                "/dev/null",
+                "-sS",
+                "-w",
+                "%{speed_upload}",
+                "-X",
+                "POST",
+                "--data-binary",
+                "poke-around-speed-test",
+                "https://speed.cloudflare.com/__up",
+            ])?),
+        );
     }
     Ok(ok_json(Value::Object(result)))
 }
@@ -987,9 +1246,11 @@ fn run_command(args: &Value, state: &AppState) -> Result<Value> {
         state.inner.home.clone()
     };
     #[cfg(target_os = "windows")]
-    let parsed_args = windows_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
+    let parsed_args =
+        windows_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
     #[cfg(not(target_os = "windows"))]
-    let parsed_args = shlex_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
+    let parsed_args =
+        shlex_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
     if parsed_args.is_empty() {
         return Err(Error::msg("command is empty after parsing"));
     }
@@ -1022,11 +1283,11 @@ fn windows_split(s: &str) -> Option<Vec<String>> {
         }
         match c {
             '\\' => {
-                if let Some(&next_c) = chars.peek() {
-                    if next_c == '"' || next_c == '\'' {
-                        escape_next = true;
-                        continue;
-                    }
+                if let Some(&next_c) = chars.peek()
+                    && (next_c == '"' || next_c == '\'')
+                {
+                    escape_next = true;
+                    continue;
                 }
                 current_arg.push(c);
             }
@@ -1091,7 +1352,9 @@ fn command_output(command: &str, args: &[&str]) -> Option<String> {
 
 fn system_memory_bytes() -> Option<u64> {
     if cfg!(target_os = "macos") {
-        command_output("sysctl", &["-n", "hw.memsize"])?.parse().ok()
+        command_output("sysctl", &["-n", "hw.memsize"])?
+            .parse()
+            .ok()
     } else if cfg!(target_os = "linux") {
         let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
         for line in meminfo.lines() {
@@ -1120,7 +1383,11 @@ fn system_info(state: &AppState) -> Result<Value> {
 
 fn read_image(args: &Value, state: &AppState) -> Result<Value> {
     let path = path_arg(args, state)?;
-    let mime = match path.extension().and_then(|value| value.to_str()).unwrap_or("") {
+    let mime = match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -1149,7 +1416,7 @@ fn run_agent(args: &Value) -> Result<Value> {
 fn take_screenshot(args: &Value) -> Result<Value> {
     let mode = ImageMode::Screen;
     let path = optional_output_path(args)?;
-    let capture = rs_peekaboo::Peekaboo::new().image(mode, path, true)?;
+    let capture = peekaboo().image(mode, path, true)?;
     let metadata = json!({
         "path": capture.path,
         "bytes": capture.bytes,
@@ -1178,8 +1445,15 @@ fn web_fetch(args: &Value) -> Result<Value> {
     if let Err(err) = block_private_urls(url) {
         return Ok(error_result(err.to_string()));
     }
-    let max_chars = args.get("max_chars").and_then(Value::as_u64).unwrap_or(20000) as usize;
-    let output = Command::new("curl").arg("-fsSL").arg("--").arg(url).output()?;
+    let max_chars = args
+        .get("max_chars")
+        .and_then(Value::as_u64)
+        .unwrap_or(20000) as usize;
+    let output = Command::new("curl")
+        .arg("-fsSL")
+        .arg("--")
+        .arg(url)
+        .output()?;
     if !output.status.success() {
         return Ok(error_result(String::from_utf8_lossy(&output.stderr)));
     }
@@ -1213,7 +1487,10 @@ fn http_request(args: &Value) -> Result<Value> {
 
     if let Some(headers) = args.get("headers").and_then(Value::as_object) {
         for (name, value) in headers {
-            let val_str = value.as_str().map(|s| s.to_string()).unwrap_or_else(|| value.to_string());
+            let val_str = value
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| value.to_string());
             request = request.header(name, val_str);
         }
     }
@@ -1246,7 +1523,10 @@ fn http_request(args: &Value) -> Result<Value> {
 
 fn delete_file(args: &Value, state: &AppState) -> Result<Value> {
     let path = path_arg(args, state)?;
-    let recursive = args.get("recursive").and_then(Value::as_bool).unwrap_or(false);
+    let recursive = args
+        .get("recursive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let metadata = fs::metadata(&path)?;
     if metadata.is_dir() {
         if recursive {
@@ -1303,10 +1583,8 @@ mod tests {
     fn image_with_args_should_return_mcp_image_content() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
 
-        let path = std::env::temp_dir().join(format!(
-            "poke-around-test-image-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("poke-around-test-image-{}.png", std::process::id()));
         let response = image(
             &json!({ "mode": "screen", "path": path, "retina": false }),
             &state,
@@ -1337,10 +1615,8 @@ mod tests {
 
     #[test]
     fn read_image_should_return_mcp_image_content() {
-        let path = std::env::temp_dir().join(format!(
-            "poke-around-read-image-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
         fs::write(&path, [1_u8, 2, 3, 4]).unwrap();
         let state = AppState::new(PermissionMode::Full, false).unwrap();
 

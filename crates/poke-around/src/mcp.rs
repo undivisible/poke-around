@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 // used by optional_output_path
-use rs_peekaboo::automation::validate_output_path;
-use rs_peekaboo::{ImageCapture, Point};
 #[cfg(test)]
 use rs_peekaboo::ImageMode;
 use rs_peekaboo::automation::Target;
+use rs_peekaboo::automation::validate_output_path;
+use rs_peekaboo::{ImageCapture, Point};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -67,22 +67,39 @@ impl AppState {
         }
     }
 
-    pub(crate) fn approvals_lock(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, Approval>>> {
-        self.inner.approvals.lock().map_err(|_| Error::msg("approvals lock poisoned"))
+    pub(crate) fn approvals_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<String, Approval>>> {
+        self.inner
+            .approvals
+            .lock()
+            .map_err(|_| Error::msg("approvals lock poisoned"))
     }
 
     pub(crate) fn auto_approve_lock(&self) -> Result<std::sync::MutexGuard<'_, HashSet<String>>> {
-        self.inner.auto_approve.lock().map_err(|_| Error::msg("auto approve lock poisoned"))
+        self.inner
+            .auto_approve
+            .lock()
+            .map_err(|_| Error::msg("auto approve lock poisoned"))
     }
 
-    pub(crate) fn session_commands_lock(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, HashSet<String>>>> {
-        self.inner.session_approved_commands.lock().map_err(|_| Error::msg("session command lock poisoned"))
+    pub(crate) fn session_commands_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<String, HashSet<String>>>> {
+        self.inner
+            .session_approved_commands
+            .lock()
+            .map_err(|_| Error::msg("session command lock poisoned"))
     }
 }
 
 // MCP routing ---
 
-pub(crate) fn handle_json_rpc(body: &str, session_id: &str, state: AppState) -> Result<Option<Value>> {
+pub(crate) fn handle_json_rpc(
+    body: &str,
+    session_id: &str,
+    state: AppState,
+) -> Result<Option<Value>> {
     let request: Value = serde_json::from_str(body)?;
     if let Some(items) = request.as_array() {
         let mut responses = Vec::new();
@@ -126,7 +143,9 @@ fn handle_json_rpc_message(
             })));
         }
     };
-    Ok(Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })))
+    Ok(Some(
+        json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+    ))
 }
 
 fn handle_initialize(request: &Value) -> Value {
@@ -146,14 +165,13 @@ fn handle_tools_list() -> Result<Value> {
     Ok(json!({ "tools": serde_json::from_str::<Value>(&crate::mcp_tools::tools_json())? }))
 }
 
-fn handle_tools_call_request(
-    request: &Value,
-    session_id: &str,
-    state: &AppState,
-) -> Result<Value> {
+fn handle_tools_call_request(request: &Value, session_id: &str, state: &AppState) -> Result<Value> {
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     handle_tool_call(name, &args, session_id, state)
 }
 
@@ -204,16 +222,8 @@ fn clean_args(args: &Value) -> Value {
     clean
 }
 
-fn is_approved(
-    tool_name: &str,
-    args: &Value,
-    session_id: &str,
-    state: &AppState,
-) -> Result<bool> {
-    if state
-        .auto_approve_lock()?
-        .contains(session_id)
-    {
+fn is_approved(tool_name: &str, args: &Value, session_id: &str, state: &AppState) -> Result<bool> {
+    if state.auto_approve_lock()?.contains(session_id) {
         return Ok(true);
     }
     if tool_name == "run_command"
@@ -242,9 +252,7 @@ fn is_approved(
     if valid {
         approvals.remove(token);
         if args.get("remember_all_risky").and_then(Value::as_bool) == Some(true) {
-            state
-                .auto_approve_lock()?
-                .insert(session_id.to_string());
+            state.auto_approve_lock()?.insert(session_id.to_string());
         }
         if tool_name == "run_command"
             && args.get("remember_in_session").and_then(Value::as_bool) == Some(true)
@@ -401,9 +409,9 @@ pub(crate) fn canonicalize_path(path: &Path) -> Result<PathBuf> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        let canonical_parent = parent.canonicalize().map_err(|err| {
-            Error::msg(format!("invalid path '{}': {err}", path.display()))
-        })?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|err| Error::msg(format!("invalid path '{}': {err}", path.display())))?;
         Ok(canonical_parent.join(
             path.file_name()
                 .ok_or_else(|| Error::msg(format!("invalid path '{}'", path.display())))?,
@@ -490,6 +498,12 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
 }
 
 pub(crate) fn target_from_args(args: &Value) -> Result<Target> {
+    if let Some(index) = int_arg(args, "index") {
+        return Ok(Target::Query {
+            query: format!("index={index}"),
+            snapshot: str_arg(args, "snapshot").map(str::to_string),
+        });
+    }
     if let Some(element_id) = str_arg(args, "element_id")
         .or_else(|| str_arg(args, "on"))
         .map(str::to_string)
@@ -506,6 +520,12 @@ pub(crate) fn target_from_args(args: &Value) -> Result<Target> {
 }
 
 pub(crate) fn query_target_from_args(args: &Value) -> Result<Target> {
+    if let Some(index) = int_arg(args, "index") {
+        return Ok(Target::Query {
+            query: format!("index={index}"),
+            snapshot: str_arg(args, "snapshot").map(str::to_string),
+        });
+    }
     let query = str_arg(args, "on")
         .or_else(|| str_arg(args, "element_id"))
         .unwrap_or("")
