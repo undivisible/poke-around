@@ -1449,15 +1449,25 @@ fn web_fetch(args: &Value) -> Result<Value> {
         .get("max_chars")
         .and_then(Value::as_u64)
         .unwrap_or(20000) as usize;
-    let output = Command::new("curl")
-        .arg("-fsSL")
-        .arg("--")
-        .arg(url)
-        .output()?;
-    if !output.status.success() {
-        return Ok(error_result(String::from_utf8_lossy(&output.stderr)));
+
+    let client = reqwest::blocking::Client::new();
+    let response = match client.get(url).send() {
+        Ok(res) => res,
+        Err(e) => return Ok(error_result(format!("Failed to fetch URL: {}", e))),
+    };
+
+    if !response.status().is_success() {
+        return Ok(error_result(format!(
+            "HTTP request failed with status: {}",
+            response.status()
+        )));
     }
-    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let mut text = match response.text() {
+        Ok(t) => t,
+        Err(e) => return Ok(error_result(format!("Failed to read response body: {}", e))),
+    };
+
     if text.len() > max_chars {
         text.truncate(max_chars);
     }
