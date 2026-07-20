@@ -12,6 +12,7 @@ use crate::mcp::{
 use crate::{Error, Result};
 use rs_peekaboo::automation::{Target, parse_point};
 use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point};
+#[cfg(not(target_os = "windows"))]
 use shlex::split as shlex_split;
 
 // ponytail: single registry for all tools. Adding a tool = 1 entry, not 5 scattered lists.
