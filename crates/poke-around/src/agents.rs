@@ -168,7 +168,6 @@ mod tests {
         }
     }
 
-
     #[test]
     #[serial]
     fn test_find_agent_exact_match() {
