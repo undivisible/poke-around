@@ -249,6 +249,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     use httptest::{Expectation, Server, matchers::*, responders::*};
 
     #[test]
