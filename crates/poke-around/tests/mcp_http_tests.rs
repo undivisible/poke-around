@@ -10,6 +10,23 @@ fn post_json(port: u16, body: &str) -> String {
     post_json_path(port, "/mcp", body)
 }
 
+fn post_json_in_session(port: u16, session_id: &str, body: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nMcp-Session-Id: {session_id}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(request.as_bytes())
+        .expect("request should write");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("response should read");
+    response
+}
+
 fn post_json_path(port: u16, path: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
     let request = format!(
@@ -278,11 +295,12 @@ fn malformed_request_should_return_bad_request() {
 }
 
 #[test]
-fn approval_with_valid_token_should_succeed_even_with_remember_all_risky() {
+fn approval_should_reject_added_remember_all_risky_scope() {
     let path =
         std::env::temp_dir().join(format!("poke-around-approval-{}.txt", std::process::id()));
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
     let port = start_server(state).expect("server should start");
+    let session_id = "approval-session";
     let first = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -296,7 +314,7 @@ fn approval_with_valid_token_should_succeed_even_with_remember_all_risky() {
         }
     })
     .to_string();
-    let response = post_json(port, &first);
+    let response = post_json_in_session(port, session_id, &first);
     let (_, body) = response
         .split_once("\r\n\r\n")
         .expect("response should include body separator");
@@ -321,14 +339,10 @@ fn approval_with_valid_token_should_succeed_even_with_remember_all_risky() {
     })
     .to_string();
 
-    let response = post_json(port, &second);
+    let response = post_json_in_session(port, session_id, &second);
 
-    assert!(!response.contains("AWAITING_APPROVAL"));
-    assert!(path.exists());
-    assert_eq!(
-        fs::read_to_string(&path).expect("file should read"),
-        "first"
-    );
+    assert!(response.contains("AWAITING_APPROVAL"));
+    assert!(!path.exists());
 
     let _ = fs::remove_file(path);
 }
@@ -375,7 +389,7 @@ fn connections_without_session_header_should_not_share_default_session() {
     })
     .to_string();
     let second = post_json(port, &approve);
-    assert!(!second.contains("AWAITING_APPROVAL"));
+    assert!(second.contains("AWAITING_APPROVAL"));
 
     let third = post_json(port, &destructive);
     let (_, third_body) = third
@@ -384,6 +398,6 @@ fn connections_without_session_header_should_not_share_default_session() {
     let third_value: Value = serde_json::from_str(third_body).expect("response body should parse");
     assert!(
         third_value["result"]["structuredContent"]["status"] == "AWAITING_APPROVAL",
-        "remember_in_session should not carry across connections without Mcp-Session-Id"
+        "approval and remember_in_session should not carry across connections without Mcp-Session-Id"
     );
 }

@@ -10,4 +10,5 @@ pub mod mcp_server;
 pub mod mcp_tools;
 pub mod platform;
 pub mod policy;
+mod praefectus_adapter;
 pub use error::{Error, Result};

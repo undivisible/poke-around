@@ -17,10 +17,12 @@ base64.workspace = true
 chrono.workspace = true
 ctrlc.workspace = true
 dirs.workspace = true
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
 rand.workspace = true
 reqwest.workspace = true
 rs_poke.workspace = true
 rs_peekaboo.workspace = true
+praefectus = "=0.1.0"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -1,6 +1,7 @@
 use crate::policy::{self, PermissionMode};
 use crate::{Error, Result, config, mcp_tools};
 use base64::engine::Engine;
+use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -30,11 +31,13 @@ pub(crate) struct StateInner {
     pub(crate) approvals: Mutex<HashMap<String, Approval>>,
     pub(crate) auto_approve: Mutex<HashSet<String>>,
     pub(crate) session_approved_commands: Mutex<HashMap<String, HashSet<String>>>,
+    pub(crate) praefectus_signing_key: SigningKey,
 }
 
 #[derive(Clone)]
 pub(crate) struct Approval {
     token: String,
+    session_id: String,
     tool_name: String,
     clean_args: Value,
     expires_at: Instant,
@@ -49,6 +52,7 @@ impl AppState {
                 approvals: Mutex::new(HashMap::new()),
                 auto_approve: Mutex::new(HashSet::new()),
                 session_approved_commands: Mutex::new(HashMap::new()),
+                praefectus_signing_key: SigningKey::from_bytes(&rand::random()),
             }),
         })
     }
@@ -181,6 +185,22 @@ fn handle_tool_call(
     session_id: &str,
     state: &AppState,
 ) -> Result<Value> {
+    handle_tool_call_with_adapter(
+        tool_name,
+        args,
+        session_id,
+        state,
+        crate::praefectus_adapter::execute_tool,
+    )
+}
+
+fn handle_tool_call_with_adapter(
+    tool_name: &str,
+    args: &Value,
+    session_id: &str,
+    state: &AppState,
+    execute_adapter: impl FnOnce(&str, &Value, &str, &AppState) -> Result<Option<Value>>,
+) -> Result<Value> {
     let mode = state.mode();
     if let Some(reason) = policy::evaluate_access_policy(tool_name, args, mode) {
         return Ok(error_result(format!(
@@ -189,6 +209,9 @@ fn handle_tool_call(
     }
     if needs_approval(tool_name, args, mode) && !is_approved(tool_name, args, session_id, state)? {
         let result = request_approval(tool_name, args, session_id, state)?;
+        return Ok(result);
+    }
+    if let Some(result) = execute_adapter(tool_name, args, session_id, state)? {
         return Ok(result);
     }
     let result = mcp_tools::execute_tool(tool_name, args, state)?;
@@ -216,8 +239,6 @@ fn clean_args(args: &Value) -> Value {
     if let Some(object) = clean.as_object_mut() {
         object.remove("approval_token");
         object.remove("approve");
-        object.remove("remember_all_risky");
-        object.remove("remember_in_session");
     }
     clean
 }
@@ -247,6 +268,7 @@ fn is_approved(tool_name: &str, args: &Value, session_id: &str, state: &AppState
         return Ok(false);
     };
     let valid = approval.expires_at > Instant::now()
+        && approval.session_id == session_id
         && approval.tool_name == tool_name
         && approval.clean_args == clean_args(args);
     if valid {
@@ -277,6 +299,7 @@ fn request_approval(
     let token = format!("{:032x}", rand::random::<u128>());
     let approval = Approval {
         token: token.clone(),
+        session_id: session_id.to_string(),
         tool_name: tool_name.to_string(),
         clean_args: clean_args(args),
         expires_at: Instant::now() + Duration::from_secs(300),
@@ -540,6 +563,7 @@ pub(crate) fn query_target_from_args(args: &Value) -> Result<Target> {
 mod tests {
     use super::*;
     use crate::policy::PermissionMode;
+    use std::cell::Cell;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -591,6 +615,7 @@ mod tests {
                 token.clone(),
                 Approval {
                     token: token.clone(),
+                    session_id: "session_1".to_string(),
                     tool_name: tool_name.to_string(),
                     clean_args: clean_args.clone(),
                     expires_at,
@@ -648,6 +673,7 @@ mod tests {
             token.clone(),
             Approval {
                 token: token.clone(),
+                session_id: "session".to_string(),
                 tool_name: tool_name.to_string(),
                 clean_args: json!({ "path": "/test.txt", "content": "ok" }),
                 expires_at: Instant::now() + Duration::from_secs(60),
@@ -671,5 +697,136 @@ mod tests {
         });
         assert!(is_approved(tool_name, &valid_args, "session", &state).unwrap());
         assert!(!state.inner.approvals.lock().unwrap().contains_key(&token));
+    }
+
+    #[test]
+    fn handle_tool_call_should_not_invoke_adapter_when_access_policy_denies() {
+        let state = AppState::new(PermissionMode::Limited, false).unwrap();
+        let called = Cell::new(false);
+
+        let result = handle_tool_call_with_adapter(
+            "click",
+            &json!({ "x": 10, "y": 20 }),
+            "session",
+            &state,
+            |_, _, _, _| {
+                called.set(true);
+                Ok(Some(ok_json(json!({ "adapter": true }))))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            (called.get(), result["isError"].as_bool()),
+            (false, Some(true))
+        );
+    }
+
+    #[test]
+    fn approval_tokens_should_be_bound_to_the_issuing_session() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let args = json!({ "x": 10, "y": 20 });
+        let awaiting = request_approval("click", &args, "session-a", &state).unwrap();
+        let token = awaiting["structuredContent"]["approvalToken"]
+            .as_str()
+            .unwrap();
+        let approved_args = json!({
+            "x": 10,
+            "y": 20,
+            "approve": true,
+            "approval_token": token,
+        });
+
+        assert!(!is_approved("click", &approved_args, "session-b", &state).unwrap());
+        assert!(state.inner.approvals.lock().unwrap().contains_key(token));
+        assert!(is_approved("click", &approved_args, "session-a", &state).unwrap());
+        assert!(!state.inner.approvals.lock().unwrap().contains_key(token));
+    }
+
+    #[test]
+    fn approval_tokens_should_not_authorize_added_remember_scope() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let args = json!({ "command": "rm /tmp/example" });
+
+        for remember_scope in ["remember_all_risky", "remember_in_session"] {
+            let awaiting = request_approval("run_command", &args, "session", &state).unwrap();
+            let token = awaiting["structuredContent"]["approvalToken"]
+                .as_str()
+                .unwrap();
+            let mut escalated_args = args.clone();
+            let object = escalated_args.as_object_mut().unwrap();
+            object.insert("approve".to_string(), json!(true));
+            object.insert("approval_token".to_string(), json!(token));
+            object.insert(remember_scope.to_string(), json!(true));
+
+            assert!(!is_approved("run_command", &escalated_args, "session", &state).unwrap());
+            assert!(state.inner.approvals.lock().unwrap().contains_key(token));
+        }
+        assert!(!state.auto_approve_lock().unwrap().contains("session"));
+        assert!(
+            !state
+                .session_commands_lock()
+                .unwrap()
+                .contains_key("session")
+        );
+    }
+
+    #[test]
+    fn handle_tool_call_should_invoke_adapter_once_after_one_shot_approval() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let args = json!({ "x": 10, "y": 20 });
+        let calls = Cell::new(0_u32);
+        let awaiting =
+            handle_tool_call_with_adapter("click", &args, "session", &state, |_, _, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(Some(ok_json(json!({ "adapter": true }))))
+            })
+            .unwrap();
+        let token = awaiting["structuredContent"]["approvalToken"]
+            .as_str()
+            .unwrap();
+        let approved_args = json!({
+            "x": 10,
+            "y": 20,
+            "approve": true,
+            "approval_token": token,
+        });
+        let approved = handle_tool_call_with_adapter(
+            "click",
+            &approved_args,
+            "session",
+            &state,
+            |_, _, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(Some(ok_json(json!({ "adapter": true }))))
+            },
+        )
+        .unwrap();
+        let replay = handle_tool_call_with_adapter(
+            "click",
+            &approved_args,
+            "session",
+            &state,
+            |_, _, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(Some(ok_json(json!({ "adapter": true }))))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            (
+                awaiting["structuredContent"]["status"].as_str(),
+                approved["structuredContent"]["adapter"].as_bool(),
+                replay["structuredContent"]["status"].as_str(),
+                calls.get(),
+            ),
+            (
+                Some("AWAITING_APPROVAL"),
+                Some(true),
+                Some("AWAITING_APPROVAL"),
+                1,
+            )
+        );
     }
 }
