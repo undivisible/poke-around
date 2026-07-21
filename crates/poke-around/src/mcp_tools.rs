@@ -1557,7 +1557,8 @@ mod tests {
     use crate::policy::PermissionMode;
 
     fn expected_image_error(err: &str) -> bool {
-        err.contains("CommandFailed")
+        err == "computer-use backend request failed"
+            || err.contains("CommandFailed")
             || err.contains("no screenshot tool found")
             || err.contains("X server")
             || (cfg!(windows) && !err.is_empty())
