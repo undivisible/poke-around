@@ -9,8 +9,10 @@ use std::sync::Mutex;
 const MAX_CONN_HISTORY: usize = 10;
 static STATE_MUTEX: Mutex<()> = Mutex::new(());
 
-pub(crate) fn read_state() -> Result<Map<String, Value>> {
-    with_state_lock(read_state_unlocked)
+pub(crate) async fn read_state() -> Result<Map<String, Value>> {
+    tokio::task::spawn_blocking(|| with_state_lock(read_state_unlocked))
+        .await
+        .unwrap()
 }
 
 fn read_state_unlocked() -> Result<Map<String, Value>> {
@@ -24,22 +26,30 @@ fn read_state_unlocked() -> Result<Map<String, Value>> {
     }
 }
 
-pub(crate) fn patch_state<const N: usize>(updates: [(&str, Value); N]) -> Result<()> {
-    with_state_lock(|| {
-        let mut state = read_state_unlocked()?;
-        for (key, value) in updates {
-            state.insert(key.to_string(), value);
-        }
-        write_state_unlocked(&state)
+pub(crate) async fn patch_state(updates: Vec<(String, Value)>) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        with_state_lock(|| {
+            let mut state = read_state_unlocked()?;
+            for (key, value) in updates {
+                state.insert(key, value);
+            }
+            write_state_unlocked(&state)
+        })
     })
+    .await
+    .unwrap()
 }
 
-pub(crate) fn remove_state_key(key: &str) -> Result<()> {
-    with_state_lock(|| {
-        let mut state = read_state_unlocked()?;
-        state.remove(key);
-        write_state_unlocked(&state)
+pub(crate) async fn remove_state_key(key: String) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        with_state_lock(|| {
+            let mut state = read_state_unlocked()?;
+            state.remove(&key);
+            write_state_unlocked(&state)
+        })
     })
+    .await
+    .unwrap()
 }
 
 fn with_state_lock<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -79,30 +89,31 @@ fn write_state_unlocked(state: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn record_connection(connection_id: &str) -> Result<()> {
-    with_state_lock(|| {
-        let state = read_state_unlocked()?;
-        let mut history = state
-            .get("connectionHistory")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if !history
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|known| known == connection_id)
-        {
-            history.insert(0, Value::String(connection_id.to_string()));
-        }
-        history.truncate(MAX_CONN_HISTORY);
-        let mut next = state;
-        next.insert(
-            "connectionId".to_string(),
-            Value::String(connection_id.to_string()),
-        );
-        next.insert("connectionHistory".to_string(), Value::Array(history));
-        write_state_unlocked(&next)
+pub(crate) async fn record_connection(connection_id: String) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        with_state_lock(|| {
+            let state = read_state_unlocked()?;
+            let mut history = state
+                .get("connectionHistory")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if !history
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|known| known == connection_id)
+            {
+                history.insert(0, Value::String(connection_id.clone()));
+            }
+            history.truncate(MAX_CONN_HISTORY);
+            let mut next = state;
+            next.insert("connectionId".to_string(), Value::String(connection_id));
+            next.insert("connectionHistory".to_string(), Value::Array(history));
+            write_state_unlocked(&next)
+        })
     })
+    .await
+    .unwrap()
 }
 
 pub(crate) fn log_status(message: &str) {
