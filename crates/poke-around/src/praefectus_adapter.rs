@@ -8,26 +8,62 @@ use praefectus::{
     canonical_authority_bytes, normalized_action_hash,
 };
 use serde_json::{Value, json, to_value};
+use sha2::{Digest, Sha256};
 
-use crate::mcp::{AppState, int_arg, ok_json, str_arg};
+use crate::mcp::{AppState, error_result, int_arg, ok_json, str_arg};
 use crate::{Error, Result};
+
+const TARGET_EFFECT_UNAVAILABLE: &str =
+    "targeted computer-use effect unavailable: live target identity fencing is not supported";
+const AUTOMATION_UNAVAILABLE: &str =
+    "automation scripts unavailable: command-level target fencing is not supported";
 
 pub(crate) fn execute_tool(
     tool_name: &str,
     args: &Value,
     session_id: &str,
+    rpc_request_id: &str,
     state: &AppState,
+    cancellation: &CancellationToken,
 ) -> Result<Option<Value>> {
-    let Some((executor, capabilities)) = backend_for_candidate(tool_name, args, || {
+    if crate::mcp_tools::is_unavailable_tool(tool_name) {
+        return Ok(Some(error_result(
+            "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported",
+        )));
+    }
+    if tool_name == "run" {
+        return Ok(Some(error_result(AUTOMATION_UNAVAILABLE)));
+    }
+    if matches!(
+        tool_name,
+        "click"
+            | "press"
+            | "type"
+            | "paste"
+            | "hotkey"
+            | "scroll"
+            | "move"
+            | "set_value"
+            | "perform_action"
+            | "window"
+            | "app"
+            | "menu"
+    ) {
+        return Ok(Some(error_result(TARGET_EFFECT_UNAVAILABLE)));
+    }
+    let (executor, capabilities) = match backend_for_candidate(tool_name, args, || {
         let executor = NativeExecutor::default();
         let capabilities = executor.capabilities()?;
         Ok((executor, capabilities))
-    })?
-    else {
-        return Ok(None);
+    }) {
+        CandidateBackend::NotCandidate => return Ok(None),
+        CandidateBackend::Unavailable => {
+            return Ok(Some(error_result(TARGET_EFFECT_UNAVAILABLE)));
+        }
+        CandidateBackend::Available(executor, capabilities) => (executor, capabilities),
     };
     if !should_use_praefectus(tool_name, args, &capabilities) {
-        return Ok(None);
+        return Ok(Some(error_result(TARGET_EFFECT_UNAVAILABLE)));
     }
     let action = match tool_name {
         "click" if args.get("x").is_some() && args.get("y").is_some() => Action::Click {
@@ -61,10 +97,17 @@ pub(crate) fn execute_tool(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| Error::msg(error.to_string()))?
         .as_millis() as i64;
-    let operation_id = format!("poke-{:032x}", rand::random::<u128>());
+    let operation_id = operation_id(session_id, rpc_request_id);
+    let protocol_session_id = format!("poke-session-{}", hash_parts(&[session_id.as_bytes()]));
     let issuer = "poke-around".to_string();
     let key_id = "process-key".to_string();
-    let policy_generation = "poke-policy-v1".to_string();
+    let policy_generation = format!(
+        "poke-policy-{}",
+        state
+            .inner
+            .approval_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
     let subject = "poke-local-host".to_string();
     let (safety, verification) = match &action {
         Action::Move => (SafetyClass::Reversible, VerificationPolicy::None),
@@ -74,9 +117,10 @@ pub(crate) fn execute_tool(
         protocol_version: PROTOCOL_VERSION,
         action_version: PROTOCOL_VERSION,
         target_version: PROTOCOL_VERSION,
+        verification_version: PROTOCOL_VERSION,
         operation_id: operation_id.clone(),
         subject: subject.clone(),
-        session_id: session_id.to_string(),
+        session_id: protocol_session_id.clone(),
         authority: SignedAuthority {
             grant: AuthorityGrant {
                 protocol_version: PROTOCOL_VERSION,
@@ -84,7 +128,7 @@ pub(crate) fn execute_tool(
                 key_id: key_id.clone(),
                 operation_id,
                 subject,
-                session_id: session_id.to_string(),
+                session_id: protocol_session_id,
                 risk: safety,
                 expires_at_ms: now + 30_000,
                 policy_generation: policy_generation.clone(),
@@ -126,12 +170,37 @@ pub(crate) fn execute_tool(
         state.inner.home.join("praefectus-operations.jsonl"),
         verifier,
     )
-    .execute(&request, &CancellationToken::default())?;
+    .execute(&request, cancellation)?;
     let retry_safe = acknowledgements_are_retry_safe(&report.acknowledgements);
-    Ok(Some(ok_json(json!({
+    let succeeded = acknowledgements_succeeded(&report.acknowledgements);
+    let mut response = ok_json(json!({
         "report": to_value(report)?,
         "retry_safe": retry_safe,
-    }))))
+    }));
+    if !succeeded {
+        response["isError"] = Value::Bool(true);
+    }
+    Ok(Some(response))
+}
+
+fn hash_parts(parts: &[&[u8]]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn operation_id(session_id: &str, rpc_request_id: &str) -> String {
+    format!(
+        "poke-{}",
+        hash_parts(&[session_id.as_bytes(), rpc_request_id.as_bytes()])
+    )
 }
 
 fn acknowledgements_are_retry_safe(acknowledgements: &[ActionAck]) -> bool {
@@ -144,6 +213,15 @@ fn acknowledgements_are_retry_safe(acknowledgements: &[ActionAck]) -> bool {
                     | Terminal::CancelledBeforeEffect
                     | Terminal::ExpiredBeforeEffect
             )
+    )
+}
+
+fn acknowledgements_succeeded(acknowledgements: &[ActionAck]) -> bool {
+    matches!(
+        acknowledgements
+            .last()
+            .map(|acknowledgement| &acknowledgement.state),
+        Some(AckState::Terminal { terminal }) if matches!(&**terminal, Terminal::Succeeded { .. })
     )
 }
 
@@ -188,15 +266,36 @@ fn candidate_action(tool_name: &str, args: &Value) -> Option<&'static str> {
     .into()
 }
 
+fn coordinate_candidate(tool_name: &str, args: &Value) -> bool {
+    matches!(tool_name, "click" | "move")
+        && args.get("x").is_some()
+        && args.get("y").is_some()
+        && !["index", "element_id", "on"]
+            .iter()
+            .any(|field| args.get(*field).is_some())
+}
+
+enum CandidateBackend<T> {
+    NotCandidate,
+    Unavailable,
+    Available(T, Capabilities),
+}
+
 fn backend_for_candidate<T>(
     tool_name: &str,
     args: &Value,
     load: impl FnOnce() -> Result<(T, Capabilities)>,
-) -> Result<Option<(T, Capabilities)>> {
-    if candidate_action(tool_name, args).is_none() {
-        return Ok(None);
+) -> CandidateBackend<T> {
+    if !coordinate_candidate(tool_name, args) {
+        return CandidateBackend::NotCandidate;
     }
-    Ok(load().ok())
+    if candidate_action(tool_name, args).is_none() {
+        return CandidateBackend::Unavailable;
+    }
+    match load() {
+        Ok((executor, capabilities)) => CandidateBackend::Available(executor, capabilities),
+        Err(_) => CandidateBackend::Unavailable,
+    }
 }
 
 fn normalized_click_count(args: &Value) -> i64 {
@@ -286,10 +385,9 @@ mod tests {
             backend_for_candidate("read_file", &json!({ "path": "/tmp/example" }), || {
                 probed.set(true);
                 Ok(((), capabilities(true)))
-            })
-            .unwrap();
+            });
 
-        assert!(backend.is_none());
+        assert!(matches!(backend, CandidateBackend::NotCandidate));
         assert!(!probed.get());
     }
 
@@ -311,15 +409,64 @@ mod tests {
     }
 
     #[test]
-    fn capability_probe_failures_should_preserve_the_existing_backend() {
+    fn coordinate_candidates_fail_closed_when_the_backend_is_unavailable() {
         let backend = backend_for_candidate(
             "click",
             &json!({ "x": 10, "y": 20, "background": false }),
             || Err::<((), Capabilities), _>(Error::msg("capability probe failed")),
+        );
+
+        assert!(matches!(backend, CandidateBackend::Unavailable));
+        assert!(matches!(
+            backend_for_candidate(
+                "click",
+                &json!({ "x": 10, "y": 20 }),
+                || -> Result<((), Capabilities,)> { panic!() }
+            ),
+            CandidateBackend::Unavailable
+        ));
+    }
+
+    #[test]
+    fn coordinate_dispatch_returns_a_stable_error_without_fallback() {
+        let state = AppState::new(crate::policy::PermissionMode::Full, false).unwrap();
+        let result = execute_tool(
+            "move",
+            &json!({ "x": 10, "y": 20 }),
+            "session",
+            "request",
+            &state,
+            &CancellationToken::default(),
         )
+        .unwrap()
         .unwrap();
 
-        assert!(backend.is_none());
+        assert_eq!(result["isError"].as_bool(), Some(true));
+        assert_eq!(
+            result["content"][0]["text"],
+            "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported"
+        );
+    }
+
+    #[test]
+    fn automation_dispatch_returns_a_stable_error_without_fallback() {
+        let state = AppState::new(crate::policy::PermissionMode::Full, false).unwrap();
+        let result = execute_tool(
+            "run",
+            &json!({ "file": "automation.json" }),
+            "session",
+            "request",
+            &state,
+            &CancellationToken::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result["isError"].as_bool(), Some(true));
+        assert_eq!(
+            result["content"][0]["text"],
+            "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported"
+        );
     }
 
     #[test]
@@ -372,6 +519,14 @@ mod tests {
         })];
 
         assert!(!acknowledgements_are_retry_safe(&acknowledgements));
+        assert!(!acknowledgements_succeeded(&acknowledgements));
+    }
+
+    #[test]
+    fn operation_identity_is_stable_and_session_bound() {
+        assert_eq!(operation_id("session", "1"), operation_id("session", "1"));
+        assert_ne!(operation_id("session", "1"), operation_id("session", "2"));
+        assert_ne!(operation_id("session", "1"), operation_id("other", "1"));
     }
 
     #[test]

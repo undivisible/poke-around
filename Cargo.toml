@@ -9,10 +9,11 @@ license = "MPL-2.0"
 repository = "https://github.com/undivisible/poke-around"
 
 [workspace.dependencies]
-base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ctrlc = "3.4"
 dirs = "6.0"
+fs2 = "0.4"
+atomicwrites = "0.4.4"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 rs_poke = "0.2.4"

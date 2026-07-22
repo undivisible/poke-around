@@ -1,4 +1,7 @@
-use poke_around::{Error, Result, agents, bridge, config, daemon, policy::PermissionMode};
+use poke_around::{
+    Error, Result, agents, bridge, config, daemon,
+    policy::{ApprovalMode, PermissionMode},
+};
 
 fn main() {
     if let Err(err) = run() {
@@ -11,6 +14,7 @@ fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let verbose = has_flag(&args, "--verbose") || has_flag(&args, "-v");
     let mode = flag_value(&args, "--mode");
+    let approval_mode = flag_value(&args, "--approval-mode");
 
     if has_flag(&args, "--version") || has_flag(&args, "-V") {
         println!("poke-around {}", env!("CARGO_PKG_VERSION"));
@@ -22,7 +26,7 @@ fn run() -> Result<()> {
         || args.first().is_some_and(|arg| arg == "daemon")
         || only_daemon_flags(&args)
     {
-        return daemon::run(mode.as_deref(), verbose);
+        return daemon::run(mode.as_deref(), approval_mode.as_deref(), verbose);
     }
 
     match args[0].as_str() {
@@ -36,6 +40,20 @@ fn run() -> Result<()> {
         "take-screenshot" => {
             let capture =
                 rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, None, true)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&capture.path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            #[cfg(windows)]
+            if let Ok(username) = std::env::var("USERNAME")
+                && !username.is_empty()
+            {
+                let _ = std::process::Command::new("icacls")
+                    .arg(&capture.path)
+                    .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
+                    .status();
+            }
             println!("{}", capture.path.display());
             Ok(())
         }
@@ -57,11 +75,24 @@ fn run() -> Result<()> {
             println!("Permission mode set to: {mode}");
             Ok(())
         }
+        "set-approval-mode" => {
+            let mode = args.get(1).ok_or_else(|| {
+                Error::msg("Usage: poke-around set-approval-mode <full|per-action>")
+            })?;
+            if !matches!(mode.as_str(), "full" | "per-action") {
+                return Err(Error::msg("invalid approval mode"));
+            }
+            config::save_approval_mode(mode)?;
+            println!("Approval mode set to: {mode}");
+            Ok(())
+        }
         "status" => {
-            let saved = config::read_config()?.permission_mode;
-            let mode = PermissionMode::parse(saved.as_deref());
+            let saved = config::read_config()?;
+            let mode = PermissionMode::parse(saved.permission_mode.as_deref());
+            let approval_mode = ApprovalMode::parse(saved.approval_mode.as_deref());
             println!("poke-around {}", env!("CARGO_PKG_VERSION"));
             println!("permission mode: {}", mode.as_str());
+            println!("approval mode: {}", approval_mode.as_str());
             Ok(())
         }
         "--help" | "-h" | "help" => {
@@ -110,7 +141,7 @@ fn only_daemon_flags(args: &[String]) -> bool {
     while index < args.len() {
         match args[index].as_str() {
             "--verbose" | "-v" => index += 1,
-            "--mode" if args.get(index + 1).is_some() => index += 2,
+            "--mode" | "--approval-mode" if args.get(index + 1).is_some() => index += 2,
             _ => return false,
         }
     }
@@ -119,7 +150,7 @@ fn only_daemon_flags(args: &[String]) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: poke-around [--verbose] [--mode full|limited|sandbox]\n       poke-around run-agent <name>\n       poke-around agent get <name>\n       poke-around agent create [--prompt text]\n       poke-around take-screenshot\n       poke-around notify <message>\n       poke-around set-mode <full|limited|sandbox>\n       poke-around status"
+        "Usage: poke-around [--verbose] [--mode full|limited|sandbox] [--approval-mode full|per-action]\n       poke-around run-agent <name>\n       poke-around agent get <name>\n       poke-around agent create [--prompt text]\n       poke-around take-screenshot\n       poke-around notify <message>\n       poke-around set-mode <full|limited|sandbox>\n       poke-around set-approval-mode <full|per-action>\n       poke-around status"
     );
 }
 
@@ -137,7 +168,9 @@ mod tests {
         assert!(only_daemon_flags(&args(&[
             "--verbose",
             "--mode",
-            "sandbox"
+            "sandbox",
+            "--approval-mode",
+            "per-action"
         ])));
     }
 

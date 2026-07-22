@@ -15,24 +15,29 @@ use crate::mcp::AppState;
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
 const MAX_HTTP_BODY_SIZE: usize = 10 * 1024 * 1024;
 
-pub fn start_server(state: AppState) -> Result<u16> {
+pub fn start_server(state: AppState, bearer: &str) -> Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let connections = Arc::new(AtomicUsize::new(0));
+    let bearer = bearer.to_string();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let state = state.clone();
             let connections = connections.clone();
-            if connections.load(Ordering::Acquire) >= MAX_CONCURRENT_CONNECTIONS {
+            let bearer = bearer.clone();
+            if !try_acquire_connection(&connections) {
                 eprintln!("mcp: rejecting connection, max concurrent connections reached");
                 continue;
             }
-            connections.fetch_add(1, Ordering::Release);
             thread::spawn(move || {
-                let result = handle_connection(stream, state);
-                connections.fetch_sub(1, Ordering::Release);
-                if let Err(err) = result {
-                    eprintln!("mcp connection error: {err}");
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_connection(stream, state, &bearer)
+                }));
+                connections.fetch_sub(1, Ordering::AcqRel);
+                match result {
+                    Ok(Err(err)) => eprintln!("mcp connection error: {err}"),
+                    Err(_) => eprintln!("mcp connection error: request handler panicked"),
+                    Ok(Ok(())) => {}
                 }
             });
         }
@@ -40,7 +45,99 @@ pub fn start_server(state: AppState) -> Result<u16> {
     Ok(port)
 }
 
-fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
+fn try_acquire_connection(connections: &AtomicUsize) -> bool {
+    connections
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            (active < MAX_CONCURRENT_CONNECTIONS).then_some(active + 1)
+        })
+        .is_ok()
+}
+
+pub fn new_bearer_capability() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::rng().fill(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn start_tunnel_relay(mcp_url: &str, bearer: &str) -> Result<String> {
+    let target = url::Url::parse(mcp_url)?;
+    let port = target
+        .port_or_known_default()
+        .ok_or_else(|| Error::msg("MCP URL is missing a port"))?;
+    if target.host_str() != Some("127.0.0.1") {
+        return Err(Error::msg("MCP relay target must be loopback"));
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let relay_port = listener.local_addr()?.port();
+    let path_capability = new_bearer_capability();
+    let relay_path = format!("/{path_capability}/mcp");
+    let expected_path = relay_path.clone();
+    let bearer = bearer.to_string();
+    let connections = Arc::new(AtomicUsize::new(0));
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let bearer = bearer.clone();
+            let expected_path = expected_path.clone();
+            let connections = connections.clone();
+            if !try_acquire_connection(&connections) {
+                continue;
+            }
+            thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_relay_connection(stream, port, &expected_path, &bearer)
+                }));
+                connections.fetch_sub(1, Ordering::AcqRel);
+                match result {
+                    Ok(Err(err)) => eprintln!("mcp relay error: {err}"),
+                    Err(_) => eprintln!("mcp relay error: request handler panicked"),
+                    Ok(Ok(())) => {}
+                }
+            });
+        }
+    });
+    Ok(format!("http://127.0.0.1:{relay_port}{relay_path}"))
+}
+
+fn handle_relay_connection(
+    mut stream: TcpStream,
+    target_port: u16,
+    expected_path: &str,
+    bearer: &str,
+) -> Result<()> {
+    let request = read_http_request(&mut stream)?;
+    if request.path != expected_path {
+        let response = HttpResponse::not_found();
+        write_http_response(
+            &mut stream,
+            response.status,
+            &response.body,
+            &response.headers,
+        )?;
+        return Ok(());
+    }
+    let mut target = TcpStream::connect(("127.0.0.1", target_port))?;
+    target.set_read_timeout(Some(Duration::from_secs(30)))?;
+    write!(target, "{} /mcp HTTP/1.1\r\n", request.method)?;
+    write!(target, "Host: 127.0.0.1:{target_port}\r\n")?;
+    for (name, value) in request.headers {
+        if !matches!(
+            name.as_str(),
+            "authorization" | "connection" | "content-length" | "host"
+        ) {
+            write!(target, "{name}: {value}\r\n")?;
+        }
+    }
+    write!(
+        target,
+        "Authorization: Bearer {bearer}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        request.body.len(),
+        request.body
+    )?;
+    std::io::copy(&mut target, &mut stream)?;
+    Ok(())
+}
+
+fn handle_connection(mut stream: TcpStream, state: AppState, bearer: &str) -> Result<()> {
     let request = match read_http_request(&mut stream) {
         Ok(request) => request,
         Err(err) => {
@@ -56,7 +153,7 @@ fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<()> {
         .filter(|value| !value.is_empty())
         .cloned()
         .unwrap_or_else(new_mcp_session_id);
-    let http_response = route_http_request(&request, &path, &session_id, state)?;
+    let http_response = route_http_request(&request, &path, &session_id, state, bearer)?;
     write_http_response(
         &mut stream,
         http_response.status,
@@ -71,14 +168,17 @@ fn route_http_request(
     path: &str,
     session_id: &str,
     state: AppState,
+    bearer: &str,
 ) -> Result<HttpResponse> {
-    if request.method == "OPTIONS" {
-        Ok(HttpResponse::no_content())
-    } else if request.method == "GET" && path == "/mcp" {
-        Ok(HttpResponse::method_not_allowed())
-    } else if request.method == "GET" && matches!(path, "/" | "/health") {
+    if request.method == "GET" && matches!(path, "/" | "/health") {
         Ok(HttpResponse::json(200, json!({ "ok": true })))
-    } else if request.method == "DELETE" && matches!(path, "/" | "/mcp") {
+    } else if !request_has_bearer(request, bearer) {
+        Ok(HttpResponse::unauthorized())
+    } else if request.method == "OPTIONS" {
+        Ok(HttpResponse::no_content())
+    } else if request.method == "GET" && path == "/mcp"
+        || request.method == "DELETE" && matches!(path, "/" | "/mcp")
+    {
         Ok(HttpResponse::method_not_allowed())
     } else if request.method == "POST" && matches!(path, "/" | "/mcp") {
         match handle_json_rpc(&request.body, session_id, state)? {
@@ -97,6 +197,14 @@ fn route_http_request(
     } else {
         Ok(HttpResponse::not_found())
     }
+}
+
+fn request_has_bearer(request: &HttpRequest, bearer: &str) -> bool {
+    request
+        .headers
+        .get("authorization")
+        .and_then(|value| value.split_once(' '))
+        .is_some_and(|(scheme, value)| scheme.eq_ignore_ascii_case("bearer") && value == bearer)
 }
 
 fn request_contains_initialize(body: &str) -> bool {
@@ -223,13 +331,11 @@ fn write_http_response(
         200 => "OK",
         202 => "Accepted",
         204 => "No Content",
+        401 => "Unauthorized",
         405 => "Method Not Allowed",
         _ => "Error",
     };
-    write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, Accept, MCP-Protocol-Version\r\nAccess-Control-Expose-Headers: Mcp-Session-Id\r\n",
-    )?;
+    write!(stream, "HTTP/1.1 {status} {reason}\r\n")?;
     for (name, value) in extra_headers {
         write!(stream, "{name}: {value}\r\n")?;
     }
@@ -285,6 +391,14 @@ impl HttpResponse {
         }
     }
 
+    fn unauthorized() -> Self {
+        Self {
+            status: 401,
+            body: json!({ "error": "unauthorized" }).to_string(),
+            headers: vec![("WWW-Authenticate".to_string(), "Bearer".to_string())],
+        }
+    }
+
     fn not_found() -> Self {
         Self {
             status: 404,
@@ -313,12 +427,46 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
 
         let state = AppState::new(PermissionMode::Full, false).unwrap();
-        let result = handle_connection(server_stream, state);
+        let result = handle_connection(server_stream, state, "test-bearer");
 
         assert!(
             result.is_err(),
             "Expected an error when handling a reset connection, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn tunnel_relay_requires_secret_path_and_adds_bearer() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let bearer = "test-bearer";
+        let port = start_server(state, bearer).unwrap();
+        let relay_url =
+            start_tunnel_relay(&format!("http://127.0.0.1:{port}/mcp"), bearer).unwrap();
+        let relay = url::Url::parse(&relay_url).unwrap();
+        let relay_port = relay.port().unwrap();
+
+        let mut rejected = TcpStream::connect(("127.0.0.1", relay_port)).unwrap();
+        rejected
+            .write_all(b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        let mut rejected_response = String::new();
+        rejected.read_to_string(&mut rejected_response).unwrap();
+        assert!(rejected_response.starts_with("HTTP/1.1 404"));
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let mut accepted = TcpStream::connect(("127.0.0.1", relay_port)).unwrap();
+        write!(
+            accepted,
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+            relay.path(),
+            body.len(),
+            body
+        )
+        .unwrap();
+        let mut accepted_response = String::new();
+        accepted.read_to_string(&mut accepted_response).unwrap();
+        assert!(accepted_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(accepted_response.contains("read_file"));
     }
 }

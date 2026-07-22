@@ -2,13 +2,16 @@ use poke_around::policy::{PermissionMode, evaluate_access_policy, split_command_
 use serde_json::json;
 
 #[test]
-fn piped_read_only_commands_remain_allowed_in_limited_mode() {
+fn piped_read_only_commands_are_blocked_in_limited_mode() {
     let reason = evaluate_access_policy(
         "run_command",
         &json!({ "command": "pwd && ls -la | head" }),
         PermissionMode::Limited,
     );
-    assert_eq!(reason, None);
+    assert_eq!(
+        reason,
+        Some("Shell commands are disabled in limited mode.".to_string())
+    );
 }
 
 #[test]
@@ -20,7 +23,7 @@ fn piped_python_execution_stays_blocked_in_limited_mode() {
     );
     assert_eq!(
         reason,
-        Some("Command 'python3' is not permitted in this mode.".to_string())
+        Some("Shell commands are disabled in limited mode.".to_string())
     );
 }
 
@@ -33,18 +36,21 @@ fn piped_python_after_allowlisted_command_stays_blocked_in_limited_mode() {
     );
     assert_eq!(
         reason,
-        Some("Command 'python3' is not permitted in this mode.".to_string())
+        Some("Shell commands are disabled in limited mode.".to_string())
     );
 }
 
 #[test]
-fn piped_allowlisted_commands_still_work_in_limited_mode() {
+fn piped_commands_are_blocked_in_limited_mode() {
     let reason = evaluate_access_policy(
         "run_command",
         &json!({ "command": "ls | head" }),
         PermissionMode::Limited,
     );
-    assert_eq!(reason, None);
+    assert_eq!(
+        reason,
+        Some("Shell commands are disabled in limited mode.".to_string())
+    );
 }
 
 #[test]

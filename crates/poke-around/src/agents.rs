@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 pub fn run_agent_by_name(name: &str) -> Result<()> {
     let path = find_agent(name)?;
-    let runtime = find_js_runtime();
+    let runtime = find_js_runtime()?;
     let status = Command::new(runtime)
         .arg(path)
         .stdin(Stdio::null())
@@ -113,18 +113,16 @@ fn find_in_path(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn find_js_runtime() -> &'static str {
+fn find_js_runtime() -> Result<&'static str> {
     for candidate in ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"] {
         if Path::new(candidate).exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    for name in ["bun", "node"] {
-        if find_in_path(name) {
-            return name;
-        }
+    if find_in_path("bun") {
+        return Ok("bun");
     }
-    "node"
+    Err(Error::msg("bun runtime not found"))
 }
 
 #[cfg(test)]
@@ -231,8 +229,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_find_js_runtime_returns_string() {
-        let runtime = find_js_runtime();
-        assert!(!runtime.is_empty());
+        match find_js_runtime() {
+            Ok(runtime) => assert!(!runtime.is_empty()),
+            Err(error) => assert_eq!(error.to_string(), "bun runtime not found"),
+        }
     }
 
     #[test]

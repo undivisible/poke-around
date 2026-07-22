@@ -1,19 +1,22 @@
 use serde_json::{Value, json};
-use std::fs;
-use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime};
+use sha2::{Digest, Sha256};
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::Path;
+use std::process::Command;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::mcp::AppState;
 use crate::mcp::{
-    block_private_urls, canonicalize_path, ensure_path_allowed, error_result, expand_path,
-    file_path_arg, int_arg, ok_json, ok_json_with_image, ok_text, optional_output_path, path_arg,
-    query_target_from_args, str_arg, target_from_args,
+    block_private_urls, error_result, int_arg, ok_json, ok_json_with_image, ok_text,
+    optional_output_path, path_arg, str_arg,
 };
 use crate::{Error, Result};
-use rs_peekaboo::automation::{Target, parse_point};
-use rs_peekaboo::{Bounds, Direction, ImageCapture, ImageMode, Peekaboo, PeekabooConfig, Point};
-#[cfg(not(target_os = "windows"))]
-use shlex::split as shlex_split;
+use praefectus::CancellationToken;
+use rs_peekaboo::{ImageCapture, ImageMode, Peekaboo, PeekabooConfig};
+
+const MAX_FILE_READ_BYTES: u64 = 1024 * 1024;
+const MAX_DIRECTORY_ENTRIES: usize = 1024;
 
 // ponytail: single registry for all tools. Adding a tool = 1 entry, not 5 scattered lists.
 #[derive(Clone, Copy)]
@@ -28,14 +31,15 @@ struct ToolDef {
 pub(crate) enum ApprovalCategory {
     None,
     Always,
-    DestructiveOnly,
+    MutatingHttp,
+    PermissionGrant,
 }
 
 static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "run_command",
-        handler: |a, s| run_command(a, s),
-        approval: ApprovalCategory::DestructiveOnly,
+        handler: |_, _| unavailable_shell(),
+        approval: ApprovalCategory::Always,
         summary: "Run command",
     },
     ToolDef {
@@ -71,13 +75,13 @@ static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "read_image",
         handler: |a, s| read_image(a, s),
-        approval: ApprovalCategory::None,
+        approval: ApprovalCategory::Always,
         summary: "Read image file",
     },
     ToolDef {
         name: "run_agent",
         handler: |a, _| run_agent(a),
-        approval: ApprovalCategory::None,
+        approval: ApprovalCategory::Always,
         summary: "Run agent",
     },
     ToolDef {
@@ -101,7 +105,7 @@ static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "http_request",
         handler: |a, _| http_request(a),
-        approval: ApprovalCategory::None,
+        approval: ApprovalCategory::MutatingHttp,
         summary: "HTTP request",
     },
     ToolDef {
@@ -131,7 +135,7 @@ static TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "permissions",
         handler: |a, _| permissions(a),
-        approval: ApprovalCategory::None,
+        approval: ApprovalCategory::PermissionGrant,
         summary: "Check permissions",
     },
     ToolDef {
@@ -142,79 +146,67 @@ static TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "click",
-        handler: |a, s| click(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Click on screen",
     },
     ToolDef {
         name: "press",
-        handler: |a, s| press(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Press key",
     },
     ToolDef {
         name: "type",
-        handler: |a, s| type_text(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Type text",
     },
     ToolDef {
         name: "paste",
-        handler: |a, s| paste(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Paste text",
     },
     ToolDef {
         name: "hotkey",
-        handler: |a, s| hotkey(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Press hotkey",
     },
     ToolDef {
         name: "scroll",
-        handler: |a, s| scroll(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Scroll screen",
     },
     ToolDef {
-        name: "swipe",
-        handler: |a, s| swipe(a, s),
-        approval: ApprovalCategory::Always,
-        summary: "Swipe on screen",
-    },
-    ToolDef {
-        name: "drag",
-        handler: |a, s| drag(a, s),
-        approval: ApprovalCategory::Always,
-        summary: "Drag on screen",
-    },
-    ToolDef {
         name: "move",
-        handler: |a, s| move_pointer(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Move pointer",
     },
     ToolDef {
         name: "set_value",
-        handler: |a, s| set_value(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Set UI element value",
     },
     ToolDef {
         name: "perform_action",
-        handler: |a, s| perform_action(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Perform UI action",
     },
     ToolDef {
         name: "window",
-        handler: |a, s| window(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Manage window",
     },
     ToolDef {
         name: "app",
-        handler: |a, s| app(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Manage app",
     },
@@ -226,14 +218,14 @@ static TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "menu",
-        handler: |a, s| menu(a, s),
+        handler: |_, _| unavailable_target_effect(),
         approval: ApprovalCategory::Always,
         summary: "Click menu item",
     },
     ToolDef {
         name: "clipboard_read",
         handler: |_, _| clipboard_read(),
-        approval: ApprovalCategory::None,
+        approval: ApprovalCategory::Always,
         summary: "Read clipboard",
     },
     ToolDef {
@@ -244,7 +236,7 @@ static TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "run",
-        handler: |a, s| run_file(a, s),
+        handler: |_, _| unavailable_automation_file(),
         approval: ApprovalCategory::Always,
         summary: "Run automation script",
     },
@@ -256,17 +248,50 @@ static TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "clean",
-        handler: |a, s| clean(a, s),
+        handler: |_, _| unavailable_multi_delete(),
         approval: ApprovalCategory::Always,
         summary: "Clean snapshots",
     },
 ];
 
 pub fn execute_tool(tool_name: &str, args: &Value, state: &AppState) -> Result<Value> {
+    if is_unavailable_tool(tool_name) {
+        return Ok(error_result(
+            "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported",
+        ));
+    }
     match find_tool(tool_name) {
         Some(tool) => (tool.handler)(args, state),
         None => Ok(error_result(format!("Unknown tool: {tool_name}"))),
     }
+}
+
+pub(crate) fn execute_tool_with_control(
+    tool_name: &str,
+    args: &Value,
+    state: &AppState,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<Value> {
+    if cancellation.is_cancelled() {
+        return Ok(controlled_terminal("CANCELLED_BEFORE_EFFECT", true));
+    }
+    if Instant::now() >= deadline {
+        return Ok(controlled_terminal("EXPIRED_BEFORE_EFFECT", true));
+    }
+    let result = execute_tool(tool_name, args, state);
+    if cancellation.is_cancelled() || Instant::now() >= deadline {
+        return Ok(controlled_terminal("OUTCOME_UNKNOWN", false));
+    }
+    result
+}
+
+fn controlled_terminal(status: &str, retry_safe: bool) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": status }],
+        "structuredContent": { "status": status, "retry_safe": retry_safe },
+        "isError": true
+    })
 }
 
 pub(crate) fn tool_approval(tool_name: &str) -> Option<ApprovalCategory> {
@@ -275,14 +300,208 @@ pub(crate) fn tool_approval(tool_name: &str) -> Option<ApprovalCategory> {
 
 pub(crate) fn tool_summary(tool_name: &str, args: &Value) -> String {
     match tool_name {
-        "run_command" => format!("Run command: {}", str_arg(args, "command").unwrap_or("")),
-        "write_file" => format!("Write file: {}", str_arg(args, "path").unwrap_or("?")),
-        "edit_file" => format!("Edit file: {}", str_arg(args, "path").unwrap_or("?")),
-        "delete_file" => format!("Delete: {}", str_arg(args, "path").unwrap_or("?")),
+        "run_command" => {
+            let command = str_arg(args, "command").unwrap_or("");
+            format!(
+                "Run executable '{}' from '{}' ({} chars, sha256:{})",
+                command_executable(command),
+                normalized_path_label(str_arg(args, "cwd").unwrap_or(".")),
+                command.chars().count(),
+                value_hash(command)
+            )
+        }
+        "run_agent" => format!(
+            "Run agent '{}'",
+            bounded_label(str_arg(args, "name").unwrap_or("unknown"))
+        ),
+        "http_request" => format!(
+            "HTTP {} to {}",
+            bounded_label(str_arg(args, "method").unwrap_or("GET")),
+            url_origin(str_arg(args, "url").unwrap_or(""))
+        ),
+        "write_file" => format!(
+            "Write file '{}' ({} chars)",
+            normalized_path_label(str_arg(args, "path").unwrap_or("")),
+            text_length(args, "content")
+        ),
+        "edit_file" => format!(
+            "Edit file '{}' ({} chars to {} chars)",
+            normalized_path_label(str_arg(args, "path").unwrap_or("")),
+            text_length(args, "old_string"),
+            text_length(args, "new_string")
+        ),
+        "delete_file" => format!(
+            "Delete file '{}'",
+            normalized_path_label(str_arg(args, "path").unwrap_or(""))
+        ),
+        "take_screenshot" => format!(
+            "Take screenshot to '{}'",
+            str_arg(args, "path").map_or("temporary".to_string(), file_basename)
+        ),
+        "image" | "see" => format!(
+            "{} {}{}",
+            if tool_name == "see" {
+                "Observe"
+            } else {
+                "Capture"
+            },
+            bounded_label(str_arg(args, "mode").unwrap_or("screen")),
+            str_arg(args, "app")
+                .map_or(String::new(), |app| format!(" in '{}'", bounded_label(app)))
+        ),
+        "click" => format!(
+            "Click element reference with {} button {} time(s)",
+            bounded_label(str_arg(args, "button").unwrap_or("left")),
+            int_arg(args, "count").unwrap_or(1).max(1)
+        ),
+        "press" => format!(
+            "Press key '{}' {} time(s)",
+            bounded_label(str_arg(args, "key").unwrap_or("unknown")),
+            int_arg(args, "count").unwrap_or(1).max(1)
+        ),
+        "type" => format!(
+            "Type {} chars{}",
+            text_length(args, "text"),
+            str_arg(args, "app")
+                .map_or(String::new(), |app| format!(" in '{}'", bounded_label(app)))
+        ),
+        "paste" => format!("Paste {} chars", text_length(args, "text")),
+        "hotkey" => format!(
+            "Press hotkey with {} key(s)",
+            str_arg(args, "keys")
+                .unwrap_or("")
+                .split('+')
+                .filter(|key| !key.trim().is_empty())
+                .count()
+        ),
+        "scroll" => format!(
+            "Scroll dx={} dy={}",
+            int_arg(args, "dx").unwrap_or(0),
+            int_arg(args, "dy").unwrap_or(0)
+        ),
+        "move" => "Move pointer to element reference".to_string(),
+        "set_value" => format!("Set element value to {} chars", text_length(args, "value")),
+        "perform_action" => format!(
+            "Perform '{}' on element reference",
+            bounded_label(str_arg(args, "action").unwrap_or("unknown"))
+        ),
+        "window" | "app" | "menu" => format!(
+            "{} '{}'{}",
+            if tool_name == "window" {
+                "Window"
+            } else if tool_name == "app" {
+                "App"
+            } else {
+                "Menu"
+            },
+            bounded_label(str_arg(args, "action").unwrap_or("unknown")),
+            str_arg(args, "app").map_or(String::new(), |app| format!(
+                " for '{}'",
+                bounded_label(app)
+            ))
+        ),
+        "open" => format!(
+            "Open {}{}",
+            safe_open_target(str_arg(args, "target").unwrap_or("")),
+            str_arg(args, "app").map_or(String::new(), |app| format!(
+                " with '{}'",
+                bounded_label(app)
+            ))
+        ),
+        "clipboard_write" => format!("Write {} chars to clipboard", text_length(args, "text")),
+        "run" => format!(
+            "Run automation file '{}'",
+            file_basename(str_arg(args, "file").unwrap_or(""))
+        ),
+        "clean" => "Clean snapshots".to_string(),
         _ => find_tool(tool_name)
             .map(|t| t.summary)
             .unwrap_or("Take screenshot")
             .to_string(),
+    }
+}
+
+fn text_length(args: &Value, key: &str) -> usize {
+    str_arg(args, key).map_or(0, |text| text.chars().count())
+}
+
+fn bounded_label(value: &str) -> String {
+    value
+        .chars()
+        .take(64)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '_' | '-' | '+')
+            {
+                character
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+fn command_executable(command: &str) -> String {
+    command
+        .split_whitespace()
+        .find(|part| !part.contains('='))
+        .and_then(|part| Path::new(part.trim_matches(['\'', '"'])).file_name())
+        .and_then(|name| name.to_str())
+        .map(bounded_label)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn file_basename(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(bounded_label)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn normalized_path_label(path: &str) -> String {
+    Path::new(path)
+        .components()
+        .collect::<std::path::PathBuf>()
+        .to_string_lossy()
+        .chars()
+        .take(256)
+        .map(|character| {
+            if character.is_control() {
+                '?'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+fn value_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn url_origin(raw: &str) -> String {
+    let Ok(url) = url::Url::parse(raw) else {
+        return "invalid origin".to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return "invalid origin".to_string();
+    };
+    format!(
+        "{}://{}{}",
+        url.scheme(),
+        host,
+        url.port().map_or(String::new(), |port| format!(":{port}"))
+    )
+}
+
+fn safe_open_target(target: &str) -> String {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        url_origin(target)
+    } else {
+        format!("file '{}'", file_basename(target))
     }
 }
 
@@ -297,7 +516,72 @@ pub fn tools_json() -> String {
 fn all_tool_schemas() -> Vec<Value> {
     let mut tools = base_tools();
     tools.extend(computer_use_tools());
+    tools.retain(|tool| {
+        tool.get("name")
+            .and_then(Value::as_str)
+            .is_none_or(|name| !is_unavailable_tool(name))
+    });
+    for tool in &mut tools {
+        let Some(name) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if !matches!(
+            tool_approval(name),
+            Some(
+                ApprovalCategory::Always
+                    | ApprovalCategory::MutatingHttp
+                    | ApprovalCategory::PermissionGrant
+            )
+        ) {
+            continue;
+        }
+        if let Some(properties) = tool
+            .get_mut("inputSchema")
+            .and_then(|schema| schema.get_mut("properties"))
+            .and_then(Value::as_object_mut)
+        {
+            properties.insert(
+                "approval_request_id".to_string(),
+                json!({
+                    "type": "string",
+                    "description": "Opaque request ID returned while awaiting local host approval"
+                }),
+            );
+        }
+    }
     tools
+}
+
+pub(crate) fn is_unavailable_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "run_command"
+            | "network_speed"
+            | "read_image"
+            | "run_agent"
+            | "take_screenshot"
+            | "web_fetch"
+            | "http_request"
+            | "image"
+            | "see"
+            | "doctor"
+            | "click"
+            | "press"
+            | "type"
+            | "paste"
+            | "hotkey"
+            | "scroll"
+            | "move"
+            | "set_value"
+            | "perform_action"
+            | "window"
+            | "app"
+            | "open"
+            | "menu"
+            | "run"
+            | "clean"
+            | "sleep"
+    )
 }
 
 fn base_tools() -> Vec<Value> {
@@ -316,22 +600,7 @@ fn base_tools() -> Vec<Value> {
                             "type": "string",
                             "description": "Working directory (optional, defaults to home)"
                         },
-                        "approval_token": {
-                            "type": "string",
-                            "description": "Approval token returned by a previous AWAITING_APPROVAL response"
-                        },
-                        "approve": {
-                            "type": "boolean",
-                            "description": "Set true after user approves in chat"
-                        },
-                        "remember_in_session": {
-                            "type": "boolean",
-                            "description": "If true, remember this command for this session"
-                        },
-                        "remember_all_risky": {
-                            "type": "boolean",
-                            "description": "If true, auto-approve all risky tools for this session"
-                        }
+                        "approval_request_id": { "type": "string" }
                     },
                     "required": [
                         "command"
@@ -386,18 +655,7 @@ fn base_tools() -> Vec<Value> {
                             "type": "string",
                             "description": "Content to write"
                         },
-                        "approval_token": {
-                            "type": "string",
-                            "description": "Approval token returned by a previous AWAITING_APPROVAL response"
-                        },
-                        "approve": {
-                            "type": "boolean",
-                            "description": "Set true after user approves in chat"
-                        },
-                        "remember_all_risky": {
-                            "type": "boolean",
-                            "description": "If true, auto-approve all risky tools for this session"
-                        }
+                        "approval_request_id": { "type": "string" }
                     },
                     "required": [
                         "path",
@@ -468,18 +726,7 @@ fn base_tools() -> Vec<Value> {
                             "type": "string",
                             "description": "File path to save the screenshot"
                         },
-                        "approval_token": {
-                            "type": "string",
-                            "description": "Approval token returned by a previous AWAITING_APPROVAL response"
-                        },
-                        "approve": {
-                            "type": "boolean",
-                            "description": "Set true after user approves in chat"
-                        },
-                        "remember_all_risky": {
-                            "type": "boolean",
-                            "description": "If true, auto-approve all risky tools for this session"
-                        }
+                        "approval_request_id": { "type": "string" }
                     }
                 }
         }),
@@ -501,18 +748,7 @@ fn base_tools() -> Vec<Value> {
                             "type": "string",
                             "description": "Replacement string"
                         },
-                        "approval_token": {
-                            "type": "string",
-                            "description": "Approval token returned by a previous AWAITING_APPROVAL response"
-                        },
-                        "approve": {
-                            "type": "boolean",
-                            "description": "Set true after user approves in chat"
-                        },
-                        "remember_all_risky": {
-                            "type": "boolean",
-                            "description": "If true, auto-approve all risky tools for this session"
-                        }
+                        "approval_request_id": { "type": "string" }
                     },
                     "required": [
                         "path",
@@ -589,22 +825,7 @@ fn base_tools() -> Vec<Value> {
                             "type": "string",
                             "description": "Absolute or relative path to delete"
                         },
-                        "recursive": {
-                            "type": "boolean",
-                            "description": "Delete non-empty directories recursively"
-                        },
-                        "approval_token": {
-                            "type": "string",
-                            "description": "Approval token returned by a previous AWAITING_APPROVAL response"
-                        },
-                        "approve": {
-                            "type": "boolean",
-                            "description": "Set true after user approves in chat"
-                        },
-                        "remember_all_risky": {
-                            "type": "boolean",
-                            "description": "If true, auto-approve all risky tools for this session"
-                        }
+                        "approval_request_id": { "type": "string" }
                     },
                     "required": [
                         "path"
@@ -663,23 +884,6 @@ fn computer_use_tools() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {}}
         }),
         json!({
-            "name": "click",
-            "description": "Click a coordinate or resolved UI element on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "element_id": {"type": "string", "description": "Stable element ID from see"},
-                    "index": {"type": "number", "description": "Stable snapshot element index from see"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
-                    "x": {"type": "number", "description": "Screen x coordinate"},
-                    "y": {"type": "number", "description": "Screen y coordinate"},
-                    "button": {"type": "string", "description": "Mouse button: left or right"},
-                    "count": {"type": "number", "description": "Click count"},
-                    "background": {"type": "boolean", "description": "Prefer AX/background click without focus steal"}
-                }
-            }
-        }),
-        json!({
             "name": "press",
             "description": "Press a named key on the user's machine.",
             "inputSchema": {
@@ -734,71 +938,6 @@ fn computer_use_tools() -> Vec<Value> {
                     "dx": {"type": "number", "description": "Horizontal scroll amount"},
                     "dy": {"type": "number", "description": "Vertical scroll amount"}
                 }
-            }
-        }),
-        json!({
-            "name": "swipe",
-            "description": "Swipe between two coordinates on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "from": {"type": "string", "description": "Start coordinate as x,y"},
-                    "to": {"type": "string", "description": "End coordinate as x,y"},
-                    "duration_ms": {"type": "number", "description": "Swipe duration in milliseconds"}
-                },
-                "required": ["from", "to"]
-            }
-        }),
-        json!({
-            "name": "drag",
-            "description": "Drag between two coordinates on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "from": {"type": "string", "description": "Start coordinate as x,y"},
-                    "to": {"type": "string", "description": "End coordinate as x,y"},
-                    "duration_ms": {"type": "number", "description": "Drag duration in milliseconds"}
-                },
-                "required": ["from", "to"]
-            }
-        }),
-        json!({
-            "name": "move",
-            "description": "Move the pointer on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "element_id": {"type": "string", "description": "Stable element ID from see"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"},
-                    "x": {"type": "number", "description": "Screen x coordinate"},
-                    "y": {"type": "number", "description": "Screen y coordinate"}
-                }
-            }
-        }),
-        json!({
-            "name": "set_value",
-            "description": "Set the value of a resolved UI element on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "on": {"type": "string", "description": "Stable element ID or label from see"},
-                    "value": {"type": "string", "description": "Value to set"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"}
-                },
-                "required": ["on", "value"]
-            }
-        }),
-        json!({
-            "name": "perform_action",
-            "description": "Perform an accessibility action on a resolved UI element on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "on": {"type": "string", "description": "Stable element ID or label from see"},
-                    "action": {"type": "string", "description": "Accessibility action to perform"},
-                    "snapshot": {"type": "string", "description": "Optional snapshot id from see"}
-                },
-                "required": ["on", "action"]
             }
         }),
         json!({
@@ -872,15 +1011,6 @@ fn computer_use_tools() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "run",
-            "description": "Execute a JSON automation script on the user's machine.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"file": {"type": "string", "description": "Path to the script file"}},
-                "required": ["file"]
-            }
-        }),
-        json!({
             "name": "sleep",
             "description": "Sleep for a number of seconds on the user's machine.",
             "inputSchema": {
@@ -920,13 +1050,8 @@ fn image(args: &Value, _state: &AppState) -> Result<Value> {
         let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
         peekaboo().image(mode, path, retina)?
     };
-    let metadata = json!({
-        "path": capture.path,
-        "mode": capture.mode,
-        "bytes": capture.bytes,
-        "mime_type": capture.mime_type,
-        "ephemeral": capture.ephemeral,
-    });
+    crate::config::restrict_private_file(&capture.path)?;
+    let metadata = json!({ "mode": capture.mode });
     ok_json_with_image(metadata, &capture)
 }
 
@@ -937,17 +1062,16 @@ fn see(args: &Value, _state: &AppState) -> Result<Value> {
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
     // see() assigns stable element indices and caches the snapshot.
     let snapshot = peekaboo().see(app, mode, path.clone(), retina)?;
+    let snapshot_dir = rs_peekaboo::cache::snapshot_dir()?;
+    crate::config::restrict_private_dir(&snapshot_dir)?;
+    crate::config::restrict_private_file(
+        &snapshot_dir.join(format!("{}.json", snapshot.snapshot_id)),
+    )?;
     let capture = peekaboo().image(mode, path, retina)?;
+    crate::config::restrict_private_file(&capture.path)?;
     let metadata = json!({
         "snapshot_id": snapshot.snapshot_id,
-        "elements": snapshot.elements,
-        "image": {
-            "path": capture.path,
-            "mode": capture.mode,
-            "bytes": capture.bytes,
-            "mime_type": capture.mime_type,
-            "ephemeral": capture.ephemeral,
-        }
+        "mode": capture.mode,
     });
     ok_json_with_image(metadata, &capture)
 }
@@ -968,163 +1092,10 @@ fn doctor() -> Result<Value> {
     Ok(ok_json(peekaboo().doctor()?))
 }
 
-fn click(args: &Value, _state: &AppState) -> Result<Value> {
-    let button = str_arg(args, "button").unwrap_or("left");
-    let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
-    let background = args
-        .get("background")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    Ok(ok_json(peekaboo().click_with_options(
-        target_from_args(args)?,
-        button,
-        count,
-        background,
-    )?))
-}
-
-fn press(args: &Value, _state: &AppState) -> Result<Value> {
-    let key = str_arg(args, "key").unwrap_or("");
-    let count = int_arg(args, "count").unwrap_or(1).max(1) as u32;
-    let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
-    Ok(ok_json(peekaboo().press(key, count, delay_ms)?))
-}
-
-fn type_text(args: &Value, _state: &AppState) -> Result<Value> {
-    let text = str_arg(args, "text").unwrap_or("");
-    let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(false);
-    let press_return = args.get("return").and_then(Value::as_bool).unwrap_or(false);
-    let delay_ms = args.get("delay_ms").and_then(Value::as_u64);
-    let app = str_arg(args, "app");
-    Ok(ok_json(peekaboo().type_text(
-        text,
-        clear,
-        press_return,
-        delay_ms,
-        app,
-    )?))
-}
-
-fn paste(args: &Value, _state: &AppState) -> Result<Value> {
-    let text = str_arg(args, "text").unwrap_or("");
-    Ok(ok_json(peekaboo().paste(text)?))
-}
-
-fn hotkey(args: &Value, _state: &AppState) -> Result<Value> {
-    let keys = str_arg(args, "keys").unwrap_or("");
-    let parts = keys
-        .split('+')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    Ok(ok_json(peekaboo().hotkey(&parts)?))
-}
-
-fn scroll(args: &Value, _state: &AppState) -> Result<Value> {
-    let dx = int_arg(args, "dx").unwrap_or(0);
-    let dy = int_arg(args, "dy").unwrap_or(0);
-    let (direction, amount) = if dx != 0 {
-        let direction = if dx < 0 {
-            Direction::Left
-        } else {
-            Direction::Right
-        };
-        (direction, dx.unsigned_abs().max(1) as u32)
-    } else {
-        let direction = if dy < 0 {
-            Direction::Down
-        } else {
-            Direction::Up
-        };
-        (direction, dy.unsigned_abs().max(1) as u32)
-    };
-    Ok(ok_json(peekaboo().scroll(direction, amount)?))
-}
-
-fn swipe(args: &Value, _state: &AppState) -> Result<Value> {
-    let from = parse_point(str_arg(args, "from").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
-    let to = parse_point(str_arg(args, "to").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
-    let duration_ms = args
-        .get("duration_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(250);
-    Ok(ok_json(peekaboo().swipe(
-        Target::Point(from),
-        Target::Point(to),
-        duration_ms,
-    )?))
-}
-
-fn drag(args: &Value, _state: &AppState) -> Result<Value> {
-    let from = parse_point(str_arg(args, "from").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
-    let to = parse_point(str_arg(args, "to").unwrap_or("0,0")).unwrap_or(Point { x: 0, y: 0 });
-    let duration_ms = args
-        .get("duration_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(250);
-    Ok(ok_json(peekaboo().drag(
-        Target::Point(from),
-        Target::Point(to),
-        duration_ms,
-    )?))
-}
-
-fn move_pointer(args: &Value, _state: &AppState) -> Result<Value> {
-    Ok(ok_json(peekaboo().move_cursor(target_from_args(args)?)?))
-}
-
-fn set_value(args: &Value, _state: &AppState) -> Result<Value> {
-    let value = str_arg(args, "value").unwrap_or("");
-    Ok(ok_json(
-        peekaboo().set_value(query_target_from_args(args)?, value)?,
+fn unavailable_target_effect() -> Result<Value> {
+    Ok(error_result(
+        "targeted computer-use effect unavailable: live target identity fencing is not supported",
     ))
-}
-
-fn perform_action(args: &Value, _state: &AppState) -> Result<Value> {
-    let action = str_arg(args, "action").unwrap_or("");
-    Ok(ok_json(
-        peekaboo().perform_action(query_target_from_args(args)?, action)?,
-    ))
-}
-
-fn window(args: &Value, _state: &AppState) -> Result<Value> {
-    let action = str_arg(args, "action").unwrap_or("");
-    let bounds = match action {
-        "move" => Some(Bounds {
-            x: int_arg(args, "x").unwrap_or(0),
-            y: int_arg(args, "y").unwrap_or(0),
-            width: 0,
-            height: 0,
-        }),
-        "resize" => Some(Bounds {
-            x: 0,
-            y: 0,
-            width: int_arg(args, "width").unwrap_or(0),
-            height: int_arg(args, "height").unwrap_or(0),
-        }),
-        "set-bounds" => Some(Bounds {
-            x: int_arg(args, "x").unwrap_or(0),
-            y: int_arg(args, "y").unwrap_or(0),
-            width: int_arg(args, "width").unwrap_or(0),
-            height: int_arg(args, "height").unwrap_or(0),
-        }),
-        _ => None,
-    };
-    Ok(ok_json(peekaboo().window(
-        action,
-        str_arg(args, "app"),
-        str_arg(args, "title"),
-        bounds,
-    )?))
-}
-
-fn app(args: &Value, _state: &AppState) -> Result<Value> {
-    let action = str_arg(args, "action").unwrap_or("");
-    if action == "list" {
-        return Ok(ok_json(peekaboo().app("list", None)?));
-    }
-    let app = str_arg(args, "app").unwrap_or("");
-    Ok(ok_json(peekaboo().app(action, Some(app))?))
 }
 
 fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
@@ -1137,25 +1108,11 @@ fn open_target(args: &Value, _state: &AppState) -> Result<Value> {
     Ok(ok_json(peekaboo().open(target, app, no_focus)?))
 }
 
-fn menu(args: &Value, _state: &AppState) -> Result<Value> {
-    let action = str_arg(args, "action").unwrap_or("");
-    let app = str_arg(args, "app").unwrap_or("");
-    if matches!(action, "list" | "list-all" | "inspect") {
-        let action = if action == "inspect" { "list" } else { action };
-        return Ok(ok_json(peekaboo().menu(action, app, None, None)?));
-    }
-    let menu = str_arg(args, "menu").unwrap_or("");
-    let item = str_arg(args, "item").unwrap_or("");
-    Ok(ok_json(peekaboo().menu(
-        "click",
-        app,
-        Some(menu),
-        Some(item),
-    )?))
-}
-
 fn clipboard_read() -> Result<Value> {
     let text = peekaboo().clipboard_read()?;
+    if text.len() as u64 > MAX_FILE_READ_BYTES {
+        return Err(Error::msg("clipboard exceeds the 1 MiB read limit"));
+    }
     Ok(ok_json(json!({ "text": text })))
 }
 
@@ -1164,10 +1121,10 @@ fn clipboard_write(args: &Value) -> Result<Value> {
     Ok(ok_json(peekaboo().clipboard_write(text)?))
 }
 
-fn run_file(args: &Value, state: &AppState) -> Result<Value> {
-    let path = file_path_arg(args, state)?;
-    let results = peekaboo().run_file(&path)?;
-    Ok(ok_json(json!(results)))
+fn unavailable_automation_file() -> Result<Value> {
+    Ok(error_result(
+        "automation scripts unavailable: command-level target fencing is not supported",
+    ))
 }
 
 fn sleep_cmd(args: &Value) -> Result<Value> {
@@ -1177,14 +1134,10 @@ fn sleep_cmd(args: &Value) -> Result<Value> {
     Ok(ok_json(json!({ "slept_ms": millis })))
 }
 
-fn clean(args: &Value, _state: &AppState) -> Result<Value> {
-    let all = args
-        .get("all_snapshots")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let snapshot = str_arg(args, "snapshot");
-    let removed = rs_peekaboo::cache::clean_snapshots(all, snapshot)?;
-    Ok(ok_json(json!({ "removed": removed })))
+fn unavailable_multi_delete() -> Result<Value> {
+    Ok(error_result(
+        "multi-file deletion unavailable: between-effect cancellation is not supported",
+    ))
 }
 
 fn network_speed(args: &Value) -> Result<Value> {
@@ -1235,81 +1188,27 @@ fn measure_curl_speed(args: &[&str]) -> Result<f64> {
     Ok((bytes_per_second * 8.0) / 1_000_000.0)
 }
 
-fn run_command(args: &Value, state: &AppState) -> Result<Value> {
-    let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-    let cwd = if let Some(path) = args.get("cwd").and_then(Value::as_str) {
-        let expanded = expand_path(path, &state.inner.home);
-        let canonical = canonicalize_path(&expanded)?;
-        ensure_path_allowed(&canonical, state)?;
-        canonical
-    } else {
-        state.inner.home.clone()
-    };
-    #[cfg(target_os = "windows")]
-    let parsed_args =
-        windows_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
-    #[cfg(not(target_os = "windows"))]
-    let parsed_args =
-        shlex_split(command).ok_or_else(|| Error::msg("failed to parse command string"))?;
-    if parsed_args.is_empty() {
-        return Err(Error::msg("command is empty after parsing"));
-    }
-    let output = Command::new(&parsed_args[0])
-        .args(&parsed_args[1..])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .output()?;
-    Ok(ok_json(json!({
-        "stdout": String::from_utf8_lossy(&output.stdout),
-        "stderr": String::from_utf8_lossy(&output.stderr),
-        "exit_code": output.status.code().unwrap_or(1),
-        "success": output.status.success()
-    })))
-}
-
-#[cfg(target_os = "windows")]
-fn windows_split(s: &str) -> Option<Vec<String>> {
-    let mut args = Vec::new();
-    let mut current_arg = String::new();
-    let mut in_double_quotes = false;
-    let mut in_single_quotes = false;
-    let mut escape_next = false;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if escape_next {
-            current_arg.push(c);
-            escape_next = false;
-            continue;
-        }
-        match c {
-            '\\' => {
-                if let Some(&next_c) = chars.peek()
-                    && (next_c == '"' || next_c == '\'')
-                {
-                    escape_next = true;
-                    continue;
-                }
-                current_arg.push(c);
-            }
-            '"' if !in_single_quotes => in_double_quotes = !in_double_quotes,
-            '\'' if !in_double_quotes => in_single_quotes = !in_single_quotes,
-            ' ' | '\t' | '\n' | '\r' if !in_double_quotes && !in_single_quotes => {
-                if !current_arg.is_empty() {
-                    args.push(current_arg.clone());
-                    current_arg.clear();
-                }
-            }
-            _ => current_arg.push(c),
-        }
-    }
-    if !current_arg.is_empty() {
-        args.push(current_arg);
-    }
-    Some(args)
+fn unavailable_shell() -> Result<Value> {
+    Ok(error_result(
+        "shell execution unavailable: reliable cross-platform process-tree cancellation is not supported",
+    ))
 }
 
 fn read_file(args: &Value, state: &AppState) -> Result<Value> {
-    Ok(ok_text(fs::read_to_string(path_arg(args, state)?)?))
+    let path = path_arg(args, state)?;
+    Ok(ok_text(read_text_file_bounded(&path)?))
+}
+
+fn read_text_file_bounded(path: &Path) -> Result<String> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_FILE_READ_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_READ_BYTES {
+        return Err(Error::msg("file exceeds the 1 MiB read limit"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| Error::msg("file is not valid UTF-8"))?;
+    Ok(text)
 }
 
 fn write_file(args: &Value, state: &AppState) -> Result<Value> {
@@ -1325,7 +1224,10 @@ fn write_file(args: &Value, state: &AppState) -> Result<Value> {
 fn list_directory(args: &Value, state: &AppState) -> Result<Value> {
     let path = path_arg(args, state)?;
     let mut entries = Vec::new();
-    for entry in fs::read_dir(&path)? {
+    for (index, entry) in fs::read_dir(&path)?.enumerate() {
+        if index >= MAX_DIRECTORY_ENTRIES {
+            return Err(Error::msg("directory exceeds the 1024 entry limit"));
+        }
         let entry = entry?;
         let file_type = entry.file_type()?;
         let is_dir = file_type.is_dir();
@@ -1395,7 +1297,7 @@ fn read_image(args: &Value, state: &AppState) -> Result<Value> {
         "pdf" => "application/pdf",
         _ => "application/octet-stream",
     };
-    let metadata = json!({ "path": path, "mime_type": mime });
+    let metadata = json!({});
     let capture = ImageCapture {
         path: path.clone(),
         mode: ImageMode::Screen,
@@ -1417,12 +1319,8 @@ fn take_screenshot(args: &Value) -> Result<Value> {
     let mode = ImageMode::Screen;
     let path = optional_output_path(args)?;
     let capture = peekaboo().image(mode, path, true)?;
-    let metadata = json!({
-        "path": capture.path,
-        "bytes": capture.bytes,
-        "mime_type": capture.mime_type,
-        "ephemeral": capture.ephemeral,
-    });
+    crate::config::restrict_private_file(&capture.path)?;
+    let metadata = json!({ "mode": capture.mode });
     ok_json_with_image(metadata, &capture)
 }
 
@@ -1430,7 +1328,7 @@ fn edit_file(args: &Value, state: &AppState) -> Result<Value> {
     let path = path_arg(args, state)?;
     let old = args.get("old_string").and_then(Value::as_str).unwrap_or("");
     let new = args.get("new_string").and_then(Value::as_str).unwrap_or("");
-    let data = fs::read_to_string(&path)?;
+    let data = read_text_file_bounded(&path)?;
     let count = data.matches(old).count();
     if old.is_empty() || count != 1 {
         return Ok(error_result(format!("old_string matched {count} times")));
@@ -1533,17 +1431,14 @@ fn http_request(args: &Value) -> Result<Value> {
 
 fn delete_file(args: &Value, state: &AppState) -> Result<Value> {
     let path = path_arg(args, state)?;
-    let recursive = args
-        .get("recursive")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    if args.get("recursive").and_then(Value::as_bool) == Some(true) {
+        return Ok(error_result(
+            "recursive deletion unavailable: between-effect cancellation is not supported",
+        ));
+    }
     let metadata = fs::metadata(&path)?;
     if metadata.is_dir() {
-        if recursive {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_dir(&path)?;
-        }
+        fs::remove_dir(&path)?;
     } else {
         fs::remove_file(&path)?;
     }
@@ -1565,25 +1460,25 @@ mod tests {
     }
 
     #[test]
-    fn image_should_return_mcp_image_content() {
+    fn image_should_return_only_an_external_hash_locator() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
 
         let response = image(&json!({}), &state);
         if let Ok(response) = response {
             let content = response["content"].as_array().unwrap();
 
-            assert_eq!(content.len(), 2);
+            assert_eq!(content.len(), 1);
             assert_eq!(content[0]["type"], "text");
-            assert_eq!(content[1]["type"], "image");
-            assert_eq!(content[1]["mimeType"], "image/png");
 
             let structured_content = &response["structuredContent"];
             assert_eq!(structured_content["mode"], "screen");
-            assert_eq!(structured_content["ephemeral"], true);
-            assert!(structured_content["path"].as_str().is_some());
-
-            let path = std::path::PathBuf::from(structured_content["path"].as_str().unwrap());
-            let _ = fs::remove_file(path);
+            assert!(
+                structured_content["artifact"]["locator"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("sha256:")
+            );
+            assert!(structured_content.get("path").is_none());
         } else {
             let err = response.unwrap_err();
             assert!(expected_image_error(&err.to_string()));
@@ -1591,7 +1486,7 @@ mod tests {
     }
 
     #[test]
-    fn image_with_args_should_return_mcp_image_content() {
+    fn image_with_args_should_not_return_image_bytes_or_paths() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
 
         let path =
@@ -1604,18 +1499,23 @@ mod tests {
         if let Ok(response) = response {
             let content = response["content"].as_array().unwrap();
 
-            assert_eq!(content.len(), 2);
+            assert_eq!(content.len(), 1);
             assert_eq!(content[0]["type"], "text");
-            assert_eq!(content[1]["type"], "image");
-            assert_eq!(content[1]["mimeType"], "image/png");
 
             let structured_content = &response["structuredContent"];
             assert_eq!(structured_content["mode"], "screen");
-            assert_eq!(structured_content["ephemeral"], false);
-            let expected = path.canonicalize().unwrap_or_else(|_| path.clone());
-            let actual = std::path::PathBuf::from(structured_content["path"].as_str().unwrap());
-            let actual = actual.canonicalize().unwrap_or(actual);
-            assert_eq!(actual, expected);
+            assert!(structured_content.get("path").is_none());
+            assert!(
+                structured_content["artifact"]["locator"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("sha256:")
+            );
+            assert!(
+                !response
+                    .to_string()
+                    .contains(&path.to_string_lossy().to_string())
+            );
 
             let _ = fs::remove_file(path);
         } else {
@@ -1625,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn read_image_should_return_mcp_image_content() {
+    fn read_image_should_return_only_an_external_hash_locator() {
         let path =
             std::env::temp_dir().join(format!("poke-around-read-image-{}.png", std::process::id()));
         fs::write(&path, [1_u8, 2, 3, 4]).unwrap();
@@ -1634,10 +1534,21 @@ mod tests {
         let response = read_image(&json!({ "path": path }), &state).unwrap();
         let content = response["content"].as_array().unwrap();
 
-        assert_eq!(content[1]["type"], "image");
-        assert_eq!(content[1]["mimeType"], "image/png");
-        assert_eq!(content[1]["data"], "AQIDBA==");
-        assert!(response["structuredContent"].get("base64").is_none());
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(response["structuredContent"]["artifact"]["bytes"], 4);
+        assert!(
+            response["structuredContent"]["artifact"]["locator"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        assert!(!response.to_string().contains("AQIDBA=="));
+        assert!(
+            !response
+                .to_string()
+                .contains(&path.to_string_lossy().to_string())
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1665,5 +1576,174 @@ mod tests {
             crate::Error::Io(_) => {}
             other => panic!("Expected IO error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_handlers_enforce_resource_limits() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let oversized = directory.path().join("oversized.txt");
+        File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_FILE_READ_BYTES + 1)
+            .unwrap();
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        assert!(read_file(&json!({ "path": oversized }), &state).is_err());
+
+        for index in 0..=MAX_DIRECTORY_ENTRIES {
+            File::create(directory.path().join(index.to_string())).unwrap();
+        }
+        assert!(list_directory(&json!({ "path": directory.path() }), &state).is_err());
+    }
+
+    #[test]
+    fn targeted_effects_are_unavailable() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        for tool in [
+            "run_command",
+            "click",
+            "press",
+            "type",
+            "paste",
+            "hotkey",
+            "scroll",
+            "move",
+            "set_value",
+            "perform_action",
+            "window",
+            "app",
+            "menu",
+            "run",
+            "clean",
+        ] {
+            let response = execute_tool(tool, &json!({}), &state).unwrap();
+            assert_eq!(response["isError"], true);
+        }
+        for tool in ["swipe", "drag"] {
+            let response = execute_tool(tool, &json!({}), &state).unwrap();
+            assert_eq!(response["isError"], true);
+        }
+    }
+
+    #[test]
+    fn cancellation_before_effect_does_not_write() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "poke-around-cancelled-write-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        let result = execute_tool_with_control(
+            "write_file",
+            &json!({ "path": path, "content": "not written" }),
+            &state,
+            &cancellation,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["structuredContent"]["status"],
+            "CANCELLED_BEFORE_EFFECT"
+        );
+        assert_eq!(result["structuredContent"]["retry_safe"], true);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn recursive_deletion_fails_before_effect() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let nested = directory.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("file"), "value").unwrap();
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let result = delete_file(
+            &json!({ "path": nested.clone(), "recursive": true }),
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(result["isError"], true);
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn shell_execution_fails_closed() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let result = execute_tool_with_control(
+            "run_command",
+            &json!({ "command": "printf poke" }),
+            &state,
+            &CancellationToken::default(),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("unavailable")
+        );
+    }
+
+    #[test]
+    fn approval_summaries_are_informed_without_exposing_secrets() {
+        let secret = "TOP_SECRET_CREDENTIAL";
+        let command = tool_summary(
+            "run_command",
+            &json!({ "command": format!("API_KEY={secret} curl --token {secret}") }),
+        );
+        let http = tool_summary(
+            "http_request",
+            &json!({
+                "method": "POST",
+                "url": format!("https://user:{secret}@example.com/private?token={secret}"),
+                "headers": { "Authorization": secret },
+                "body": secret
+            }),
+        );
+        let file = tool_summary(
+            "write_file",
+            &json!({ "path": "/private/account/credentials.txt", "content": secret }),
+        );
+        let typed = tool_summary("type", &json!({ "text": secret, "app": "Notes" }));
+        let pasted = tool_summary("paste", &json!({ "text": secret }));
+        let clipboard = tool_summary("clipboard_write", &json!({ "text": secret }));
+
+        assert!(command.contains("curl"));
+        assert!(command.contains("sha256:"));
+        assert_eq!(http, "HTTP POST to https://example.com");
+        assert!(file.contains("/private/account/credentials.txt"));
+        assert!(typed.contains("21 chars in 'Notes'"));
+        assert!(pasted.contains("21 chars"));
+        for summary in [command, http, file, typed, pasted, clipboard] {
+            assert!(!summary.contains(secret));
+            assert!(!summary.contains("Authorization"));
+        }
+    }
+
+    #[test]
+    fn approval_summaries_distinguish_risky_subtypes_without_selectors() {
+        let launch = tool_summary("app", &json!({ "action": "launch", "app": "Safari" }));
+        let quit = tool_summary("app", &json!({ "action": "quit", "app": "Safari" }));
+        let set_value = tool_summary(
+            "set_value",
+            &json!({ "on": "secret selector", "value": "private value" }),
+        );
+        let perform = tool_summary(
+            "perform_action",
+            &json!({ "on": "secret selector", "action": "press" }),
+        );
+
+        assert_ne!(launch, quit);
+        assert_eq!(launch, "App 'launch' for 'Safari'");
+        assert_eq!(quit, "App 'quit' for 'Safari'");
+        assert_eq!(set_value, "Set element value to 13 chars");
+        assert_eq!(perform, "Perform 'press' on element reference");
+        assert!(!set_value.contains("secret selector"));
+        assert!(!set_value.contains("private value"));
+        assert!(!perform.contains("secret selector"));
     }
 }

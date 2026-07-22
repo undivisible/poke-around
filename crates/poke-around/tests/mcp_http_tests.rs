@@ -1,10 +1,12 @@
 use poke_around::mcp::AppState;
 use poke_around::mcp_server::start_server;
-use poke_around::policy::PermissionMode;
+use poke_around::policy::{ApprovalMode, PermissionMode};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+
+const TEST_BEARER: &str = "test-bearer";
 
 fn post_json(port: u16, body: &str) -> String {
     post_json_path(port, "/mcp", body)
@@ -13,7 +15,7 @@ fn post_json(port: u16, body: &str) -> String {
 fn post_json_in_session(port: u16, session_id: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
     let request = format!(
-        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nMcp-Session-Id: {session_id}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TEST_BEARER}\r\nContent-Type: application/json\r\nMcp-Session-Id: {session_id}\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -30,7 +32,7 @@ fn post_json_in_session(port: u16, session_id: &str, body: &str) -> String {
 fn post_json_path(port: u16, path: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TEST_BEARER}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -45,12 +47,42 @@ fn post_json_path(port: u16, path: &str, body: &str) -> String {
 }
 
 #[test]
+fn mcp_requires_bearer_and_does_not_allow_cross_origin_requests() {
+    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://attacker.example\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(request.as_bytes())
+        .expect("request should write");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("response should read");
+
+    assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+    assert!(response.contains("WWW-Authenticate: Bearer"));
+    assert!(
+        !response
+            .to_ascii_lowercase()
+            .contains("access-control-allow")
+    );
+}
+
+#[test]
 fn get_mcp_should_return_method_not_allowed() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
     stream
-        .write_all(b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .write_all(
+            b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-bearer\r\n\r\n",
+        )
         .expect("request should write");
     let mut response = String::new();
     stream
@@ -64,7 +96,7 @@ fn get_mcp_should_return_method_not_allowed() {
 #[test]
 fn initialize_should_return_mcp_session_id_header() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json(
         port,
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
@@ -77,7 +109,7 @@ fn initialize_should_return_mcp_session_id_header() {
 #[test]
 fn mcp_batch_should_return_tools_after_initialized_notification() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json(
         port,
         r#"[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]"#,
@@ -86,14 +118,14 @@ fn mcp_batch_should_return_tools_after_initialized_notification() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
     assert!(response.contains(r#""id":1"#));
     assert!(response.contains(r#""id":2"#));
-    assert!(response.contains(r#""name":"run_command""#));
+    assert!(response.contains(r#""name":"read_file""#));
     assert!(!response.contains(r#"notifications/initialized"#));
 }
 
 #[test]
 fn initialized_notification_without_id_should_return_no_content() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json(
         port,
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
@@ -105,7 +137,7 @@ fn initialized_notification_without_id_should_return_no_content() {
 #[test]
 fn initialized_request_with_id_should_return_json_rpc_response() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json(
         port,
         r#"{"jsonrpc":"2.0","id":3,"method":"notifications/initialized"}"#,
@@ -119,7 +151,7 @@ fn initialized_request_with_id_should_return_json_rpc_response() {
 #[test]
 fn batch_unknown_method_without_id_should_return_accepted() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json(
         port,
         r#"[{"jsonrpc":"2.0","method":"unknown/notification"}]"#,
@@ -131,7 +163,7 @@ fn batch_unknown_method_without_id_should_return_accepted() {
 #[test]
 fn tool_call_without_id_should_return_no_content() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json(
         port,
         r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"system_info","arguments":{}}}"#,
@@ -143,7 +175,7 @@ fn tool_call_without_id_should_return_no_content() {
 #[test]
 fn incomplete_body_should_return_bad_request() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
     stream
         .write_all(
@@ -165,7 +197,7 @@ fn incomplete_body_should_return_bad_request() {
 #[test]
 fn mcp_absolute_form_request_target_should_return_tools() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json_path(
         port,
         &format!("http://127.0.0.1:{port}/mcp"),
@@ -173,13 +205,13 @@ fn mcp_absolute_form_request_target_should_return_tools() {
     );
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#""name":"run_command""#));
+    assert!(response.contains(r#""name":"read_file""#));
 }
 
 #[test]
 fn mcp_root_request_target_should_return_tools() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json_path(
         port,
         "/",
@@ -187,13 +219,13 @@ fn mcp_root_request_target_should_return_tools() {
     );
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#""name":"run_command""#));
+    assert!(response.contains(r#""name":"read_file""#));
 }
 
 #[test]
 fn oauth_well_known_paths_should_not_be_collapsed_to_health_check() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     for path in [
         "/.well-known/oauth-protected-resource/mcp",
         "/.well-known/oauth-authorization-server/mcp",
@@ -201,7 +233,9 @@ fn oauth_well_known_paths_should_not_be_collapsed_to_health_check() {
         "/mcp/.well-known/openid-configuration",
     ] {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
-        let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TEST_BEARER}\r\n\r\n"
+        );
         stream
             .write_all(request.as_bytes())
             .expect("request should write");
@@ -225,7 +259,7 @@ fn oauth_well_known_paths_should_not_be_collapsed_to_health_check() {
 #[test]
 fn mcp_prefixed_request_target_should_return_tools() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let response = post_json_path(
         port,
         "/b92095cb-bf54/mcp",
@@ -233,18 +267,18 @@ fn mcp_prefixed_request_target_should_return_tools() {
     );
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains(r#""name":"run_command""#));
+    assert!(response.contains(r#""name":"read_file""#));
 }
 
 #[test]
-fn read_image_tool_should_return_mcp_image_content_over_http() {
+fn read_image_tool_should_fail_closed_over_http() {
     let path = std::env::temp_dir().join(format!(
         "poke-around-http-read-image-{}.png",
         std::process::id()
     ));
     fs::write(&path, [1_u8, 2, 3, 4]).expect("image fixture should write");
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let body = json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -266,10 +300,15 @@ fn read_image_tool_should_return_mcp_image_content_over_http() {
         .expect("content should be array");
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert_eq!(content[1]["type"], "image");
-    assert_eq!(content[1]["mimeType"], "image/png");
-    assert_eq!(content[1]["data"], "AQIDBA==");
-    assert!(result["structuredContent"].get("base64").is_none());
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(result["isError"], true);
+    assert_eq!(
+        content[0]["text"],
+        "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported"
+    );
+    assert!(!body.contains("AQIDBA=="));
+    assert!(!body.contains(&path.to_string_lossy().to_string()));
 
     let _ = fs::remove_file(path);
 }
@@ -277,7 +316,7 @@ fn read_image_tool_should_return_mcp_image_content_over_http() {
 #[test]
 fn malformed_request_should_return_bad_request() {
     let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("server should accept");
     stream
         .write_all(b"GARBAGE DATA WITHOUT PROPER HTTP FORMAT")
@@ -295,11 +334,12 @@ fn malformed_request_should_return_bad_request() {
 }
 
 #[test]
-fn approval_should_reject_added_remember_all_risky_scope() {
+fn caller_echo_should_not_approve_an_action() {
     let path =
         std::env::temp_dir().join(format!("poke-around-approval-{}.txt", std::process::id()));
-    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
+    let state = AppState::with_approval_mode(PermissionMode::Full, ApprovalMode::PerAction)
+        .expect("state should initialize");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let session_id = "approval-session";
     let first = json!({
         "jsonrpc": "2.0",
@@ -319,9 +359,9 @@ fn approval_should_reject_added_remember_all_risky_scope() {
         .split_once("\r\n\r\n")
         .expect("response should include body separator");
     let value: Value = serde_json::from_str(body).expect("response body should parse");
-    let token = value["result"]["structuredContent"]["approvalToken"]
+    let request_id = value["result"]["structuredContent"]["approvalRequestId"]
         .as_str()
-        .expect("approval token should exist");
+        .expect("approval request ID should exist");
     let second = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -331,9 +371,9 @@ fn approval_should_reject_added_remember_all_risky_scope() {
             "arguments": {
                 "path": path,
                 "content": "first",
+                "approval_request_id": request_id,
                 "approve": true,
-                "approval_token": token,
-                "remember_all_risky": true
+                "approval_token": "caller-issued"
             }
         }
     })
@@ -349,17 +389,17 @@ fn approval_should_reject_added_remember_all_risky_scope() {
 
 #[test]
 fn connections_without_session_header_should_not_share_default_session() {
-    let state = AppState::new(PermissionMode::Full, false).expect("state should initialize");
-    let port = start_server(state).expect("server should start");
-    let command = "rm /tmp/poke-around-session-test-should-not-exist";
+    let state = AppState::with_approval_mode(PermissionMode::Full, ApprovalMode::PerAction)
+        .expect("state should initialize");
+    let port = start_server(state, TEST_BEARER).expect("server should start");
     let destructive = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
         "params": {
-            "name": "run_command",
+            "name": "clipboard_write",
             "arguments": {
-                "command": command
+                "text": "session-bound-value"
             }
         }
     })
@@ -369,27 +409,25 @@ fn connections_without_session_header_should_not_share_default_session() {
         .split_once("\r\n\r\n")
         .expect("response should include body separator");
     let first_value: Value = serde_json::from_str(first_body).expect("response body should parse");
-    let token = first_value["result"]["structuredContent"]["approvalToken"]
+    let request_id = first_value["result"]["structuredContent"]["approvalRequestId"]
         .as_str()
-        .expect("approval token should exist");
+        .expect("approval request ID should exist");
 
     let approve = json!({
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/call",
         "params": {
-            "name": "run_command",
+            "name": "clipboard_write",
             "arguments": {
-                "command": command,
-                "approve": true,
-                "approval_token": token,
-                "remember_in_session": true
+                "text": "session-bound-value",
+                "approval_request_id": request_id
             }
         }
     })
     .to_string();
     let second = post_json(port, &approve);
-    assert!(second.contains("AWAITING_APPROVAL"));
+    assert!(second.contains("APPROVAL_INVALID"));
 
     let third = post_json(port, &destructive);
     let (_, third_body) = third
@@ -398,6 +436,6 @@ fn connections_without_session_header_should_not_share_default_session() {
     let third_value: Value = serde_json::from_str(third_body).expect("response body should parse");
     assert!(
         third_value["result"]["structuredContent"]["status"] == "AWAITING_APPROVAL",
-        "approval and remember_in_session should not carry across connections without Mcp-Session-Id"
+        "approval should not carry across connections without Mcp-Session-Id"
     );
 }

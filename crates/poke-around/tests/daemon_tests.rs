@@ -50,3 +50,19 @@ fn daemon_starts_and_stops_gracefully() {
         status
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn per_action_mode_fails_closed_without_a_host_terminal() {
+    let output = Command::new(env!("CARGO_BIN_EXE_poke-around"))
+        .args(["daemon", "--approval-mode", "per-action"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("daemon should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("per-action approval mode requires an interactive host terminal")
+    );
+}

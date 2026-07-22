@@ -7,6 +7,35 @@ pub enum PermissionMode {
     Sandbox,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ApprovalMode {
+    #[default]
+    Full,
+    PerAction,
+}
+
+impl ApprovalMode {
+    pub fn parse(value: Option<&str>) -> Self {
+        match value
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "per-action" => Self::PerAction,
+            "" | "full" => Self::Full,
+            _ => Self::PerAction,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::PerAction => "per-action",
+        }
+    }
+}
+
 impl PermissionMode {
     pub fn parse(value: Option<&str>) -> Self {
         match value
@@ -15,9 +44,10 @@ impl PermissionMode {
             .to_ascii_lowercase()
             .as_str()
         {
+            "" | "full" => Self::Full,
             "limited" => Self::Limited,
             "sandbox" => Self::Sandbox,
-            _ => Self::Full,
+            _ => Self::Sandbox,
         }
     }
 
@@ -37,76 +67,7 @@ const SAFE_TOOLS: &[&str] = &[
     "system_info",
     "network_speed",
     "web_fetch",
-    "http_request",
-    "clipboard_read",
     "list_screens",
-    "permissions",
-];
-
-const LIMITED_COMMANDS: &[&str] = &[
-    "curl",
-    "yt-dlp",
-    "youtube-dl",
-    "ls",
-    "pwd",
-    "cat",
-    "grep",
-    "find",
-    "head",
-    "tail",
-    "wc",
-    "sed",
-    "awk",
-    "which",
-    "command",
-    "echo",
-    "stat",
-    "du",
-    "df",
-    "ps",
-    "uname",
-    "sw_vers",
-    "whoami",
-    "jq",
-    "diff",
-];
-
-const SANDBOX_COMMANDS: &[&str] = &[
-    "yt-dlp",
-    "youtube-dl",
-    "ffmpeg",
-    "ffprobe",
-    "brew",
-    "wax",
-    "node",
-    "bun",
-    "python",
-    "python3",
-    "curl",
-    "mktemp",
-    "mkdir",
-    "jq",
-    "diff",
-    "ls",
-    "pwd",
-    "cat",
-    "grep",
-    "find",
-    "head",
-    "tail",
-    "wc",
-    "sed",
-    "awk",
-    "which",
-    "command",
-    "echo",
-    "stat",
-    "du",
-    "df",
-    "ps",
-    "uname",
-    "sw_vers",
-    "whoami",
 ];
 
 pub fn evaluate_access_policy(
@@ -118,33 +79,34 @@ pub fn evaluate_access_policy(
         return None;
     }
 
-    if tool_name == "run_command" {
-        let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-        if command.trim().is_empty() {
-            return Some("Command is empty.".to_string());
-        }
-        if has_dangerous_pattern(command) {
-            return Some("Command matches a dangerous pattern.".to_string());
-        }
-        let allowlist = match mode {
-            PermissionMode::Full => &[][..],
-            PermissionMode::Limited => LIMITED_COMMANDS,
-            PermissionMode::Sandbox => SANDBOX_COMMANDS,
-        };
-        for segment in split_command_segments(command) {
-            let executable = extract_executable(segment);
-            if executable.is_empty() || !allowlist.contains(&executable.as_str()) {
-                return Some(format!(
-                    "Command '{}' is not permitted in this mode.",
-                    if executable.is_empty() {
-                        "unknown"
-                    } else {
-                        executable.as_str()
-                    }
-                ));
-            }
-        }
+    if tool_name == "permissions" && args.get("action").and_then(Value::as_str) != Some("grant") {
         return None;
+    }
+
+    if tool_name == "http_request"
+        && args
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("GET")
+            .eq_ignore_ascii_case("GET")
+    {
+        return None;
+    }
+
+    if tool_name == "http_request"
+        && args
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.eq_ignore_ascii_case("HEAD"))
+    {
+        return None;
+    }
+
+    if tool_name == "run_command" {
+        return Some(format!(
+            "Shell commands are disabled in {} mode.",
+            mode.as_str()
+        ));
     }
 
     if matches!(
@@ -307,6 +269,38 @@ mod tests {
     fn test_extract_executable_empty() {
         assert_eq!(extract_executable(""), "");
         assert_eq!(extract_executable("   "), "");
+    }
+
+    #[test]
+    fn approval_mode_defaults_full_and_invalid_values_fail_closed() {
+        assert_eq!(ApprovalMode::parse(None), ApprovalMode::Full);
+        assert_eq!(ApprovalMode::parse(Some("full")), ApprovalMode::Full);
+        assert_eq!(
+            ApprovalMode::parse(Some("per-action")),
+            ApprovalMode::PerAction
+        );
+        assert_eq!(
+            ApprovalMode::parse(Some("invalid")),
+            ApprovalMode::PerAction
+        );
+    }
+
+    #[test]
+    fn permission_mode_defaults_full_and_invalid_values_fail_closed() {
+        assert_eq!(PermissionMode::parse(None), PermissionMode::Full);
+        assert_eq!(PermissionMode::parse(Some("full")), PermissionMode::Full);
+        assert_eq!(
+            PermissionMode::parse(Some("limited")),
+            PermissionMode::Limited
+        );
+        assert_eq!(
+            PermissionMode::parse(Some("sandbox")),
+            PermissionMode::Sandbox
+        );
+        assert_eq!(
+            PermissionMode::parse(Some("invalid")),
+            PermissionMode::Sandbox
+        );
     }
 
     #[test]

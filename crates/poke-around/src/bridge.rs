@@ -38,11 +38,14 @@ enum BridgeCommand {
 }
 
 impl Bridge {
-    pub fn start(mcp_url: &str, mode: &str) -> Result<Self> {
+    pub fn start(mcp_url: &str, mcp_bearer: &str, mode: &str, approval_mode: &str) -> Result<Self> {
         let (tx, rx) = async_mpsc::unbounded_channel();
         let (done_tx, done_rx) = mpsc::channel();
         let mcp_url = mcp_url.to_string();
+        let tunnel_mcp_url = crate::mcp_server::start_tunnel_relay(&mcp_url, mcp_bearer)?;
+        let mcp_bearer = mcp_bearer.to_string();
         let mode = mode.to_string();
+        let approval_mode = approval_mode.to_string();
         let handle = thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -57,7 +60,14 @@ impl Bridge {
                     return;
                 }
             };
-            if let Err(err) = runtime.block_on(run_bridge(mcp_url, mode, rx)) {
+            if let Err(err) = runtime.block_on(run_bridge(
+                mcp_url,
+                tunnel_mcp_url,
+                mcp_bearer,
+                mode,
+                approval_mode,
+                rx,
+            )) {
                 log_status(&format!("Bridge error: {err}"));
             }
             let _ = done_tx.send(());
@@ -89,7 +99,10 @@ impl Bridge {
 
 async fn run_bridge(
     mcp_url: String,
+    tunnel_mcp_url: String,
+    mcp_bearer: String,
     permission_mode: String,
+    approval_mode: String,
     mut rx: async_mpsc::UnboundedReceiver<BridgeCommand>,
 ) -> Result<()> {
     let token = ensure_auth(false).await?;
@@ -106,7 +119,7 @@ async fn run_bridge(
         let mut runner = TunnelRunner::new(
             poke.clone(),
             TunnelOptions {
-                url: mcp_url.clone(),
+                url: tunnel_mcp_url.clone(),
                 name: tunnel_name.clone(),
                 client_id: std::env::var("POKE_CLIENT_ID").ok(),
                 client_secret: std::env::var("POKE_CLIENT_SECRET").ok(),
@@ -135,7 +148,7 @@ async fn run_bridge(
                         &poke,
                         &webhook_url,
                         &webhook_token,
-                        &permission_mode,
+                        (&permission_mode, &approval_mode),
                         &tunnel_name,
                         &info.connection_id,
                         Some(&info.tunnel_url),
@@ -145,7 +158,7 @@ async fn run_bridge(
                 } else {
                     log_status("Tunnel reconnected; skipping duplicate agent notification.");
                 }
-                let synced = sync_and_report_tools(&runner, &mcp_url).await;
+                let synced = sync_and_report_tools(&runner, &mcp_url, &mcp_bearer).await;
                 if synced > 0 {
                     log_status("Ready - your Poke agent can now access this machine.");
                 } else {
@@ -517,11 +530,12 @@ async fn notify_poke(
     poke: &Poke,
     webhook_url: &str,
     webhook_token: &str,
-    permission_mode: &str,
+    modes: (&str, &str),
     tunnel_name: &str,
     connection_id: &str,
     tunnel_url: Option<&str>,
 ) {
+    let (permission_mode, approval_mode) = modes;
     let mode_message = match permission_mode {
         "limited" => {
             "Access mode: Limited. You can read files, list directories, and run safe read-only commands. You cannot write files, take screenshots, or run other commands."
@@ -530,11 +544,16 @@ async fn notify_poke(
             "Access mode: Sandbox. You can read files, list directories, and run approved sandbox commands. Destructive or disallowed actions require approval or are blocked."
         }
         _ => {
-            "Access mode: Full. You can run shell commands, read files, list directories, take screenshots, and use computer-control tools. Destructive actions still require approval."
+            "Access mode: Full. You can run shell commands, read files, list directories, take screenshots, and use computer-control tools."
         }
     };
+    let approval_message = if approval_mode == "per-action" {
+        " Approval mode: Per-action. Risky actions require approval in the local host terminal."
+    } else {
+        " Approval mode: Full. The host authorized permitted actions when launching Poke Around."
+    };
     let message = format!(
-        "Poke Around is connected to {tunnel_name} (tunnel: {connection_id}). {}{mode_message} Use the Poke Around MCP tools whenever I ask you to do something on this machine.",
+        "Poke Around is connected to {tunnel_name} (tunnel: {connection_id}). {}{mode_message}{approval_message} Use the Poke Around MCP tools whenever I ask you to do something on this machine.",
         tunnel_url
             .map(|url| format!("Tunnel URL: {url}. "))
             .unwrap_or_default()
@@ -548,6 +567,7 @@ async fn notify_poke(
                 "connectionId": connection_id,
                 "tunnelUrl": tunnel_url,
                 "mode": permission_mode,
+                "approvalMode": approval_mode,
                 "integration": tunnel_name
             }),
         )
@@ -572,7 +592,11 @@ async fn send_webhook_message(poke: &Poke, webhook_url: &str, webhook_token: &st
     }
 }
 
-async fn perform_sync_attempt(runner: &TunnelRunner, mcp_url: &str) -> (usize, usize) {
+async fn perform_sync_attempt(
+    runner: &TunnelRunner,
+    mcp_url: &str,
+    mcp_bearer: &str,
+) -> (usize, usize) {
     let last_synced = match runner.sync_tools().await {
         Ok(count) => count,
         Err(err) => {
@@ -580,7 +604,7 @@ async fn perform_sync_attempt(runner: &TunnelRunner, mcp_url: &str) -> (usize, u
             0
         }
     };
-    let local = local_tool_count(mcp_url).await;
+    let local = local_tool_count(mcp_url, mcp_bearer).await;
     (last_synced, local)
 }
 
@@ -601,10 +625,10 @@ async fn handle_sync_retry(attempt: usize, local: usize) {
     }
 }
 
-async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
+async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str, mcp_bearer: &str) -> usize {
     let mut last_synced = 0usize;
     for attempt in 1..=SYNC_TOOLS_MAX_ATTEMPTS {
-        let (synced, local) = perform_sync_attempt(runner, mcp_url).await;
+        let (synced, local) = perform_sync_attempt(runner, mcp_url, mcp_bearer).await;
         last_synced = synced;
 
         let reported = last_synced.max(local);
@@ -616,7 +640,7 @@ async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
         handle_sync_retry(attempt, local).await;
     }
 
-    let local = local_tool_count(mcp_url).await;
+    let local = local_tool_count(mcp_url, mcp_bearer).await;
     let reported = last_synced.max(local);
     if reported > 0 {
         log_status(&format!("Tools synced: {reported}"));
@@ -626,9 +650,10 @@ async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str) -> usize {
     reported
 }
 
-async fn local_tool_count(mcp_url: &str) -> usize {
+async fn local_tool_count(mcp_url: &str, mcp_bearer: &str) -> usize {
     let Ok(response) = reqwest::Client::new()
         .post(mcp_url)
+        .bearer_auth(mcp_bearer)
         .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
         .send()
         .await

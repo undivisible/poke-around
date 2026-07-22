@@ -13,16 +13,17 @@ name = "poke-around"
 path = "src/main.rs"
 
 [dependencies]
-base64.workspace = true
+atomicwrites.workspace = true
 chrono.workspace = true
 ctrlc.workspace = true
 dirs.workspace = true
+fs2.workspace = true
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
 rand.workspace = true
 reqwest.workspace = true
 rs_poke.workspace = true
 rs_peekaboo.workspace = true
-praefectus = "=0.1.0"
+praefectus = "=0.2.0"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -30,6 +31,7 @@ tokio.workspace = true
 url.workspace = true
 futures = "0.3.32"
 shlex.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 serial_test = "3.5.0"

@@ -2,13 +2,16 @@ use poke_around::policy::{PermissionMode, evaluate_access_policy, is_destructive
 use serde_json::json;
 
 #[test]
-fn limited_mode_allows_read_only_commands() {
+fn limited_mode_blocks_shell_commands() {
     let reason = evaluate_access_policy(
         "run_command",
         &json!({ "command": "pwd && ls -la | head" }),
         PermissionMode::Limited,
     );
-    assert_eq!(reason, None);
+    assert_eq!(
+        reason,
+        Some("Shell commands are disabled in limited mode.".to_string())
+    );
 }
 
 #[test]
@@ -20,7 +23,7 @@ fn limited_mode_blocks_unknown_commands() {
     );
     assert_eq!(
         reason,
-        Some("Command 'python3' is not permitted in this mode.".to_string())
+        Some("Shell commands are disabled in limited mode.".to_string())
     );
 }
 
@@ -33,12 +36,12 @@ fn sandbox_mode_blocks_dangerous_patterns() {
     );
     assert_eq!(
         reason,
-        Some("Command matches a dangerous pattern.".to_string())
+        Some("Shell commands are disabled in sandbox mode.".to_string())
     );
 }
 
 #[test]
-fn destructive_commands_require_approval_in_full_mode() {
+fn destructive_command_detection_covers_high_risk_patterns() {
     assert!(is_destructive_command("rm -rf /tmp/example"));
     assert!(is_destructive_command("rm -r /tmp/example"));
     assert!(is_destructive_command("truncate -s 0 /tmp/file"));
@@ -56,7 +59,7 @@ fn find_exec_is_blocked_as_dangerous_pattern() {
     );
     assert_eq!(
         reason,
-        Some("Command matches a dangerous pattern.".to_string())
+        Some("Shell commands are disabled in limited mode.".to_string())
     );
 }
 
@@ -70,11 +73,48 @@ fn sandbox_mode_blocks_write_bypass_commands() {
         );
         assert_eq!(
             reason,
-            Some(format!(
-                "Command '{}' is not permitted in this mode.",
-                command.split_whitespace().next().unwrap()
-            )),
+            Some("Shell commands are disabled in sandbox mode.".to_string()),
             "expected '{command}' to be blocked"
         );
+    }
+}
+
+#[test]
+fn restricted_modes_block_clipboard_reads_and_permission_grants() {
+    for mode in [PermissionMode::Limited, PermissionMode::Sandbox] {
+        assert!(evaluate_access_policy("clipboard_read", &json!({}), mode).is_some());
+        assert!(
+            evaluate_access_policy("permissions", &json!({ "action": "grant" }), mode).is_some()
+        );
+        assert_eq!(
+            evaluate_access_policy("permissions", &json!({}), mode),
+            None
+        );
+    }
+}
+
+#[test]
+fn restricted_modes_allow_only_read_only_http_methods() {
+    for mode in [PermissionMode::Limited, PermissionMode::Sandbox] {
+        for method in ["GET", "head"] {
+            assert_eq!(
+                evaluate_access_policy(
+                    "http_request",
+                    &json!({ "method": method, "url": "https://example.com" }),
+                    mode,
+                ),
+                None
+            );
+        }
+        for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            assert!(
+                evaluate_access_policy(
+                    "http_request",
+                    &json!({ "method": method, "url": "https://example.com" }),
+                    mode,
+                )
+                .is_some()
+            );
+        }
     }
 }

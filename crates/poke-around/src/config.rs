@@ -1,17 +1,21 @@
 use crate::{Error, Result};
+use atomicwrites::{AllowOverwrite, AtomicFile};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Config {
     pub permission_mode: Option<String>,
+    pub approval_mode: Option<String>,
 }
 
 #[cfg(test)]
-use std::sync::Mutex;
-
-#[cfg(test)]
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
+static CONFIG_MUTEX: Mutex<()> = Mutex::new(());
 
 pub fn config_dir() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -33,7 +37,18 @@ pub fn state_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("state.json"))
 }
 
+pub(crate) fn ensure_private_config_dir() -> Result<PathBuf> {
+    let path = config_dir()?;
+    std::fs::create_dir_all(&path)?;
+    restrict_private_dir(&path)?;
+    Ok(path)
+}
+
 pub fn read_config() -> Result<Config> {
+    with_config_lock(read_config_unlocked)
+}
+
+fn read_config_unlocked() -> Result<Config> {
     let path = config_path()?;
     match std::fs::read_to_string(path) {
         Ok(data) => Ok(serde_json::from_str(&data)?),
@@ -42,7 +57,7 @@ pub fn read_config() -> Result<Config> {
     }
 }
 
-fn restrict_private_file(path: &std::path::Path) -> Result<()> {
+pub(crate) fn restrict_private_file(path: &std::path::Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -51,26 +66,113 @@ fn restrict_private_file(path: &std::path::Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::process::Command;
-        if let Ok(username) = std::env::var("USERNAME")
-            && !username.is_empty()
-        {
-            let _ = Command::new("icacls")
-                .arg(path)
-                .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
-                .status();
+        let username = std::env::var("USERNAME")
+            .map_err(|_| Error::msg("USERNAME is required to restrict private files"))?;
+        if username.is_empty() {
+            return Err(Error::msg("USERNAME is required to restrict private files"));
+        }
+        let status = Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
+            .status()?;
+        if !status.success() {
+            return Err(Error::msg("failed to restrict private file ACL"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn restrict_private_dir(path: &std::path::Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let username = std::env::var("USERNAME")
+            .map_err(|_| Error::msg("USERNAME is required to restrict private directories"))?;
+        if username.is_empty() {
+            return Err(Error::msg(
+                "USERNAME is required to restrict private directories",
+            ));
+        }
+        let status = Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
+            .status()?;
+        if !status.success() {
+            return Err(Error::msg("failed to restrict private directory ACL"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn harden_peekaboo_cache() -> Result<()> {
+    let path = rs_peekaboo::cache::snapshot_dir()?;
+    if !path.try_exists()? {
+        return Ok(());
+    }
+    restrict_private_dir(&path)?;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            restrict_private_file(&entry.path())?;
         }
     }
     Ok(())
 }
 
 pub fn save_permission_mode(mode: &str) -> Result<()> {
-    let mut config = read_config()?;
-    config.permission_mode = Some(mode.to_string());
+    with_config_lock(|| {
+        let mut config = read_config_unlocked()?;
+        config.permission_mode = Some(mode.to_string());
+        save_config_unlocked(&config)
+    })
+}
+
+pub fn save_approval_mode(mode: &str) -> Result<()> {
+    with_config_lock(|| {
+        let mut config = read_config_unlocked()?;
+        config.approval_mode = Some(mode.to_string());
+        save_config_unlocked(&config)
+    })
+}
+
+fn with_config_lock<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _process_guard = CONFIG_MUTEX
+        .lock()
+        .map_err(|_| Error::msg("config lock poisoned"))?;
+    let directory = ensure_private_config_dir()?;
+    let lock_path = directory.join("config.lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    restrict_private_file(&lock_path)?;
+    lock.lock_exclusive()?;
+    let result = operation();
+    FileExt::unlock(&lock)?;
+    result
+}
+
+fn save_config_unlocked(config: &Config) -> Result<()> {
     let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    ensure_private_config_dir()?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+    let bytes = serde_json::to_vec_pretty(config)?;
+    AtomicFile::new(&path, AllowOverwrite)
+        .write_with_options(|file| file.write_all(&bytes), options)
+        .map_err(std::io::Error::from)?;
     restrict_private_file(&path)?;
     Ok(())
 }
@@ -89,6 +191,7 @@ mod tests {
     fn test_config_derives() {
         let mut config = Config::default();
         assert_eq!(config.permission_mode, None);
+        assert_eq!(config.approval_mode, None);
 
         config.permission_mode = Some("limited".to_string());
 
@@ -159,10 +262,12 @@ mod tests {
 
             // Save a new permission mode
             save_permission_mode("full").unwrap();
+            save_approval_mode("per-action").unwrap();
 
             // Reading it back should show "full"
             let updated_config = read_config().unwrap();
             assert_eq!(updated_config.permission_mode, Some("full".to_string()));
+            assert_eq!(updated_config.approval_mode, Some("per-action".to_string()));
 
             // Also verify the file actually exists and contains the data
             let cfg_path = config_path().unwrap();
