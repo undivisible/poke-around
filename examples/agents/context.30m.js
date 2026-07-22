@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 
 const token = getToken();
 if (!token) {
-  console.error("Not signed in. Run: npx poke login");
+  console.error("Not signed in. Run: bunx poke login");
   process.exit(1);
 }
 

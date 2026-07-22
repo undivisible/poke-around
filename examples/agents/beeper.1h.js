@@ -99,7 +99,7 @@ async function main() {
 
   const token = getToken();
   if (!token) {
-    console.error("Not logged in to Poke. Run: npx poke login");
+    console.error("Not logged in to Poke. Run: bunx poke login");
     process.exit(1);
   }
 

@@ -10,7 +10,7 @@ Let your [Poke](https://poke.com) AI assistant access your machine.
 
 ---
 
-Run Poke Around on your machine, then message Poke from iMessage, Telegram, or SMS to run commands, read files, take screenshots, and more — all on your machine.
+Run Poke Around on your machine, then message Poke from iMessage, Telegram, or SMS to use the explicitly advertised local tools.
 
 ## Install
 
@@ -79,6 +79,7 @@ poke-around          # start the daemon (opens browser for OAuth on first run)
 poke-around --verbose  # show tool calls in real time
 poke-around --mode limited
 poke-around --mode sandbox
+poke-around --approval-mode per-action
 ```
 
 Config is stored at `~/.config/poke-around/config.json`.
@@ -87,9 +88,9 @@ Config is stored at `~/.config/poke-around/config.json`.
 
 | Mode | Description |
 |------|-------------|
-| **full** (default) | All tools available; destructive shell commands, writes, deletes, screenshots, UI automation, and other risky operations require approval in chat. |
-| **limited** | Read-only tools plus a curated set of safe commands (`ls`, `cat`, `grep`, `curl`, etc.). |
-| **sandbox** | Broader command support, with destructive patterns blocked and write/delete/UI mutation tools requiring approval or blocked by policy. |
+| **full** (default) | All advertised tools are available. The host authorizes permitted actions by launching Poke Around. |
+| **limited** | Read-only tools with mutations blocked by policy. |
+| **sandbox** | Read-only tools with unsafe mutations blocked by policy. |
 
 Set the mode at startup or persist it in `~/.config/poke-around/config.json`:
 
@@ -99,10 +100,28 @@ poke-around set-mode limited
 ```
 
 ```json
-{ "permission_mode": "limited" }
+{ "permission_mode": "limited", "approval_mode": "full" }
 ```
 
 The `--mode` flag overrides `config.json` for that daemon run. `poke-around set-mode` updates the config file so the next daemon start (and live reload) picks it up.
+
+Approval modes:
+
+| Mode | Description |
+|------|-------------|
+| **full** (default) | Launching Poke Around authorizes every action permitted by the access mode. |
+| **per-action** | Risky actions require confirmation in the local terminal. The MCP caller receives only an opaque request ID and cannot approve its own request. |
+
+```bash
+poke-around --approval-mode per-action
+poke-around set-approval-mode per-action
+```
+
+Per-action mode requires a foreground interactive terminal and fails closed when standard input is not a terminal. The saved approval mode applies after restarting the daemon.
+
+Active tool calls have a 30-second deadline and accept MCP `notifications/cancelled`; access-mode changes cancel tracked calls before taking effect. A TCP disconnect alone is not proof of cancellation or no effect.
+
+Remote UI automation, screenshot/image transfer, shell commands, general network requests, agent execution, backend capability reports, application opening, and unbounded sleeps fail closed because their current backends cannot meet the required authority, privacy, target-identity, effect, and cancellation guarantees.
 
 ## Running as a service
 
@@ -137,7 +156,7 @@ systemctl --user enable --now poke-around
 
 Agents are JS scripts in `~/.config/poke-around/agents/`. Files may be named `<name>.js` or `<name>.<interval>.js` (the interval suffix is a naming convention only — Poke Around does not run agents on a schedule).
 
-Run an agent manually from the CLI or via the `run_agent` MCP tool:
+Run an agent manually from the local CLI. Remote agent execution is not advertised:
 
 ```bash
 poke-around run-agent beeper
@@ -167,7 +186,7 @@ Poke Around uses [rs_poke](https://github.com/undivisible/rs_poke) for authentic
 
 ## Security
 
-In **full mode**, Poke Around grants full shell access to your Poke agent. Only run it on machines and networks you trust. Use `limited` or `sandbox` mode for tighter restrictions.
+In **full mode**, Poke Around permits every advertised tool. Only run it on machines and networks you trust. Use `limited` or `sandbox` mode for tighter restrictions. Shell execution is not advertised in any mode. The loopback MCP server requires a host-generated bearer capability. The tunnel reaches it through a separate unguessable capability path that injects the bearer locally; neither capability is written to configuration or logs.
 
 See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy.
 
