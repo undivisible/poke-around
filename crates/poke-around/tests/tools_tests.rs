@@ -147,3 +147,21 @@ fn computer_use_tool_schemas_are_strict_and_bounded() {
         }
     }
 }
+
+#[test]
+fn tool_schema_includes_descriptions() {
+    let tools: Value = serde_json::from_str(&tools_json()).expect("tools json parses");
+    let tools_array = tools.as_array().expect("tools is array");
+    assert!(!tools_array.is_empty(), "tools array is empty");
+    for tool in tools_array {
+        let name = tool["name"].as_str().expect("tool has name");
+        let description = tool["description"]
+            .as_str()
+            .expect(&format!("tool {} has description", name));
+        assert!(
+            !description.is_empty(),
+            "tool {} description is empty",
+            name
+        );
+    }
+}
