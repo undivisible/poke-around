@@ -1,9 +1,13 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Read;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, Once, OnceLock, mpsc};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::mcp::AppState;
@@ -12,11 +16,19 @@ use crate::mcp::{
     optional_output_path, path_arg, str_arg,
 };
 use crate::{Error, Result};
+use fs2::FileExt;
 use praefectus::CancellationToken;
 use rs_peekaboo::{ImageCapture, ImageMode, Peekaboo, PeekabooConfig};
 
 const MAX_FILE_READ_BYTES: u64 = 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 1024;
+const MAX_ARTIFACT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_ARTIFACT_COUNT: usize = 16;
+const MAX_ARTIFACT_AGE: Duration = Duration::from_secs(5 * 60);
+static ARTIFACT_CACHE_LOCK: Mutex<()> = Mutex::new(());
+static ARTIFACT_EXPIRATIONS: OnceLock<Mutex<HashMap<PathBuf, SystemTime>>> = OnceLock::new();
+static ARTIFACT_JANITOR: Once = Once::new();
+static IMAGE_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // ponytail: single registry for all tools. Adding a tool = 1 entry, not 5 scattered lists.
 #[derive(Clone, Copy)]
@@ -116,7 +128,7 @@ static TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "image",
-        handler: |a, s| image(a, s),
+        handler: |a, s| bounded_image(a, s),
         approval: ApprovalCategory::Always,
         summary: "Capture screen image",
     },
@@ -143,6 +155,12 @@ static TOOLS: &[ToolDef] = &[
         handler: |_, _| doctor(),
         approval: ApprovalCategory::None,
         summary: "Computer-use health report",
+    },
+    ToolDef {
+        name: "observe_ui",
+        handler: |_, _| unavailable_target_effect(),
+        approval: ApprovalCategory::Always,
+        summary: "Observe semantic UI elements",
     },
     ToolDef {
         name: "click",
@@ -279,11 +297,62 @@ pub(crate) fn execute_tool_with_control(
     if Instant::now() >= deadline {
         return Ok(controlled_terminal("EXPIRED_BEFORE_EFFECT", true));
     }
-    let result = execute_tool(tool_name, args, state);
+    let result = if tool_name == "image" {
+        execute_image_with_control(args, state, cancellation, deadline)
+    } else {
+        execute_tool(tool_name, args, state)
+    };
     if cancellation.is_cancelled() || Instant::now() >= deadline {
         return Ok(controlled_terminal("OUTCOME_UNKNOWN", false));
     }
     result
+}
+
+fn execute_image_with_control(
+    args: &Value,
+    state: &AppState,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<Value> {
+    if IMAGE_CAPTURE_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(error_result("image capture already in progress"));
+    }
+    let args = args.clone();
+    let state = state.clone();
+    let worker_cancellation = cancellation.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker = thread::Builder::new().spawn(move || {
+        let _slot = ImageCaptureSlot;
+        let result = bounded_image_with_control(&args, &state, &worker_cancellation, deadline);
+        let _ = sender.send(result);
+    });
+    if let Err(error) = worker {
+        IMAGE_CAPTURE_ACTIVE.store(false, Ordering::Release);
+        return Err(error.into());
+    }
+    loop {
+        if cancellation.is_cancelled() || Instant::now() >= deadline {
+            return Ok(controlled_terminal("OUTCOME_UNKNOWN", false));
+        }
+        match receiver.recv_timeout(Duration::from_millis(25)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Ok(controlled_terminal("OUTCOME_UNKNOWN", false));
+            }
+        }
+    }
+}
+
+struct ImageCaptureSlot;
+
+impl Drop for ImageCaptureSlot {
+    fn drop(&mut self) {
+        IMAGE_CAPTURE_ACTIVE.store(false, Ordering::Release);
+    }
 }
 
 fn controlled_terminal(status: &str, retry_safe: bool) -> Value {
@@ -544,7 +613,10 @@ fn all_tool_schemas() -> Vec<Value> {
                 "approval_request_id".to_string(),
                 json!({
                     "type": "string",
-                    "description": "Opaque request ID returned while awaiting local host approval"
+                    "description": "Opaque request ID returned while awaiting local host approval",
+                    "minLength": 32,
+                    "maxLength": 32,
+                    "pattern": "^[0-9a-f]{32}$"
                 }),
             );
         }
@@ -562,17 +634,14 @@ pub(crate) fn is_unavailable_tool(name: &str) -> bool {
             | "take_screenshot"
             | "web_fetch"
             | "http_request"
-            | "image"
             | "see"
             | "doctor"
-            | "click"
             | "press"
             | "type"
             | "paste"
             | "hotkey"
             | "scroll"
             | "move"
-            | "set_value"
             | "perform_action"
             | "window"
             | "app"
@@ -838,16 +907,83 @@ fn base_tools() -> Vec<Value> {
 fn computer_use_tools() -> Vec<Value> {
     vec![
         json!({
-            "name": "image",
-            "description": "Capture a screen or window image on the user's machine.",
+            "name": "observe_ui",
+            "description": "Observe bounded semantic elements in the host-selected active UI. Returns short-lived tags, not screenshots or coordinates.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "click",
+            "description": "Semantically invoke one element from a current observe_ui result.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "description": "Capture mode: screen or window"},
-                    "path": {"type": "string", "description": "Optional output path"},
-                    "retina": {"type": "boolean", "description": "Capture at retina scale"},
-                    "app": {"type": "string", "description": "Optional app name for window-scoped capture"}
-                }
+                    "observation_id": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "generation": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991_u64
+                    },
+                    "tag": {
+                        "type": "string",
+                        "pattern": "^e(?:0|[1-9][0-9]{0,3})$"
+                    },
+                    "interaction_mode": {
+                        "type": "string",
+                        "enum": ["interactive", "background_only"]
+                    }
+                },
+                "required": ["observation_id", "generation", "tag", "interaction_mode"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "set_value",
+            "description": "Set the value of one editable element from a current observe_ui result.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "observation_id": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "generation": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991_u64
+                    },
+                    "tag": {
+                        "type": "string",
+                        "pattern": "^e(?:0|[1-9][0-9]{0,3})$"
+                    },
+                    "value": {
+                        "type": "string",
+                        "maxLength": 4096
+                    },
+                    "interaction_mode": {
+                        "type": "string",
+                        "enum": ["interactive", "background_only"]
+                    }
+                },
+                "required": ["observation_id", "generation", "tag", "value", "interaction_mode"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "image",
+            "description": "Capture one bounded non-interactive screen image into the host-owned private artifact cache.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "retina": {"type": "boolean", "description": "Capture at retina scale"}
+                },
+                "additionalProperties": false
             }
         }),
         json!({
@@ -1041,18 +1177,380 @@ fn peekaboo() -> Peekaboo {
     })
 }
 
-fn image(args: &Value, _state: &AppState) -> Result<Value> {
-    let path = optional_output_path(args)?;
+fn bounded_image(args: &Value, state: &AppState) -> Result<Value> {
+    bounded_image_with_control(
+        args,
+        state,
+        &CancellationToken::default(),
+        Instant::now() + Duration::from_secs(30),
+    )
+}
+
+fn bounded_image_with_control(
+    args: &Value,
+    state: &AppState,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<Value> {
+    if !valid_capture_args(args) {
+        return Ok(error_result("invalid image arguments"));
+    }
+    if cancellation.is_cancelled() {
+        return Ok(controlled_terminal("CANCELLED_BEFORE_EFFECT", true));
+    }
+    if Instant::now() >= deadline {
+        return Ok(controlled_terminal("EXPIRED_BEFORE_EFFECT", true));
+    }
     let retina = args.get("retina").and_then(Value::as_bool).unwrap_or(true);
-    let capture = if let Some(app) = str_arg(args, "app") {
-        peekaboo().image_app(app, path, retina)?
-    } else {
-        let mode = ImageMode::parse_or_err(str_arg(args, "mode").unwrap_or("screen"))?;
-        peekaboo().image(mode, path, retina)?
-    };
+    let staging = private_capture_path(state)?;
+    let staging_guard = CapturePathGuard(staging.clone());
+    let capture = peekaboo().image(ImageMode::Screen, Some(staging), retina)?;
     crate::config::restrict_private_file(&capture.path)?;
+    if cancellation.is_cancelled() || Instant::now() >= deadline {
+        return Ok(controlled_terminal("OUTCOME_UNKNOWN", false));
+    }
     let metadata = json!({ "mode": capture.mode });
-    ok_json_with_image(metadata, &capture)
+    let result = cache_image_artifact(metadata, &capture, state);
+    drop(staging_guard);
+    result
+}
+
+fn valid_capture_args(args: &Value) -> bool {
+    let Some(object) = args.as_object() else {
+        return false;
+    };
+    if !object
+        .keys()
+        .all(|key| matches!(key.as_str(), "retina" | "approval_request_id"))
+    {
+        return false;
+    }
+    if args.get("retina").is_some_and(|value| !value.is_boolean())
+        || args.get("approval_request_id").is_some_and(|value| {
+            !value.as_str().is_some_and(|value| {
+                value.len() == 32
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        })
+    {
+        return false;
+    }
+    true
+}
+
+struct CapturePathGuard(PathBuf);
+
+impl Drop for CapturePathGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn private_capture_path(state: &AppState) -> Result<PathBuf> {
+    let _process_guard = ARTIFACT_CACHE_LOCK
+        .lock()
+        .map_err(|_| Error::msg("image artifact cache unavailable"))?;
+    let directory = artifact_cache_dir(&state.inner.home);
+    fs::create_dir_all(&directory)?;
+    crate::config::restrict_private_dir(&directory)?;
+    let path = directory.join(format!(
+        ".capture-{}-{:016x}.png",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    crate::config::restrict_private_file(&path)?;
+    file.sync_all()?;
+    Ok(path)
+}
+
+fn cache_image_artifact(
+    metadata: Value,
+    capture: &ImageCapture,
+    state: &AppState,
+) -> Result<Value> {
+    let result = cache_image_artifact_inner(metadata, capture, state);
+    let _ = fs::remove_file(&capture.path);
+    result
+}
+
+fn cache_image_artifact_inner(
+    mut metadata: Value,
+    capture: &ImageCapture,
+    state: &AppState,
+) -> Result<Value> {
+    if !capture.mime_type.starts_with("image/") || capture.mime_type.len() > 64 {
+        return Err(Error::msg("image artifact has an invalid media type"));
+    }
+    let mut data = Vec::new();
+    File::open(&capture.path)?
+        .take(MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err(Error::msg("image artifact exceeds the 20 MiB limit"));
+    }
+    let digest = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let _process_guard = ARTIFACT_CACHE_LOCK
+        .lock()
+        .map_err(|_| Error::msg("image artifact cache unavailable"))?;
+    let directory = artifact_cache_dir(&state.inner.home);
+    fs::create_dir_all(&directory)?;
+    crate::config::restrict_private_dir(&directory)?;
+    let lock_path = directory.join("artifacts.lock");
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    crate::config::restrict_private_file(&lock_path)?;
+    lock.lock_exclusive()?;
+    let path = directory.join(&digest);
+    if path.exists() {
+        if bounded_file_digest(&path)? != digest {
+            return Err(Error::msg("image artifact cache conflict"));
+        }
+    } else {
+        let temporary = directory.join(format!(
+            ".tmp-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&data)?;
+            file.sync_all()?;
+            crate::config::restrict_private_file(&temporary)?;
+            fs::rename(&temporary, &path)?;
+            Ok::<(), Error>(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
+        crate::config::restrict_private_file(&path)?;
+        sync_directory(&directory)?;
+    }
+    let modified = SystemTime::now();
+    File::options()
+        .write(true)
+        .open(&path)?
+        .set_times(fs::FileTimes::new().set_modified(modified))?;
+    prune_artifact_cache(&directory, Some(&path))?;
+    register_artifact_expiration(path.clone(), modified)?;
+    let artifact = json!({
+        "locator": format!("sha256:{digest}"),
+        "sha256": digest,
+        "bytes": data.len(),
+        "mime_type": capture.mime_type,
+    });
+    metadata
+        .as_object_mut()
+        .ok_or_else(|| Error::msg("image metadata must be an object"))?
+        .insert("artifact".to_string(), artifact);
+    Ok(ok_json(metadata))
+}
+
+fn artifact_cache_dir(home: &Path) -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".cache"));
+    base.join("poke-around").join("artifacts")
+}
+
+fn artifact_expirations() -> &'static Mutex<HashMap<PathBuf, SystemTime>> {
+    ARTIFACT_EXPIRATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_artifact_expiration(path: PathBuf, modified: SystemTime) -> Result<()> {
+    ARTIFACT_JANITOR.call_once(|| {
+        thread::spawn(|| {
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                let now = SystemTime::now();
+                let due = artifact_expirations()
+                    .lock()
+                    .map(|mut expirations| {
+                        let due = expirations
+                            .iter()
+                            .filter_map(|(path, expires_at)| {
+                                (*expires_at <= now).then_some(path.clone())
+                            })
+                            .collect::<Vec<_>>();
+                        for path in &due {
+                            expirations.remove(path);
+                        }
+                        due
+                    })
+                    .unwrap_or_default();
+                for path in due {
+                    let _ = expire_artifact(&path);
+                }
+            }
+        });
+    });
+    let expires_at = modified.checked_add(MAX_ARTIFACT_AGE).unwrap_or(modified);
+    artifact_expirations()
+        .lock()
+        .map_err(|_| Error::msg("image artifact cache unavailable"))?
+        .insert(path, expires_at);
+    Ok(())
+}
+
+fn expire_artifact(path: &Path) -> Result<()> {
+    let Some(directory) = path.parent() else {
+        return Ok(());
+    };
+    let _process_guard = ARTIFACT_CACHE_LOCK
+        .lock()
+        .map_err(|_| Error::msg("image artifact cache unavailable"))?;
+    let lock_path = directory.join("artifacts.lock");
+    let lock = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock_path)
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    lock.lock_exclusive()?;
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    if SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default()
+        < MAX_ARTIFACT_AGE
+    {
+        return register_artifact_expiration(path.to_path_buf(), modified);
+    }
+    fs::remove_file(path)?;
+    sync_directory(directory)
+}
+
+fn bounded_file_digest(path: &Path) -> Result<String> {
+    let mut data = Vec::new();
+    File::open(path)?
+        .take(MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err(Error::msg("image artifact cache conflict"));
+    }
+    Ok(Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn prune_artifact_cache(directory: &Path, protected: Option<&Path>) -> Result<()> {
+    let now = SystemTime::now();
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.len() != 64
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            if (name.starts_with(".tmp-") || name.starts_with(".capture-"))
+                && now.duration_since(modified).unwrap_or_default() > MAX_ARTIFACT_AGE
+            {
+                fs::remove_file(path)?;
+            }
+            continue;
+        }
+        crate::config::restrict_private_file(&path)?;
+        if protected != Some(path.as_path())
+            && now.duration_since(modified).unwrap_or_default() > MAX_ARTIFACT_AGE
+        {
+            fs::remove_file(path)?;
+        } else {
+            artifacts.push((modified, path));
+        }
+    }
+    artifacts.sort_by_key(|(modified, path)| (*modified, path.clone()));
+    while artifacts.len() > MAX_ARTIFACT_COUNT {
+        let index = artifacts
+            .iter()
+            .position(|(_, path)| protected != Some(path.as_path()))
+            .ok_or_else(|| Error::msg("image artifact cache unavailable"))?;
+        let (_, path) = artifacts.remove(index);
+        fs::remove_file(path)?;
+    }
+    sync_directory(directory)
+}
+
+pub(crate) fn harden_artifact_cache(home: &Path) -> Result<()> {
+    let _process_guard = ARTIFACT_CACHE_LOCK
+        .lock()
+        .map_err(|_| Error::msg("image artifact cache unavailable"))?;
+    let directory = artifact_cache_dir(home);
+    if !directory.try_exists()? {
+        return Ok(());
+    }
+    crate::config::restrict_private_dir(&directory)?;
+    let lock_path = directory.join("artifacts.lock");
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    crate::config::restrict_private_file(&lock_path)?;
+    lock.lock_exclusive()?;
+    prune_artifact_cache(&directory, None)?;
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if entry.file_type()?.is_file()
+            && name.len() == 64
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            let modified = entry
+                .metadata()?
+                .modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            register_artifact_expiration(entry.path(), modified)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    File::open(path)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 fn see(args: &Value, _state: &AppState) -> Result<Value> {
@@ -1450,77 +1948,148 @@ mod tests {
     use super::*;
     use crate::mcp::AppState;
     use crate::policy::PermissionMode;
-
-    fn expected_image_error(err: &str) -> bool {
-        err == "computer-use backend request failed"
-            || err.contains("CommandFailed")
-            || err.contains("no screenshot tool found")
-            || err.contains("X server")
-            || (cfg!(windows) && !err.is_empty())
-    }
+    use serial_test::serial;
 
     #[test]
-    fn image_should_return_only_an_external_hash_locator() {
-        let state = AppState::new(PermissionMode::Full, false).unwrap();
-
-        let response = image(&json!({}), &state);
-        if let Ok(response) = response {
-            let content = response["content"].as_array().unwrap();
-
-            assert_eq!(content.len(), 1);
-            assert_eq!(content[0]["type"], "text");
-
-            let structured_content = &response["structuredContent"];
-            assert_eq!(structured_content["mode"], "screen");
-            assert!(
-                structured_content["artifact"]["locator"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("sha256:")
-            );
-            assert!(structured_content.get("path").is_none());
-        } else {
-            let err = response.unwrap_err();
-            assert!(expected_image_error(&err.to_string()));
+    fn image_arguments_reject_paths_endpoints_and_interactive_scopes() {
+        for valid in [json!({}), json!({ "retina": false })] {
+            assert!(valid_capture_args(&valid));
+        }
+        for invalid in [
+            json!({ "path": "/tmp/caller-selected.png" }),
+            json!({ "endpoint": "http://127.0.0.1:9222" }),
+            json!({ "mode": "display" }),
+            json!({ "mode": "screen", "app": "Browser" }),
+            json!({ "app": "x".repeat(257) }),
+        ] {
+            assert!(!valid_capture_args(&invalid));
         }
     }
 
     #[test]
-    fn image_with_args_should_not_return_image_bytes_or_paths() {
+    #[serial]
+    fn private_capture_path_is_restricted_and_removed_by_its_guard() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let original = std::env::var_os("XDG_CACHE_HOME");
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", directory.path());
+        }
         let state = AppState::new(PermissionMode::Full, false).unwrap();
-
-        let path =
-            std::env::temp_dir().join(format!("poke-around-test-image-{}.png", std::process::id()));
-        let response = image(
-            &json!({ "mode": "screen", "path": path, "retina": false }),
-            &state,
-        );
-
-        if let Ok(response) = response {
-            let content = response["content"].as_array().unwrap();
-
-            assert_eq!(content.len(), 1);
-            assert_eq!(content[0]["type"], "text");
-
-            let structured_content = &response["structuredContent"];
-            assert_eq!(structured_content["mode"], "screen");
-            assert!(structured_content.get("path").is_none());
-            assert!(
-                structured_content["artifact"]["locator"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("sha256:")
+        let path = private_capture_path(&state).unwrap();
+        let guard = CapturePathGuard(path.clone());
+        assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
             );
+        }
+        drop(guard);
+        assert!(!path.exists());
+        unsafe {
+            if let Some(original) = original {
+                std::env::set_var("XDG_CACHE_HOME", original);
+            } else {
+                std::env::remove_var("XDG_CACHE_HOME");
+            }
+        }
+    }
+
+    #[test]
+    fn expired_image_artifact_is_removed_without_another_capture() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let cache = directory.path().join("artifacts");
+        fs::create_dir(&cache).unwrap();
+        fs::write(cache.join("artifacts.lock"), []).unwrap();
+        let path = cache.join("0".repeat(64));
+        fs::write(&path, [1_u8, 2, 3, 4]).unwrap();
+        let modified = SystemTime::now()
+            .checked_sub(MAX_ARTIFACT_AGE + Duration::from_secs(1))
+            .unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+
+        expire_artifact(&path).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    #[serial]
+    fn image_artifact_cache_is_private_bounded_and_content_addressed() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let original = std::env::var_os("XDG_CACHE_HOME");
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", directory.path());
+        }
+        let result = std::panic::catch_unwind(|| {
+            let state = AppState::new(PermissionMode::Full, false).unwrap();
+            let source = directory.path().join("capture.png");
+            fs::write(&source, [1_u8, 2, 3, 4]).unwrap();
+            let capture = ImageCapture {
+                path: source.clone(),
+                mode: ImageMode::Screen,
+                bytes: 4,
+                mime_type: "image/png".to_string(),
+                ephemeral: false,
+            };
+            let response =
+                cache_image_artifact(json!({ "mode": "screen" }), &capture, &state).unwrap();
+            let artifact = &response["structuredContent"]["artifact"];
+            let digest = artifact["sha256"].as_str().unwrap();
+            let cached = directory
+                .path()
+                .join("poke-around")
+                .join("artifacts")
+                .join(digest);
+
+            assert_eq!(artifact["locator"], format!("sha256:{digest}"));
+            assert_eq!(artifact["bytes"], 4);
+            assert_eq!(fs::read(&cached).unwrap(), [1_u8, 2, 3, 4]);
             assert!(
                 !response
                     .to_string()
-                    .contains(&path.to_string_lossy().to_string())
+                    .contains(&source.to_string_lossy().to_string())
             );
-
-            let _ = fs::remove_file(path);
-        } else {
-            let err = response.unwrap_err();
-            assert!(expected_image_error(&err.to_string()));
+            assert!(!response.to_string().contains("AQIDBA=="));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&cached).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            for index in 0..=MAX_ARTIFACT_COUNT {
+                fs::write(&source, index.to_be_bytes()).unwrap();
+                cache_image_artifact(json!({ "mode": "screen" }), &capture, &state).unwrap();
+            }
+            let count = fs::read_dir(cached.parent().unwrap())
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    name.len() == 64
+                })
+                .count();
+            assert_eq!(count, MAX_ARTIFACT_COUNT);
+        });
+        unsafe {
+            if let Some(original) = original {
+                std::env::set_var("XDG_CACHE_HOME", original);
+            } else {
+                std::env::remove_var("XDG_CACHE_HOME");
+            }
+        }
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
         }
     }
 

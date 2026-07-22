@@ -83,6 +83,8 @@ fn sandbox_mode_blocks_write_bypass_commands() {
 fn restricted_modes_block_clipboard_reads_and_permission_grants() {
     for mode in [PermissionMode::Limited, PermissionMode::Sandbox] {
         assert!(evaluate_access_policy("clipboard_read", &json!({}), mode).is_some());
+        assert!(evaluate_access_policy("image", &json!({}), mode).is_some());
+        assert!(evaluate_access_policy("observe_ui", &json!({}), mode).is_some());
         assert!(
             evaluate_access_policy("permissions", &json!({ "action": "grant" }), mode).is_some()
         );
@@ -91,6 +93,10 @@ fn restricted_modes_block_clipboard_reads_and_permission_grants() {
             None
         );
     }
+    assert_eq!(
+        evaluate_access_policy("image", &json!({}), PermissionMode::Full,),
+        None
+    );
 }
 
 #[test]

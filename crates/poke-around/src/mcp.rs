@@ -1,7 +1,7 @@
 use crate::policy::{self, ApprovalMode, PermissionMode};
 use crate::{Error, Result, config, mcp_tools};
 use ed25519_dalek::SigningKey;
-use praefectus::CancellationToken;
+use praefectus::{CancellationToken, NativeExecutor};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use std::net::ToSocketAddrs;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -23,6 +23,7 @@ use rs_peekaboo::ImageMode;
 use rs_peekaboo::automation::validate_output_path;
 
 const MAX_PENDING_APPROVALS: usize = 32;
+const MAX_PENDING_CANCELLATIONS: usize = 64;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,11 +35,16 @@ pub(crate) struct StateInner {
     pub(crate) approval_mode: RwLock<ApprovalMode>,
     pub(crate) home: PathBuf,
     pub(crate) approvals: Mutex<HashMap<String, Approval>>,
-    active_requests: Mutex<HashMap<(String, String), CancellationToken>>,
+    active_requests: Mutex<ActiveRequests>,
     dispatch: RwLock<()>,
+    mode_change: Mutex<()>,
+    mode_transition: AtomicBool,
     pub(crate) approval_generation: AtomicU64,
     approval_prompt: Mutex<()>,
     pub(crate) praefectus_signing_key: SigningKey,
+    pub(crate) praefectus_executor: Arc<NativeExecutor>,
+    pub(crate) semantic_observations:
+        Mutex<HashMap<String, crate::praefectus_adapter::BoundSemanticObservation>>,
 }
 
 #[derive(Clone)]
@@ -49,6 +55,13 @@ pub(crate) struct Approval {
     generation: u64,
     expires_at: Instant,
     decision: ApprovalDecision,
+}
+
+#[derive(Default)]
+struct ActiveRequests {
+    active: HashMap<(String, String), CancellationToken>,
+    pending_cancellations: HashMap<(String, String), Instant>,
+    cancel_all_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -65,17 +78,23 @@ impl AppState {
 
     pub fn with_approval_mode(mode: PermissionMode, approval_mode: ApprovalMode) -> Result<Self> {
         config::harden_peekaboo_cache()?;
+        let home = config::home_dir()?;
+        mcp_tools::harden_artifact_cache(&home)?;
         Ok(Self {
             inner: Arc::new(StateInner {
                 mode: RwLock::new(mode),
                 approval_mode: RwLock::new(approval_mode),
-                home: config::home_dir()?,
+                home,
                 approvals: Mutex::new(HashMap::new()),
-                active_requests: Mutex::new(HashMap::new()),
+                active_requests: Mutex::new(ActiveRequests::default()),
                 dispatch: RwLock::new(()),
+                mode_change: Mutex::new(()),
+                mode_transition: AtomicBool::new(false),
                 approval_generation: AtomicU64::new(rand::random()),
                 approval_prompt: Mutex::new(()),
                 praefectus_signing_key: SigningKey::from_bytes(&rand::random()),
+                praefectus_executor: Arc::new(NativeExecutor::default()),
+                semantic_observations: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -89,31 +108,54 @@ impl AppState {
     }
 
     pub fn set_mode(&self, mode: PermissionMode) {
+        let _mode_change = self
+            .inner
+            .mode_change
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if self.mode() == mode {
             return;
         }
-        if let Ok(active) = self.inner.active_requests.lock() {
-            for cancellation in active.values() {
+        self.inner.mode_transition.store(true, Ordering::Release);
+        {
+            let active = self
+                .inner
+                .active_requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for cancellation in active.active.values() {
                 cancellation.cancel();
             }
         }
-        let Ok(_dispatch) = self.inner.dispatch.write() else {
-            return;
-        };
-        let Ok(mut mode_guard) = self.inner.mode.write() else {
-            return;
-        };
-        if *mode_guard == mode {
-            return;
+        {
+            let _dispatch = self
+                .inner
+                .dispatch
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut mode_guard = self
+                .inner
+                .mode
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut approvals = self
+                .inner
+                .approvals
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut observations = self
+                .inner
+                .semantic_observations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.inner
+                .approval_generation
+                .fetch_add(1, Ordering::AcqRel);
+            approvals.clear();
+            observations.clear();
+            *mode_guard = mode;
         }
-        let Ok(mut approvals) = self.inner.approvals.lock() else {
-            return;
-        };
-        self.inner
-            .approval_generation
-            .fetch_add(1, Ordering::AcqRel);
-        approvals.clear();
-        *mode_guard = mode;
+        self.inner.mode_transition.store(false, Ordering::Release);
     }
 
     pub fn approval_mode(&self) -> ApprovalMode {
@@ -148,11 +190,24 @@ impl AppState {
     }
 
     fn cancel_request(&self, session_id: &str, request_id: &str) {
-        if let Ok(active) = self.inner.active_requests.lock()
-            && let Some(cancellation) =
-                active.get(&(session_id.to_string(), request_id.to_string()))
-        {
+        let Ok(mut requests) = self.inner.active_requests.lock() else {
+            return;
+        };
+        let key = (session_id.to_string(), request_id.to_string());
+        if let Some(cancellation) = requests.active.get(&key) {
             cancellation.cancel();
+            return;
+        }
+        let now = Instant::now();
+        requests
+            .pending_cancellations
+            .retain(|_, expires_at| *expires_at > now);
+        if requests.pending_cancellations.len() < MAX_PENDING_CANCELLATIONS {
+            requests
+                .pending_cancellations
+                .insert(key, now + Duration::from_secs(30));
+        } else {
+            requests.cancel_all_until = Some(now + Duration::from_secs(30));
         }
     }
 }
@@ -229,7 +284,7 @@ fn handle_initialize(request: &Value) -> Value {
             .unwrap_or("2024-11-05"),
         "serverInfo": { "name": "poke-around", "version": env!("CARGO_PKG_VERSION") },
         "capabilities": { "tools": { "listChanged": false } },
-        "instructions": "This server exposes only the bounded tools returned by tools/list. Shell, network, screenshot, agent, and remote UI execution are unavailable."
+        "instructions": "This server exposes only the bounded tools returned by tools/list. Semantic UI observation, click, and value setting use short-lived host-fenced tags. Image capture returns only a private content-addressed artifact reference. Raw coordinates, caller-selected screenshot paths, shell, network, agent, and debugger access are unavailable."
     })
 }
 
@@ -285,61 +340,110 @@ fn handle_tool_call_with_adapter(
         .dispatch
         .read()
         .unwrap_or_else(|error| error.into_inner());
-    let mode = state.mode();
-    let approval_generation = state.inner.approval_generation.load(Ordering::Acquire);
-    if mcp_tools::is_unavailable_tool(tool_name) {
-        return Ok(error_result(
-            "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported",
-        ));
-    }
-    if let Some(reason) = policy::evaluate_access_policy(tool_name, args, mode) {
-        return Ok(error_result(format!(
-            "Blocked by access mode policy: {reason}"
-        )));
-    }
-    if needs_approval(tool_name, args, state.approval_mode()) {
-        match consume_approval(tool_name, args, session_id, state)? {
-            ApprovalStatus::Approved => {}
-            ApprovalStatus::New => {
-                return request_approval(tool_name, args, session_id, approval_generation, state);
-            }
-            ApprovalStatus::Pending => return Ok(approval_status_result("AWAITING_APPROVAL")),
-            ApprovalStatus::Denied => return Ok(approval_status_result("APPROVAL_DENIED")),
-            ApprovalStatus::Invalid => return Ok(approval_status_result("APPROVAL_INVALID")),
-        }
-    }
     let cancellation = CancellationToken::default();
     let active_key = (session_id.to_string(), request_id.to_string());
-    {
-        let mut active = state
-            .inner
-            .active_requests
-            .lock()
-            .map_err(|_| Error::msg("active requests lock poisoned"))?;
-        if active.contains_key(&active_key) {
-            return Ok(error_result("request is already in progress"));
-        }
-        active.insert(active_key.clone(), cancellation.clone());
+    if let Err(message) = register_active_request(state, &active_key, &cancellation) {
+        return Ok(error_result(message));
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let result = match execute_adapter(
-        tool_name,
-        args,
-        session_id,
-        request_id,
-        state,
-        &cancellation,
-    ) {
-        Ok(Some(result)) => Ok(result),
-        Ok(None) => {
-            mcp_tools::execute_tool_with_control(tool_name, args, state, &cancellation, deadline)
+    let result = (|| {
+        if cancellation.is_cancelled() {
+            return Ok(json!({
+                "content": [{ "type": "text", "text": "CANCELLED_BEFORE_EFFECT" }],
+                "structuredContent": {
+                    "status": "CANCELLED_BEFORE_EFFECT",
+                    "retry_safe": true
+                },
+                "isError": true
+            }));
         }
-        Err(error) => Err(error),
-    };
-    if let Ok(mut active) = state.inner.active_requests.lock() {
-        active.remove(&active_key);
+        let mode = state.mode();
+        let approval_generation = state.inner.approval_generation.load(Ordering::Acquire);
+        if mcp_tools::is_unavailable_tool(tool_name) {
+            return Ok(error_result(
+                "tool unavailable: hardened authority, privacy, or cancellation guarantees are not supported",
+            ));
+        }
+        if let Some(reason) = policy::evaluate_access_policy(tool_name, args, mode) {
+            return Ok(error_result(format!(
+                "Blocked by access mode policy: {reason}"
+            )));
+        }
+        if needs_approval(tool_name, args, state.approval_mode()) {
+            match consume_approval(tool_name, args, session_id, state)? {
+                ApprovalStatus::Approved => {}
+                ApprovalStatus::New => {
+                    return request_approval(
+                        tool_name,
+                        args,
+                        session_id,
+                        approval_generation,
+                        state,
+                    );
+                }
+                ApprovalStatus::Pending => {
+                    return Ok(approval_status_result("AWAITING_APPROVAL"));
+                }
+                ApprovalStatus::Denied => {
+                    return Ok(approval_status_result("APPROVAL_DENIED"));
+                }
+                ApprovalStatus::Invalid => {
+                    return Ok(approval_status_result("APPROVAL_INVALID"));
+                }
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        match execute_adapter(
+            tool_name,
+            args,
+            session_id,
+            request_id,
+            state,
+            &cancellation,
+        ) {
+            Ok(Some(result)) => Ok(result),
+            Ok(None) => mcp_tools::execute_tool_with_control(
+                tool_name,
+                args,
+                state,
+                &cancellation,
+                deadline,
+            ),
+            Err(error) => Err(error),
+        }
+    })();
+    if let Ok(mut requests) = state.inner.active_requests.lock() {
+        requests.active.remove(&active_key);
     }
     result
+}
+
+fn register_active_request(
+    state: &AppState,
+    key: &(String, String),
+    cancellation: &CancellationToken,
+) -> std::result::Result<(), &'static str> {
+    let mut requests = state
+        .inner
+        .active_requests
+        .lock()
+        .map_err(|_| "active requests unavailable")?;
+    if state.inner.mode_transition.load(Ordering::Acquire) {
+        return Err("access mode transition in progress");
+    }
+    if requests.active.contains_key(key) {
+        return Err("request is already in progress");
+    }
+    let now = Instant::now();
+    requests
+        .pending_cancellations
+        .retain(|_, expires_at| *expires_at > now);
+    if requests.pending_cancellations.remove(key).is_some()
+        || requests.cancel_all_until.is_some_and(|until| until > now)
+    {
+        cancellation.cancel();
+    }
+    requests.active.insert(key.clone(), cancellation.clone());
+    Ok(())
 }
 
 // Approval system ---
@@ -425,6 +529,15 @@ fn request_approval(
     generation: u64,
     state: &AppState,
 ) -> Result<Value> {
+    let (host_summary, caller_summary) =
+        match crate::praefectus_adapter::approval_summary(tool_name, args, session_id, state) {
+            Some(Ok(summary)) => (summary.host, summary.caller),
+            Some(Err(error)) => return Ok(error_result(error.to_string())),
+            None => {
+                let summary = mcp_tools::tool_summary(tool_name, args);
+                (summary.clone(), summary)
+            }
+        };
     let request_id = format!("{:032x}", rand::random::<u128>());
     let approval = Approval {
         session_id: session_id.to_string(),
@@ -444,8 +557,7 @@ fn request_approval(
     approvals.insert(request_id.clone(), approval);
     drop(approvals);
 
-    let summary = mcp_tools::tool_summary(tool_name, args);
-    spawn_host_prompt(state.clone(), request_id.clone(), summary.clone());
+    spawn_host_prompt(state.clone(), request_id.clone(), host_summary);
     Ok(json!({
         "content": [{
             "type": "text",
@@ -455,7 +567,7 @@ fn request_approval(
             "status": "AWAITING_APPROVAL",
             "approvalRequestId": request_id,
             "toolName": tool_name,
-            "summary": summary
+            "summary": caller_summary
         },
         "isError": true
     }))
@@ -777,6 +889,25 @@ mod tests {
     #[test]
     fn per_action_gates_arbitrary_executors_and_mutating_http() {
         for (tool, args) in [
+            ("observe_ui", json!({})),
+            (
+                "click",
+                json!({
+                    "observation_id": "0".repeat(64),
+                    "generation": 1,
+                    "tag": "e0"
+                }),
+            ),
+            (
+                "set_value",
+                json!({
+                    "observation_id": "0".repeat(64),
+                    "generation": 1,
+                    "tag": "e0",
+                    "value": "value"
+                }),
+            ),
+            ("image", json!({})),
             ("write_file", json!({ "path": "file", "content": "value" })),
             (
                 "edit_file",
@@ -934,8 +1065,8 @@ mod tests {
         let state =
             AppState::with_approval_mode(PermissionMode::Full, ApprovalMode::PerAction).unwrap();
         let awaiting = request_approval(
-            "click",
-            &json!({ "x": 10, "y": 20 }),
+            "clipboard_write",
+            &json!({ "text": "value" }),
             "session-a",
             state.inner.approval_generation.load(Ordering::Acquire),
             &state,
@@ -948,21 +1079,17 @@ mod tests {
             .decide_approval(request_id, ApprovalDecision::Approved)
             .unwrap();
 
-        for (session, x) in [("session-b", 10), ("session-a", 11)] {
-            let args = json!({
-                "x": x,
-                "y": 20,
-                "approval_request_id": request_id
-            });
+        for (session, text) in [("session-b", "value"), ("session-a", "different")] {
+            let args = json!({ "text": text, "approval_request_id": request_id });
             assert!(matches!(
-                consume_approval("click", &args, session, &state).unwrap(),
+                consume_approval("clipboard_write", &args, session, &state).unwrap(),
                 ApprovalStatus::Invalid
             ));
         }
         assert!(matches!(
             consume_approval(
-                "click",
-                &json!({ "x": 10, "y": 20, "approval_request_id": request_id }),
+                "clipboard_write",
+                &json!({ "text": "value", "approval_request_id": request_id }),
                 "session-a",
                 &state,
             )
@@ -978,8 +1105,8 @@ mod tests {
         let generation = state.inner.approval_generation.load(Ordering::Acquire);
         let approval = Approval {
             session_id: "session".to_string(),
-            tool_name: "click".to_string(),
-            clean_args: json!({ "x": 10, "y": 20 }),
+            tool_name: "clipboard_write".to_string(),
+            clean_args: json!({ "text": "value" }),
             generation,
             expires_at: Instant::now() + Duration::from_secs(60),
             decision: ApprovalDecision::Pending,
@@ -991,8 +1118,8 @@ mod tests {
         drop(approvals);
 
         let result = request_approval(
-            "click",
-            &json!({ "x": 10, "y": 20 }),
+            "clipboard_write",
+            &json!({ "text": "value" }),
             "session",
             generation,
             &state,
@@ -1010,8 +1137,8 @@ mod tests {
             AppState::with_approval_mode(PermissionMode::Full, ApprovalMode::PerAction).unwrap();
         let generation = state.inner.approval_generation.load(Ordering::Acquire);
         let awaiting = request_approval(
-            "click",
-            &json!({ "element_id": "button" }),
+            "clipboard_write",
+            &json!({ "text": "value" }),
             "session",
             generation,
             &state,
@@ -1030,8 +1157,8 @@ mod tests {
         assert!(state.approvals_lock().unwrap().is_empty());
         assert!(matches!(
             consume_approval(
-                "click",
-                &json!({ "element_id": "button", "approval_request_id": request_id }),
+                "clipboard_write",
+                &json!({ "text": "value", "approval_request_id": request_id }),
                 "session",
                 &state,
             )
@@ -1086,10 +1213,59 @@ mod tests {
     }
 
     #[test]
+    fn permission_transition_rejects_registration_after_cancellation_sweep() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        let dispatch = state.inner.dispatch.read().unwrap();
+        let changer_state = state.clone();
+        let changer = std::thread::spawn(move || {
+            changer_state.set_mode(PermissionMode::Limited);
+        });
+        let timeout = Instant::now() + Duration::from_secs(1);
+        while !state.inner.mode_transition.load(Ordering::Acquire) {
+            assert!(Instant::now() < timeout);
+            std::thread::yield_now();
+        }
+        let cancellation = CancellationToken::default();
+        assert_eq!(
+            register_active_request(
+                &state,
+                &("session".to_string(), "request".to_string()),
+                &cancellation,
+            ),
+            Err("access mode transition in progress")
+        );
+        drop(dispatch);
+        changer.join().unwrap();
+        assert_eq!(state.mode(), PermissionMode::Limited);
+    }
+
+    #[test]
+    fn cancellation_before_registration_is_preserved() {
+        let state = AppState::new(PermissionMode::Full, false).unwrap();
+        state.cancel_request("session", "request");
+
+        let result = handle_tool_call_with_adapter(
+            "clipboard_write",
+            &json!({ "text": "value" }),
+            "session",
+            "request",
+            &state,
+            |_, _, _, _, _, _| panic!("cancelled request reached the adapter"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["structuredContent"]["status"],
+            "CANCELLED_BEFORE_EFFECT"
+        );
+        assert_eq!(result["structuredContent"]["retry_safe"], true);
+    }
+
+    #[test]
     fn cancellation_notification_cancels_the_matching_request() {
         let state = AppState::new(PermissionMode::Full, false).unwrap();
         let cancellation = CancellationToken::default();
-        state.inner.active_requests.lock().unwrap().insert(
+        state.inner.active_requests.lock().unwrap().active.insert(
             ("session".to_string(), "1".to_string()),
             cancellation.clone(),
         );

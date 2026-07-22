@@ -535,13 +535,13 @@ async fn notify_poke(
     let (permission_mode, approval_mode) = modes;
     let mode_message = match permission_mode {
         "limited" => {
-            "Access mode: Limited. Use only the advertised read-only tools. Shell, network, screenshot, agent, and remote UI execution are unavailable."
+            "Access mode: Limited. Use only the advertised read-only tools. Semantic UI effects, raw coordinates, shell, network, screenshot, agent, and debugger access are unavailable."
         }
         "sandbox" => {
-            "Access mode: Sandbox. Use only the advertised read-only tools. Shell, network, screenshot, agent, and remote UI execution are unavailable."
+            "Access mode: Sandbox. Use only the advertised read-only tools. Semantic UI effects, raw coordinates, shell, network, screenshot, agent, and debugger access are unavailable."
         }
         _ => {
-            "Access mode: Full. Use only the bounded tools returned by tools/list. Shell, network, screenshot, agent, and remote UI execution are unavailable."
+            "Access mode: Full. Use only the bounded tools returned by tools/list. Semantic UI tools use short-lived host-fenced tags. Image capture returns only a private content-addressed artifact reference. Raw coordinates, caller-selected screenshot paths, shell, network, agent, and debugger access are unavailable."
         }
     };
     let approval_message = if approval_mode == "per-action" {
