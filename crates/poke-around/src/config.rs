@@ -236,6 +236,16 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_config_path() {
+        with_temp_env(|_| {
+            let config_dir = config_dir().unwrap();
+            let config_path = config_path().unwrap();
+            assert_eq!(config_path, config_dir.join("config.json"));
+        });
+    }
+
+    #[test]
+    #[serial]
     fn test_paths() {
         with_temp_env(|_| {
             let base = config_dir().unwrap();
