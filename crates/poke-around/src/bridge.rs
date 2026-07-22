@@ -139,10 +139,7 @@ async fn run_bridge(
             StartTunnelResult::Success(info) => {
                 reconnect_attempt = 0;
                 record_connection(&info.connection_id)?;
-                log_status(&format!(
-                    "Tunnel connected ({}) -> {}",
-                    info.connection_id, info.tunnel_url
-                ));
+                log_status(&format!("Tunnel connected ({})", info.connection_id));
                 if !notified_agent {
                     notify_poke(
                         &poke,
@@ -538,13 +535,13 @@ async fn notify_poke(
     let (permission_mode, approval_mode) = modes;
     let mode_message = match permission_mode {
         "limited" => {
-            "Access mode: Limited. You can read files, list directories, and run safe read-only commands. You cannot write files, take screenshots, or run other commands."
+            "Access mode: Limited. Use only the advertised read-only tools. Shell, network, screenshot, agent, and remote UI execution are unavailable."
         }
         "sandbox" => {
-            "Access mode: Sandbox. You can read files, list directories, and run approved sandbox commands. Destructive or disallowed actions require approval or are blocked."
+            "Access mode: Sandbox. Use only the advertised read-only tools. Shell, network, screenshot, agent, and remote UI execution are unavailable."
         }
         _ => {
-            "Access mode: Full. You can run shell commands, read files, list directories, take screenshots, and use computer-control tools."
+            "Access mode: Full. Use only the bounded tools returned by tools/list. Shell, network, screenshot, agent, and remote UI execution are unavailable."
         }
     };
     let approval_message = if approval_mode == "per-action" {
