@@ -1715,7 +1715,7 @@ mod tests {
         assert!(command.contains("curl"));
         assert!(command.contains("sha256:"));
         assert_eq!(http, "HTTP POST to https://example.com");
-        assert!(file.contains("/private/account/credentials.txt"));
+        assert!(file.contains(&normalized_path_label("/private/account/credentials.txt")));
         assert!(typed.contains("21 chars in 'Notes'"));
         assert!(pasted.contains("21 chars"));
         for summary in [command, http, file, typed, pasted, clipboard] {
