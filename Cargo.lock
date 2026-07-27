@@ -1619,9 +1619,9 @@ dependencies = [
 
 [[package]]
 name = "praefectus"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3416c9b94ae40f58e16112cad0827abbcf751546f0a050246070e69086c4bb7"
+checksum = "49d5689c04c90584f65fdc1a20f7063a67ec570b5810c0ad75efde6d81651a13"
 dependencies = [
  "accessibility-sys",
  "atspi",
