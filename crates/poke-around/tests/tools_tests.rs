@@ -157,7 +157,7 @@ fn tool_schema_includes_descriptions() {
         let name = tool["name"].as_str().expect("tool has name");
         let description = tool["description"]
             .as_str()
-            .expect(&format!("tool {} has description", name));
+            .unwrap_or_else(|| panic!("tool {} has description", name));
         assert!(
             !description.is_empty(),
             "tool {} description is empty",

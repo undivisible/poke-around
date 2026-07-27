@@ -40,9 +40,7 @@ jobs:
           - os: macos-latest
             name: macos-aarch64
             rust_target: aarch64-apple-darwin
-          - os: macos-15-intel
-            name: macos-x86_64
-            rust_target: x86_64-apple-darwin
+          # Intel macOS removed — arm64 binary works on Intel via Rosetta 2
           - os: ubuntu-latest
             name: linux-x86_64
             rust_target: x86_64-unknown-linux-gnu
