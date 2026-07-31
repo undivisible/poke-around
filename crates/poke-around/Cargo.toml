@@ -23,7 +23,7 @@ rand.workspace = true
 reqwest.workspace = true
 rs_poke.workspace = true
 rs_peekaboo.workspace = true
-praefectus = "=0.6.0"
+praefectus = "=0.8.0"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

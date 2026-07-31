@@ -670,6 +670,7 @@ mod tests {
                 window_id: "window".to_string(),
                 document_id: None,
                 display_geometry_hash: "1".repeat(64),
+                host_opt_ins: Vec::new(),
             },
             observed_at_ms: now_ms(),
             expires_at_ms: now_ms().saturating_add(30_000),
