@@ -12,7 +12,7 @@ static STATE_MUTEX: Mutex<()> = Mutex::new(());
 pub(crate) async fn read_state() -> Result<Map<String, Value>> {
     tokio::task::spawn_blocking(|| with_state_lock(read_state_unlocked))
         .await
-        .unwrap()
+        .map_err(|_| crate::Error::msg("state worker terminated unexpectedly"))?
 }
 
 fn read_state_unlocked() -> Result<Map<String, Value>> {
@@ -37,7 +37,7 @@ pub(crate) async fn patch_state(updates: Vec<(String, Value)>) -> Result<()> {
         })
     })
     .await
-    .unwrap()
+    .map_err(|_| crate::Error::msg("state worker terminated unexpectedly"))?
 }
 
 pub(crate) async fn remove_state_key(key: String) -> Result<()> {
@@ -49,7 +49,7 @@ pub(crate) async fn remove_state_key(key: String) -> Result<()> {
         })
     })
     .await
-    .unwrap()
+    .map_err(|_| crate::Error::msg("state worker terminated unexpectedly"))?
 }
 
 fn with_state_lock<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -113,7 +113,7 @@ pub(crate) async fn record_connection(connection_id: String) -> Result<()> {
         })
     })
     .await
-    .unwrap()
+    .map_err(|_| crate::Error::msg("state worker terminated unexpectedly"))?
 }
 
 pub(crate) fn log_status(message: &str) {

@@ -2,6 +2,19 @@ use crate::{Error, Result, config};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+pub fn validate_agent_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::msg(
+            "invalid agent name: only alphanumeric, dash, and underscore are allowed",
+        ));
+    }
+    Ok(())
+}
+
 pub fn run_agent_by_name(name: &str) -> Result<()> {
     let path = find_agent(name)?;
     let runtime = find_js_runtime()?;
@@ -17,6 +30,7 @@ pub fn run_agent_by_name(name: &str) -> Result<()> {
 }
 
 pub fn find_agent(name: &str) -> Result<PathBuf> {
+    validate_agent_name(name)?;
     let dir = config::agents_dir()?;
     let direct = dir.join(name);
     if direct.exists() {
@@ -66,14 +80,7 @@ pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
 }
 
 pub fn download_agent(name: &str) -> Result<PathBuf> {
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(Error::msg(
-            "invalid agent name: only alphanumeric, dash, and underscore are allowed",
-        ));
-    }
+    validate_agent_name(name)?;
     let dir = config::agents_dir()?;
     std::fs::create_dir_all(&dir)?;
 
@@ -238,10 +245,34 @@ mod tests {
     #[test]
     #[serial]
     fn test_download_agent_invalid_name() {
-        let invalid_names = ["bad/name", "name with spaces", "name&", ".name", "name#1"];
+        let invalid_names = [
+            "",
+            "bad/name",
+            "name with spaces",
+            "name&",
+            ".name",
+            "name#1",
+            "../x",
+        ];
         for name in invalid_names {
             let result = download_agent(name);
             assert!(result.is_err(), "Expected error for name '{}'", name);
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "invalid agent name: only alphanumeric, dash, and underscore are allowed"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_agent_rejects_path_traversal_names() {
+        let _guard = setup_test_env();
+        let agents_dir = config::agents_dir().unwrap();
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        for name in ["../escape", "foo/bar", "", ".hidden"] {
+            let result = find_agent(name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
             assert_eq!(
                 result.unwrap_err().to_string(),
                 "invalid agent name: only alphanumeric, dash, and underscore are allowed"

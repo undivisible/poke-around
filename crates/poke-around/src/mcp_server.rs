@@ -204,7 +204,21 @@ fn request_has_bearer(request: &HttpRequest, bearer: &str) -> bool {
         .headers
         .get("authorization")
         .and_then(|value| value.split_once(' '))
-        .is_some_and(|(scheme, value)| scheme.eq_ignore_ascii_case("bearer") && value == bearer)
+        .is_some_and(|(scheme, value)| {
+            scheme.eq_ignore_ascii_case("bearer")
+                && constant_time_eq(value.as_bytes(), bearer.as_bytes())
+        })
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0_u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
 
 fn request_contains_initialize(body: &str) -> bool {
@@ -414,6 +428,13 @@ mod tests {
     use crate::mcp::AppState;
     use crate::policy::PermissionMode;
     use std::time::Duration;
+
+    #[test]
+    fn bearer_compare_is_length_sensitive_and_value_sensitive() {
+        assert!(constant_time_eq(b"abcd", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abce"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+    }
 
     #[test]
     fn handle_connection_read_error() {
