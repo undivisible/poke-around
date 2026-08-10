@@ -578,10 +578,14 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|t| t.name == name)
 }
 
+pub fn tools_value() -> &'static Value {
+    static TOOLS_VALUE: OnceLock<Value> = OnceLock::new();
+    TOOLS_VALUE.get_or_init(|| Value::Array(all_tool_schemas()))
+}
+
 pub fn tools_json() -> &'static str {
     static TOOLS_JSON: OnceLock<String> = OnceLock::new();
-    TOOLS_JSON
-        .get_or_init(|| serde_json::to_string(&all_tool_schemas()).expect("tools json serializes"))
+    TOOLS_JSON.get_or_init(|| tools_value().to_string())
 }
 
 fn all_tool_schemas() -> Vec<Value> {
@@ -1516,31 +1520,63 @@ pub(crate) fn harden_artifact_cache(home: &Path) -> Result<()> {
     if !directory.try_exists()? {
         return Ok(());
     }
-    crate::config::restrict_private_dir(&directory)?;
+    match crate::config::restrict_private_dir(&directory) {
+        Ok(()) => {}
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    }
     let lock_path = directory.join("artifacts.lock");
-    let lock = fs::OpenOptions::new()
+    let lock = match fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&lock_path)?;
-    crate::config::restrict_private_file(&lock_path)?;
+        .open(&lock_path)
+    {
+        Ok(lock) => lock,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    match crate::config::restrict_private_file(&lock_path) {
+        Ok(()) => {}
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    }
     lock.lock_exclusive()?;
-    prune_artifact_cache(&directory, None)?;
-    for entry in fs::read_dir(&directory)? {
-        let entry = entry?;
+    match prune_artifact_cache(&directory, None) {
+        Ok(()) => {}
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    }
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if entry.file_type()?.is_file()
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
+        if file_type.is_file()
             && name.len() == 64
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            let modified = entry
-                .metadata()?
-                .modified()
-                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let modified = match entry.metadata() {
+                Ok(metadata) => metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err.into()),
+            };
             register_artifact_expiration(entry.path(), modified)?;
         }
     }

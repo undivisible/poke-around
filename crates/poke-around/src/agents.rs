@@ -1,6 +1,12 @@
 use crate::{Error, Result, config};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const AGENT_RUN_TIMEOUT: Duration = Duration::from_secs(300);
+const AGENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_AGENT_DOWNLOAD_BYTES: usize = 1024 * 1024;
 
 pub fn validate_agent_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -18,14 +24,28 @@ pub fn validate_agent_name(name: &str) -> Result<()> {
 pub fn run_agent_by_name(name: &str) -> Result<()> {
     let path = find_agent(name)?;
     let runtime = find_js_runtime()?;
-    let status = Command::new(runtime)
+    let mut child = Command::new(runtime)
         .arg(path)
         .stdin(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(Error::msg(format!("agent '{name}' exited with {status}")))
+        .spawn()?;
+    let deadline = Instant::now() + AGENT_RUN_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(Error::msg(format!("agent '{name}' exited with {status}")))
+            };
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::msg(format!(
+                "agent '{name}' timed out after {}s",
+                AGENT_RUN_TIMEOUT.as_secs()
+            )));
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -89,7 +109,13 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
     });
     let url = format!("{base_url}/{name}.js");
 
-    let response = reqwest::blocking::get(&url)
+    let client = reqwest::blocking::Client::builder()
+        .timeout(AGENT_DOWNLOAD_TIMEOUT)
+        .build()
+        .map_err(|e| Error::msg(format!("failed to build HTTP client: {e}")))?;
+    let response = client
+        .get(&url)
+        .send()
         .map_err(|e| Error::msg(format!("failed to fetch agent: {}", e)))?;
     if !response.status().is_success() {
         return Err(Error::msg(format!(
@@ -101,6 +127,11 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
     let bytes = response
         .bytes()
         .map_err(|e| Error::msg(format!("failed to read agent body: {}", e)))?;
+    if bytes.len() > MAX_AGENT_DOWNLOAD_BYTES {
+        return Err(Error::msg(format!(
+            "agent '{name}' exceeds download size limit ({MAX_AGENT_DOWNLOAD_BYTES} bytes)"
+        )));
+    }
     std::fs::write(&path, bytes)?;
     Ok(path)
 }

@@ -114,11 +114,24 @@ pub(crate) fn harden_peekaboo_cache() -> Result<()> {
     if !path.try_exists()? {
         return Ok(());
     }
-    restrict_private_dir(&path)?;
-    for entry in std::fs::read_dir(path)? {
+    match restrict_private_dir(&path) {
+        Ok(()) => {}
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    }
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in entries {
         let entry = entry?;
         if entry.file_type()?.is_file() {
-            restrict_private_file(&entry.path())?;
+            match restrict_private_file(&entry.path()) {
+                Ok(()) => {}
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
         }
     }
     Ok(())

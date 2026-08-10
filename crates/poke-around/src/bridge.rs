@@ -87,11 +87,20 @@ impl Bridge {
 
     pub fn stop(&mut self) -> Result<()> {
         let _ = self.tx.send(BridgeCommand::Stop);
-        if let Some(done_rx) = self.done.take() {
-            let _ = done_rx.recv_timeout(BRIDGE_STOP_TIMEOUT);
-        }
+        let finished = if let Some(done_rx) = self.done.take() {
+            done_rx.recv_timeout(BRIDGE_STOP_TIMEOUT).is_ok()
+        } else {
+            true
+        };
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            if finished {
+                let _ = handle.join();
+            } else {
+                // Avoid hanging daemon shutdown if the bridge runtime is stuck.
+                std::thread::spawn(move || {
+                    let _ = handle.join();
+                });
+            }
         }
         Ok(())
     }
@@ -668,7 +677,14 @@ async fn sync_and_report_tools(runner: &TunnelRunner, mcp_url: &str, mcp_bearer:
 }
 
 async fn local_tool_count(mcp_url: &str, mcp_bearer: &str) -> usize {
-    let Ok(response) = reqwest::Client::new()
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return 0;
+    };
+    let Ok(response) = client
         .post(mcp_url)
         .bearer_auth(mcp_bearer)
         .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))

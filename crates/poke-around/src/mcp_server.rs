@@ -104,6 +104,7 @@ fn handle_relay_connection(
     expected_path: &str,
     bearer: &str,
 ) -> Result<()> {
+    apply_socket_timeouts(&stream)?;
     let request = read_http_request(&mut stream)?;
     if request.path != expected_path {
         let response = HttpResponse::not_found();
@@ -116,7 +117,7 @@ fn handle_relay_connection(
         return Ok(());
     }
     let mut target = TcpStream::connect(("127.0.0.1", target_port))?;
-    target.set_read_timeout(Some(Duration::from_secs(30)))?;
+    apply_socket_timeouts(&target)?;
     write!(target, "{} /mcp HTTP/1.1\r\n", request.method)?;
     write!(target, "Host: 127.0.0.1:{target_port}\r\n")?;
     for (name, value) in request.headers {
@@ -137,7 +138,14 @@ fn handle_relay_connection(
     Ok(())
 }
 
+fn apply_socket_timeouts(stream: &TcpStream) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    Ok(())
+}
+
 fn handle_connection(mut stream: TcpStream, state: AppState, bearer: &str) -> Result<()> {
+    apply_socket_timeouts(&stream)?;
     let request = match read_http_request(&mut stream) {
         Ok(request) => request,
         Err(err) => {
@@ -274,26 +282,31 @@ struct HttpRequest {
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    apply_socket_timeouts(stream)?;
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4096];
+    let mut search_from = 0usize;
+    let mut header_end = None;
     loop {
         let read = stream.read(&mut buffer)?;
         if read == 0 {
             break;
         }
         bytes.extend_from_slice(&buffer[..read]);
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        let start = search_from.saturating_sub(3);
+        if let Some(relative) = bytes[start..]
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        {
+            header_end = Some(start + relative);
             break;
         }
+        search_from = bytes.len();
         if bytes.len() > 1024 * 1024 {
             return Err(Error::msg("request headers too large"));
         }
     }
-    let header_end = bytes
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| Error::msg("invalid http request"))?;
+    let header_end = header_end.ok_or_else(|| Error::msg("invalid http request"))?;
     let header_text = String::from_utf8_lossy(&bytes[..header_end]);
     let mut lines = header_text.lines();
     let request_line = lines

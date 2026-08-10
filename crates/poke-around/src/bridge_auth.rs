@@ -88,7 +88,9 @@ pub(crate) async fn ensure_integration_name(base: String) -> Result<String> {
     {
         return Ok(name.to_string());
     }
-    let name = compute_integration_name(&base);
+    let name = tokio::task::spawn_blocking(move || compute_integration_name(&base))
+        .await
+        .map_err(|_| Error::msg("integration name worker terminated unexpectedly"))?;
     bridge_state::patch_state(vec![(
         "integrationName".to_string(),
         Value::String(name.clone()),

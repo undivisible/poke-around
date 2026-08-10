@@ -289,7 +289,7 @@ fn handle_initialize(request: &Value) -> Value {
 }
 
 fn handle_tools_list() -> Result<Value> {
-    Ok(json!({ "tools": serde_json::from_str::<Value>(crate::mcp_tools::tools_json())? }))
+    Ok(json!({ "tools": crate::mcp_tools::tools_value().clone() }))
 }
 
 fn handle_tools_call_request(request: &Value, session_id: &str, state: &AppState) -> Result<Value> {
