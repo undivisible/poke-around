@@ -43,7 +43,7 @@ jobs:
         run: cargo test --workspace --all-features
 
       - name: Install script test
-        if: runner.os != 'Windows'
+        shell: bash
         run: bash scripts/test-install.sh
 
       - name: Build
