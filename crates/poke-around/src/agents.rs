@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 const AGENT_RUN_TIMEOUT: Duration = Duration::from_secs(300);
 const AGENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_AGENT_DOWNLOAD_BYTES: usize = 1024 * 1024;
+const DEFAULT_AGENT_BASE_URL: &str = "https://raw.githubusercontent.com/f/poke-gate/123767ad217bc218439cae8a20fc02aa9c298b41/examples/agents";
 
 pub fn validate_agent_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -51,14 +52,14 @@ pub fn run_agent_by_name(name: &str) -> Result<()> {
 
 pub fn find_agent(name: &str) -> Result<PathBuf> {
     validate_agent_name(name)?;
-    let dir = config::agents_dir()?;
+    let dir = ensure_private_agents_dir()?;
     let direct = dir.join(name);
     if direct.exists() {
-        return Ok(direct);
+        return ensure_agent_path(&dir, direct);
     }
     let js_path = dir.join(format!("{}.js", name));
     if js_path.exists() {
-        return Ok(js_path);
+        return ensure_agent_path(&dir, js_path);
     }
     let prefix = format!("{name}.");
     for entry in std::fs::read_dir(&dir)? {
@@ -74,7 +75,7 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
 
         let stem = &file_name_str[..file_name_str.len() - 3];
         if stem == name || stem.starts_with(&prefix) {
-            return Ok(entry.path());
+            return ensure_agent_path(&dir, entry.path());
         }
     }
     Err(Error::msg(format!(
@@ -83,9 +84,38 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
     )))
 }
 
-pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
+fn ensure_private_agents_dir() -> Result<PathBuf> {
+    config::ensure_private_config_dir()?;
     let dir = config::agents_dir()?;
     std::fs::create_dir_all(&dir)?;
+    config::restrict_private_dir(&dir)?;
+    Ok(dir)
+}
+
+fn ensure_agent_path(agents_dir: &Path, path: PathBuf) -> Result<PathBuf> {
+    let canonical_dir = agents_dir
+        .canonicalize()
+        .map_err(|err| Error::msg(format!("invalid agents directory: {err}")))?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|err| Error::msg(format!("invalid agent path '{}': {err}", path.display())))?;
+    if !canonical.starts_with(&canonical_dir) {
+        return Err(Error::msg(format!(
+            "agent path '{}' escapes agents directory",
+            path.display()
+        )));
+    }
+    if !canonical.is_file() {
+        return Err(Error::msg(format!(
+            "agent path '{}' is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(canonical)
+}
+
+pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
+    let dir = ensure_private_agents_dir()?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -95,22 +125,29 @@ pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
     let body = format!(
         "import {{ Poke, getToken }} from \"poke\";\nconst poke = new Poke({{ apiKey: getToken() }});\nawait poke.sendMessage({message:?});\n"
     );
-    std::fs::write(&path, body)?;
+    std::fs::write(&path, &body)?;
+    config::restrict_private_file(&path)?;
     Ok(path)
 }
 
 pub fn download_agent(name: &str) -> Result<PathBuf> {
     validate_agent_name(name)?;
-    let dir = config::agents_dir()?;
-    std::fs::create_dir_all(&dir)?;
+    let dir = ensure_private_agents_dir()?;
+    let path = dir.join(format!("{name}.js"));
+    if path.exists() {
+        return Err(Error::msg(format!(
+            "agent '{name}' already exists at {}; delete it before re-downloading",
+            path.display()
+        )));
+    }
 
-    let base_url = std::env::var("POKE_AROUND_AGENT_BASE_URL").unwrap_or_else(|_| {
-        "https://raw.githubusercontent.com/f/poke-gate/main/examples/agents".to_string()
-    });
+    let base_url = std::env::var("POKE_AROUND_AGENT_BASE_URL")
+        .unwrap_or_else(|_| DEFAULT_AGENT_BASE_URL.to_string());
     let url = format!("{base_url}/{name}.js");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(AGENT_DOWNLOAD_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| Error::msg(format!("failed to build HTTP client: {e}")))?;
     let response = client
@@ -123,7 +160,6 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
             response.status()
         )));
     }
-    let path = dir.join(format!("{name}.js"));
     let bytes = response
         .bytes()
         .map_err(|e| Error::msg(format!("failed to read agent body: {}", e)))?;
@@ -132,7 +168,8 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
             "agent '{name}' exceeds download size limit ({MAX_AGENT_DOWNLOAD_BYTES} bytes)"
         )));
     }
-    std::fs::write(&path, bytes)?;
+    std::fs::write(&path, &bytes)?;
+    config::restrict_private_file(&path)?;
     Ok(path)
 }
 
@@ -215,7 +252,8 @@ mod tests {
         std::fs::write(&agent_path, "test content").unwrap();
 
         let found = find_agent("my_agent").unwrap();
-        assert_eq!(found, agent_path);
+        let expected = std::fs::canonicalize(&agent_path).unwrap_or(agent_path);
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -229,7 +267,8 @@ mod tests {
         std::fs::write(&agent_path, "test content").unwrap();
 
         let found = find_agent("my_agent").unwrap();
-        assert_eq!(found, agent_path);
+        let expected = std::fs::canonicalize(&agent_path).unwrap_or(agent_path);
+        assert_eq!(found, expected);
     }
 
     #[test]

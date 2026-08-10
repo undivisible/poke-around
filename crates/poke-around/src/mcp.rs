@@ -793,14 +793,19 @@ pub(crate) fn block_private_urls(url_str: &str) -> Result<()> {
 pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
+            let octets = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
-                || v4.octets()[0] == 0
+                || octets[0] == 0
+                || (octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127)
         }
         IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_ip(IpAddr::V4(v4));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_unique_local()
@@ -1295,5 +1300,17 @@ mod tests {
             "command??[2J?secret"
         );
         assert_eq!(sanitize_host_prompt(&"a".repeat(513)).len(), 512);
+    }
+
+    #[test]
+    fn private_ip_detection_covers_mapped_and_carrier_grade_nat() {
+        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("100.64.0.1".parse().unwrap()));
+        assert!(is_private_ip("100.127.255.255".parse().unwrap()));
+        assert!(!is_private_ip("100.128.0.1".parse().unwrap()));
+        assert!(is_private_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("::ffff:10.1.2.3".parse().unwrap()));
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
     }
 }

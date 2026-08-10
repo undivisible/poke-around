@@ -121,12 +121,15 @@ fn handle_relay_connection(
     write!(target, "{} /mcp HTTP/1.1\r\n", request.method)?;
     write!(target, "Host: 127.0.0.1:{target_port}\r\n")?;
     for (name, value) in request.headers {
-        if !matches!(
+        if matches!(
             name.as_str(),
             "authorization" | "connection" | "content-length" | "host"
-        ) {
-            write!(target, "{name}: {value}\r\n")?;
+        ) || !is_safe_header_component(&name)
+            || !is_safe_header_component(&value)
+        {
+            continue;
         }
+        write!(target, "{name}: {value}\r\n")?;
     }
     write!(
         target,
@@ -142,6 +145,12 @@ fn apply_socket_timeouts(stream: &TcpStream) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     Ok(())
+}
+
+fn is_safe_header_component(value: &str) -> bool {
+    !value
+        .bytes()
+        .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
 
 fn handle_connection(mut stream: TcpStream, state: AppState, bearer: &str) -> Result<()> {
@@ -318,7 +327,11 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     let mut headers = HashMap::new();
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim().to_string();
+            if is_safe_header_component(&name) && is_safe_header_component(&value) {
+                headers.insert(name, value);
+            }
         }
     }
     let content_length = headers
@@ -447,6 +460,14 @@ mod tests {
         assert!(constant_time_eq(b"abcd", b"abcd"));
         assert!(!constant_time_eq(b"abcd", b"abce"));
         assert!(!constant_time_eq(b"abcd", b"abc"));
+    }
+
+    #[test]
+    fn header_components_reject_crlf_and_nul() {
+        assert!(is_safe_header_component("x-request-id"));
+        assert!(!is_safe_header_component("bad\rname"));
+        assert!(!is_safe_header_component("bad\nvalue"));
+        assert!(!is_safe_header_component("bad\0value"));
     }
 
     #[test]

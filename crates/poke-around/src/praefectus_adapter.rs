@@ -190,9 +190,13 @@ fn execute_effect(
         Ok(verifier) => verifier,
         Err(_) => return Ok(terminal_error("REJECTED", true)),
     };
+    let operations_log = match crate::config::ensure_private_config_dir() {
+        Ok(directory) => directory.join("praefectus-operations.jsonl"),
+        Err(_) => return Ok(terminal_error("REJECTED", true)),
+    };
     let report = match Engine::new(
         SharedNativeExecutor(Arc::clone(&state.inner.praefectus_executor)),
-        state.inner.home.join("praefectus-operations.jsonl"),
+        operations_log.clone(),
         verifier,
     )
     .execute(&request, cancellation)
@@ -201,6 +205,7 @@ fn execute_effect(
         Err(ProtocolError::Conflict) => return Ok(terminal_error("CONFLICT", false)),
         Err(_) => return Ok(terminal_error("OUTCOME_UNKNOWN", false)),
     };
+    let _ = crate::config::restrict_private_file(&operations_log);
     let retry_safe = acknowledgements_are_retry_safe(&report.acknowledgements);
     let succeeded = acknowledgements_succeeded(&report.acknowledgements);
     let report = match to_value(report) {
