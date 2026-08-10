@@ -23,12 +23,12 @@ fn daemon_starts_and_stops_gracefully() {
     // Wait up to ~5 seconds for the "listening on" message
     for _ in 0..50 {
         line.clear();
-        if let Ok(bytes) = reader.read_line(&mut line) {
-            #[allow(clippy::collapsible_if)]
-            if bytes > 0 && line.contains("listening on") {
-                started = true;
-                break;
-            }
+        if let Ok(bytes) = reader.read_line(&mut line)
+            && bytes > 0
+            && line.contains("listening on")
+        {
+            started = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }

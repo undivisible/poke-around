@@ -30,7 +30,6 @@ thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
 futures = "0.3.32"
-shlex.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]

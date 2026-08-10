@@ -598,14 +598,16 @@ fn spawn_host_prompt(state: AppState, request_id: String, summary: String) {
         let approved = io::stdin()
             .read_line(&mut answer)
             .is_ok_and(|_| answer.trim().eq_ignore_ascii_case("y"));
-        let _ = state.decide_approval(
+        if let Err(err) = state.decide_approval(
             &request_id,
             if approved {
                 ApprovalDecision::Approved
             } else {
                 ApprovalDecision::Denied
             },
-        );
+        ) {
+            eprintln!("poke-around: failed to record approval decision: {err}");
+        }
     });
 }
 

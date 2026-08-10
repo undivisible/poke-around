@@ -184,8 +184,8 @@ fn route_http_request(
         Ok(HttpResponse::unauthorized())
     } else if request.method == "OPTIONS" {
         Ok(HttpResponse::no_content())
-    } else if request.method == "GET" && path == "/mcp"
-        || request.method == "DELETE" && matches!(path, "/" | "/mcp")
+    } else if (request.method == "GET" && path == "/mcp")
+        || (request.method == "DELETE" && matches!(path, "/" | "/mcp"))
     {
         Ok(HttpResponse::method_not_allowed())
     } else if request.method == "POST" && matches!(path, "/" | "/mcp") {

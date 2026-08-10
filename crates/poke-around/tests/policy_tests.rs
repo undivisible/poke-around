@@ -1,4 +1,6 @@
-use poke_around::policy::{PermissionMode, evaluate_access_policy, is_destructive_command};
+use poke_around::policy::{
+    PermissionMode, evaluate_access_policy, is_destructive_command, split_command_segments,
+};
 use serde_json::json;
 
 #[test]
@@ -123,4 +125,51 @@ fn restricted_modes_allow_only_read_only_http_methods() {
             );
         }
     }
+}
+
+#[test]
+fn piped_python_execution_stays_blocked_in_limited_mode() {
+    let reason = evaluate_access_policy(
+        "run_command",
+        &json!({ "command": "python3 script.py | cat" }),
+        PermissionMode::Limited,
+    );
+    assert_eq!(
+        reason,
+        Some("Shell commands are disabled in limited mode.".to_string())
+    );
+}
+
+#[test]
+fn piped_python_after_allowlisted_command_stays_blocked_in_limited_mode() {
+    let reason = evaluate_access_policy(
+        "run_command",
+        &json!({ "command": "ls | python3 -c 'print(1)'" }),
+        PermissionMode::Limited,
+    );
+    assert_eq!(
+        reason,
+        Some("Shell commands are disabled in limited mode.".to_string())
+    );
+}
+
+#[test]
+fn piped_commands_are_blocked_in_limited_mode() {
+    let reason = evaluate_access_policy(
+        "run_command",
+        &json!({ "command": "ls | head" }),
+        PermissionMode::Limited,
+    );
+    assert_eq!(
+        reason,
+        Some("Shell commands are disabled in limited mode.".to_string())
+    );
+}
+
+#[test]
+fn split_command_segments_split_on_pipes() {
+    let segments: Vec<_> = split_command_segments("ls -la | head").collect();
+    assert_eq!(segments, vec!["ls -la", "head"]);
+    let segments: Vec<_> = split_command_segments("ls || echo fail").collect();
+    assert_eq!(segments, vec!["ls", "echo fail"]);
 }

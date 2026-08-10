@@ -40,20 +40,7 @@ fn run() -> Result<()> {
         "take-screenshot" => {
             let capture =
                 rs_peekaboo::Peekaboo::new().image(rs_peekaboo::ImageMode::Screen, None, true)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&capture.path, std::fs::Permissions::from_mode(0o600))?;
-            }
-            #[cfg(windows)]
-            if let Ok(username) = std::env::var("USERNAME")
-                && !username.is_empty()
-            {
-                let _ = std::process::Command::new("icacls")
-                    .arg(&capture.path)
-                    .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
-                    .status();
-            }
+            config::restrict_private_file(&capture.path)?;
             println!("{}", capture.path.display());
             Ok(())
         }

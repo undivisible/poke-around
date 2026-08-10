@@ -268,7 +268,11 @@ pub(crate) fn approval_summary(
                     .as_deref()
                     .map_or(0, |value| value.chars().count())
             ),
-            _ => unreachable!(),
+            other => {
+                return Err(Error::msg(format!(
+                    "approval summary unavailable for tool '{other}'"
+                )));
+            }
         };
         let host = format!("{caller}{host_name}");
         Ok(ApprovalSummary { host, caller })

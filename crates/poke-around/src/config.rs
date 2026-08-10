@@ -57,7 +57,7 @@ fn read_config_unlocked() -> Result<Config> {
     }
 }
 
-pub(crate) fn restrict_private_file(path: &std::path::Path) -> Result<()> {
+pub fn restrict_private_file(path: &std::path::Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -65,19 +65,7 @@ pub(crate) fn restrict_private_file(path: &std::path::Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let username = std::env::var("USERNAME")
-            .map_err(|_| Error::msg("USERNAME is required to restrict private files"))?;
-        if username.is_empty() {
-            return Err(Error::msg("USERNAME is required to restrict private files"));
-        }
-        let status = Command::new("icacls")
-            .arg(path)
-            .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
-            .status()?;
-        if !status.success() {
-            return Err(Error::msg("failed to restrict private file ACL"));
-        }
+        restrict_with_icacls(path, "file")?;
     }
     Ok(())
 }
@@ -90,21 +78,27 @@ pub(crate) fn restrict_private_dir(path: &std::path::Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let username = std::env::var("USERNAME")
-            .map_err(|_| Error::msg("USERNAME is required to restrict private directories"))?;
-        if username.is_empty() {
-            return Err(Error::msg(
-                "USERNAME is required to restrict private directories",
-            ));
-        }
-        let status = Command::new("icacls")
-            .arg(path)
-            .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
-            .status()?;
-        if !status.success() {
-            return Err(Error::msg("failed to restrict private directory ACL"));
-        }
+        restrict_with_icacls(path, "directory")?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_with_icacls(path: &std::path::Path, kind: &str) -> Result<()> {
+    use std::process::Command;
+    let username = std::env::var("USERNAME")
+        .map_err(|_| Error::msg(format!("USERNAME is required to restrict private {kind}s")))?;
+    if username.is_empty() {
+        return Err(Error::msg(format!(
+            "USERNAME is required to restrict private {kind}s"
+        )));
+    }
+    let status = Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r", &format!("{username}:F")])
+        .status()?;
+    if !status.success() {
+        return Err(Error::msg(format!("failed to restrict private {kind} ACL")));
     }
     Ok(())
 }
