@@ -578,8 +578,10 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|t| t.name == name)
 }
 
-pub fn tools_json() -> String {
-    serde_json::to_string(&all_tool_schemas()).expect("tools json serializes")
+pub fn tools_json() -> &'static str {
+    static TOOLS_JSON: OnceLock<String> = OnceLock::new();
+    TOOLS_JSON
+        .get_or_init(|| serde_json::to_string(&all_tool_schemas()).expect("tools json serializes"))
 }
 
 fn all_tool_schemas() -> Vec<Value> {

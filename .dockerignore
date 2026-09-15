@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+.amp
+target
+examples
+scripts
+*.md
+LICENSE
+deny.toml
+.gitattributes
+.gitignore
+.remarkignore
+.cargo

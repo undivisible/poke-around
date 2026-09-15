@@ -16,7 +16,25 @@ pub fn run_agent_by_name(name: &str) -> Result<()> {
     }
 }
 
+fn validate_agent_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('\0')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.contains("..")
+    {
+        return Err(Error::msg(
+            "invalid agent name: path separators and parent directories are not allowed",
+        ));
+    }
+    Ok(())
+}
+
 pub fn find_agent(name: &str) -> Result<PathBuf> {
+    validate_agent_name(name)?;
     let dir = config::agents_dir()?;
     let direct = dir.join(name);
     if direct.exists() {
@@ -66,6 +84,7 @@ pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
 }
 
 pub fn download_agent(name: &str) -> Result<PathBuf> {
+    validate_agent_name(name)?;
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -238,13 +257,40 @@ mod tests {
     #[test]
     #[serial]
     fn test_download_agent_invalid_name() {
-        let invalid_names = ["bad/name", "name with spaces", "name&", ".name", "name#1"];
+        let path_names = ["bad/name", r"bad\name", "..", "foo..bar", "C:name"];
+        for name in path_names {
+            let result = download_agent(name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "invalid agent name: path separators and parent directories are not allowed"
+            );
+        }
+
+        let invalid_names = ["name with spaces", "name&", ".name", "name#1"];
         for name in invalid_names {
             let result = download_agent(name);
-            assert!(result.is_err(), "Expected error for name '{}'", name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
             assert_eq!(
                 result.unwrap_err().to_string(),
                 "invalid agent name: only alphanumeric, dash, and underscore are allowed"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_agent_rejects_path_traversal_names() {
+        let _guard = setup_test_env();
+        let agents_dir = config::agents_dir().unwrap();
+        std::fs::create_dir_all(&agents_dir).unwrap();
+
+        for name in ["../secret", r"..\secret", "..", "foo/bar", "foo\\bar", ""] {
+            let result = find_agent(name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "invalid agent name: path separators and parent directories are not allowed"
             );
         }
     }

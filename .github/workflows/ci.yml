@@ -5,10 +5,25 @@ on:
     branches: [ main ]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  cargo_deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          deny-version: 0.20.2
+
   build_and_test:
     strategy:
       matrix:
@@ -20,6 +35,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -35,6 +52,11 @@ jobs:
 
       - name: Install script test
         if: runner.os != 'Windows'
+        run: bash scripts/test-install.sh
+
+      - name: Install script test
+        if: runner.os == 'Windows'
+        shell: bash
         run: bash scripts/test-install.sh
 
       - name: Build

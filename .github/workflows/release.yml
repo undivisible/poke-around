@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*.*.*'
 
+permissions:
+  contents: read
+
 jobs:
   # Run tests before anything else — block the release if they fail
   test:
@@ -15,6 +18,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -58,6 +63,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build --workspace --release --target ${{ matrix.rust_target }}

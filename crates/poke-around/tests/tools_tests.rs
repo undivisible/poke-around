@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 #[test]
 fn tool_schema_includes_poke_gate_and_poke_around_tools() {
-    let tools: Value = serde_json::from_str(&tools_json()).expect("tools json parses");
+    let tools: Value = serde_json::from_str(tools_json()).expect("tools json parses");
     let names = tools
         .as_array()
         .expect("tools is array")
@@ -33,7 +33,7 @@ fn tool_schema_includes_poke_gate_and_poke_around_tools() {
 
 #[test]
 fn tool_schema_does_not_advertise_unavailable_target_effects() {
-    let tools: Value = serde_json::from_str(&tools_json()).expect("tools json parses");
+    let tools: Value = serde_json::from_str(tools_json()).expect("tools json parses");
     for name in [
         "run_command",
         "network_speed",
@@ -94,7 +94,7 @@ fn tool_schema_does_not_advertise_unavailable_target_effects() {
 
 #[test]
 fn computer_use_tool_schemas_are_strict_and_bounded() {
-    let tools: Value = serde_json::from_str(&tools_json()).expect("tools json parses");
+    let tools: Value = serde_json::from_str(tools_json()).expect("tools json parses");
     for (name, expected) in [
         ("observe_ui", vec!["approval_request_id"]),
         (
@@ -150,7 +150,7 @@ fn computer_use_tool_schemas_are_strict_and_bounded() {
 
 #[test]
 fn tool_schema_includes_descriptions() {
-    let tools: Value = serde_json::from_str(&tools_json()).expect("tools json parses");
+    let tools: Value = serde_json::from_str(tools_json()).expect("tools json parses");
     let tools_array = tools.as_array().expect("tools is array");
     assert!(!tools_array.is_empty(), "tools array is empty");
     for tool in tools_array {

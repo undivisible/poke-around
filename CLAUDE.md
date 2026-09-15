@@ -40,7 +40,8 @@ The active daemon targets stable Rust with edition 2024.
 ## Release
 
 Pushing a `v*.*.*` tag triggers `.github/workflows/release.yml`, which builds binaries for
-macOS (arm64, x86_64), Linux (x86_64, aarch64), and Windows (x86_64) and uploads them to a GitHub release.
+macOS (arm64; Intel macOS uses the arm64 binary via Rosetta 2), Linux (x86_64, aarch64),
+and Windows (x86_64) and uploads them to a GitHub release.
 The homebrew-tap formula is updated automatically by its own workflow within ~1 hour.
 
 ## Validation
@@ -52,6 +53,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo build --workspace --release
 bash scripts/test-install.sh
+cargo deny check
 ```
 
 ## Stability expectations
