@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+}
+
+need_pkg() {
+  dpkg -s "$1" >/dev/null 2>&1
+}
+
+start=$(date +%s)
+log "poke-around orb setup starting"
+
+missing=()
+for pkg in build-essential pkg-config libssl-dev ca-certificates curl; do
+  if ! need_pkg "$pkg"; then
+    missing+=("$pkg")
+  fi
+done
+
+if ((${#missing[@]})); then
+  log "installing packages: ${missing[*]}"
+  sudo apt-get update -y
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+else
+  log "system packages already present"
+fi
+
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export PATH="$CARGO_HOME/bin:$PATH"
+
+if ! command -v rustup >/dev/null 2>&1; then
+  log "installing rustup (stable)"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+else
+  log "rustup already installed"
+fi
+
+# shellcheck disable=SC1091
+source "$CARGO_HOME/env"
+
+log "ensuring stable toolchain with rustfmt + clippy"
+rustup toolchain install stable --profile minimal --component rustfmt,clippy
+rustup default stable
+
+log "fetching workspace crates"
+cargo fetch --locked
+
+elapsed=$(( $(date +%s) - start ))
+log "setup complete in ${elapsed}s ($(rustc --version))"

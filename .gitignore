@@ -6,3 +6,4 @@ xcuserdata/
 superpowers/
 target/
 .cargo/config.toml
+.amp/portals/*
