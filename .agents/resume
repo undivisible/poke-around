@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export PATH="$CARGO_HOME/bin:$PATH"
+
+if [[ -f "$CARGO_HOME/env" ]]; then
+  # shellcheck disable=SC1091
+  source "$CARGO_HOME/env"
+fi
+
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "rustc missing after resume; rerun .agents/setup" >&2
+  exit 1
+fi
