@@ -111,14 +111,34 @@ pub(crate) fn restrict_private_dir(path: &std::path::Path) -> Result<()> {
 
 pub(crate) fn harden_peekaboo_cache() -> Result<()> {
     let path = rs_peekaboo::cache::snapshot_dir()?;
-    if !path.try_exists()? {
-        return Ok(());
+    match path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
-    restrict_private_dir(&path)?;
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            restrict_private_file(&entry.path())?;
+    if let Err(error) = restrict_private_dir(&path) {
+        if matches!(error, Error::Io(ref inner) if inner.kind() == std::io::ErrorKind::NotFound) {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if entry.file_type()?.is_file()
+            && let Err(error) = restrict_private_file(&entry.path())
+            && !matches!(error, Error::Io(ref inner) if inner.kind() == std::io::ErrorKind::NotFound)
+        {
+            return Err(error);
         }
     }
     Ok(())

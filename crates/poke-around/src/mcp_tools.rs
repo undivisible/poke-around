@@ -1518,17 +1518,30 @@ pub(crate) fn harden_artifact_cache(home: &Path) -> Result<()> {
         .lock()
         .map_err(|_| Error::msg("image artifact cache unavailable"))?;
     let directory = artifact_cache_dir(home);
-    if !directory.try_exists()? {
-        return Ok(());
+    match directory.try_exists() {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
-    crate::config::restrict_private_dir(&directory)?;
+    if let Err(error) = crate::config::restrict_private_dir(&directory) {
+        if is_not_found(&error) {
+            return Ok(());
+        }
+        return Err(error);
+    }
     let lock_path = directory.join("artifacts.lock");
-    let lock = fs::OpenOptions::new()
+    let lock = match fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&lock_path)?;
+        .open(&lock_path)
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
     crate::config::restrict_private_file(&lock_path)?;
     lock.lock_exclusive()?;
     prune_artifact_cache(&directory, None)?;
@@ -1550,6 +1563,10 @@ pub(crate) fn harden_artifact_cache(home: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_not_found(error: &Error) -> bool {
+    matches!(error, Error::Io(inner) if inner.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
