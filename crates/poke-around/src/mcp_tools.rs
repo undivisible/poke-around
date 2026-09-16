@@ -584,6 +584,11 @@ pub fn tools_json() -> &'static str {
         .get_or_init(|| serde_json::to_string(&all_tool_schemas()).expect("tools json serializes"))
 }
 
+pub fn tools_list() -> &'static Value {
+    static TOOLS: OnceLock<Value> = OnceLock::new();
+    TOOLS.get_or_init(|| serde_json::from_str(tools_json()).expect("tools json parses"))
+}
+
 fn all_tool_schemas() -> Vec<Value> {
     let mut tools = base_tools();
     tools.extend(computer_use_tools());

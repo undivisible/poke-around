@@ -1,5 +1,12 @@
-use poke_around::mcp_tools::tools_json;
+use poke_around::mcp_tools::{tools_json, tools_list};
 use serde_json::{Value, json};
+
+#[test]
+fn tools_json_and_tools_list_are_cached() {
+    assert_eq!(tools_json().as_ptr(), tools_json().as_ptr());
+    assert!(std::ptr::eq(tools_list(), tools_list()));
+    assert_eq!(tools_list().as_array().map(Vec::len), Some(14));
+}
 
 #[test]
 fn tool_schema_includes_poke_gate_and_poke_around_tools() {
