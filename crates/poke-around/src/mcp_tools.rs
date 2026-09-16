@@ -12,8 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::mcp::AppState;
 use crate::mcp::{
-    block_private_urls, error_result, int_arg, ok_json, ok_json_with_image, ok_text,
-    optional_output_path, path_arg, str_arg,
+    error_result, int_arg, ok_json, ok_json_with_image, ok_text, optional_output_path, path_arg,
+    str_arg,
 };
 use crate::{Error, Result};
 use fs2::FileExt;
@@ -578,8 +578,15 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|t| t.name == name)
 }
 
-pub fn tools_json() -> String {
-    serde_json::to_string(&all_tool_schemas()).expect("tools json serializes")
+pub fn tools_json() -> &'static str {
+    static TOOLS_JSON: OnceLock<String> = OnceLock::new();
+    TOOLS_JSON
+        .get_or_init(|| serde_json::to_string(&all_tool_schemas()).expect("tools json serializes"))
+}
+
+pub fn tools_list() -> &'static Value {
+    static TOOLS: OnceLock<Value> = OnceLock::new();
+    TOOLS.get_or_init(|| serde_json::from_str(tools_json()).expect("tools json parses"))
 }
 
 fn all_tool_schemas() -> Vec<Value> {
@@ -1511,17 +1518,30 @@ pub(crate) fn harden_artifact_cache(home: &Path) -> Result<()> {
         .lock()
         .map_err(|_| Error::msg("image artifact cache unavailable"))?;
     let directory = artifact_cache_dir(home);
-    if !directory.try_exists()? {
-        return Ok(());
+    match directory.try_exists() {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
-    crate::config::restrict_private_dir(&directory)?;
+    if let Err(error) = crate::config::restrict_private_dir(&directory) {
+        if is_not_found(&error) {
+            return Ok(());
+        }
+        return Err(error);
+    }
     let lock_path = directory.join("artifacts.lock");
-    let lock = fs::OpenOptions::new()
+    let lock = match fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&lock_path)?;
+        .open(&lock_path)
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
     crate::config::restrict_private_file(&lock_path)?;
     lock.lock_exclusive()?;
     prune_artifact_cache(&directory, None)?;
@@ -1543,6 +1563,10 @@ pub(crate) fn harden_artifact_cache(home: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_not_found(error: &Error) -> bool {
+    matches!(error, Error::Io(inner) if inner.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
@@ -1838,15 +1862,15 @@ fn edit_file(args: &Value, state: &AppState) -> Result<Value> {
 
 fn web_fetch(args: &Value) -> Result<Value> {
     let url = args.get("url").and_then(Value::as_str).unwrap_or("");
-    if let Err(err) = block_private_urls(url) {
-        return Ok(error_result(err.to_string()));
-    }
+    let client = match crate::mcp::public_http_client(url) {
+        Ok(client) => client,
+        Err(err) => return Ok(error_result(err.to_string())),
+    };
     let max_chars = args
         .get("max_chars")
         .and_then(Value::as_u64)
         .unwrap_or(20000) as usize;
 
-    let client = reqwest::blocking::Client::new();
     let response = match client.get(url).send() {
         Ok(res) => res,
         Err(e) => return Ok(error_result(format!("Failed to fetch URL: {}", e))),
@@ -1873,9 +1897,10 @@ fn web_fetch(args: &Value) -> Result<Value> {
 fn http_request(args: &Value) -> Result<Value> {
     let method_str = args.get("method").and_then(Value::as_str).unwrap_or("GET");
     let url_str = args.get("url").and_then(Value::as_str).unwrap_or("");
-    if let Err(err) = block_private_urls(url_str) {
-        return Ok(error_result(err.to_string()));
-    }
+    let client = match crate::mcp::public_http_client(url_str) {
+        Ok(client) => client,
+        Err(err) => return Ok(error_result(err.to_string())),
+    };
 
     let method = match method_str.to_uppercase().as_str() {
         "GET" => reqwest::Method::GET,
@@ -1888,7 +1913,6 @@ fn http_request(args: &Value) -> Result<Value> {
         other => return Ok(error_result(format!("unsupported HTTP method: {other}"))),
     };
 
-    let client = reqwest::blocking::Client::new();
     let mut request = client.request(method, url_str);
 
     if let Some(headers) = args.get("headers").and_then(Value::as_object) {

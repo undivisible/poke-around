@@ -204,7 +204,22 @@ fn request_has_bearer(request: &HttpRequest, bearer: &str) -> bool {
         .headers
         .get("authorization")
         .and_then(|value| value.split_once(' '))
-        .is_some_and(|(scheme, value)| scheme.eq_ignore_ascii_case("bearer") && value == bearer)
+        .is_some_and(|(scheme, value)| {
+            scheme.eq_ignore_ascii_case("bearer") && constant_time_eq(value, bearer)
+        })
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0_u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
 
 fn request_contains_initialize(body: &str) -> bool {
@@ -434,6 +449,16 @@ mod tests {
             "Expected an error when handling a reset connection, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn bearer_compare_is_length_sensitive_and_value_sensitive() {
+        assert!(constant_time_eq("abc", "abc"));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(!constant_time_eq("abc", "ab"));
+        assert!(!constant_time_eq("abc", "abcd"));
+        assert!(!constant_time_eq("", "a"));
+        assert!(constant_time_eq("", ""));
     }
 
     #[test]

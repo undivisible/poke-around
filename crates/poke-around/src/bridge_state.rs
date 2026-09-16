@@ -9,10 +9,12 @@ use std::sync::Mutex;
 const MAX_CONN_HISTORY: usize = 10;
 static STATE_MUTEX: Mutex<()> = Mutex::new(());
 
+fn join_blocking<T>(result: std::result::Result<Result<T>, tokio::task::JoinError>) -> Result<T> {
+    result.map_err(|_| crate::Error::msg("state worker task failed"))?
+}
+
 pub(crate) async fn read_state() -> Result<Map<String, Value>> {
-    tokio::task::spawn_blocking(|| with_state_lock(read_state_unlocked))
-        .await
-        .unwrap()
+    join_blocking(tokio::task::spawn_blocking(|| with_state_lock(read_state_unlocked)).await)
 }
 
 fn read_state_unlocked() -> Result<Map<String, Value>> {
@@ -27,29 +29,31 @@ fn read_state_unlocked() -> Result<Map<String, Value>> {
 }
 
 pub(crate) async fn patch_state(updates: Vec<(String, Value)>) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
-        with_state_lock(|| {
-            let mut state = read_state_unlocked()?;
-            for (key, value) in updates {
-                state.insert(key, value);
-            }
-            write_state_unlocked(&state)
+    join_blocking(
+        tokio::task::spawn_blocking(move || {
+            with_state_lock(|| {
+                let mut state = read_state_unlocked()?;
+                for (key, value) in updates {
+                    state.insert(key, value);
+                }
+                write_state_unlocked(&state)
+            })
         })
-    })
-    .await
-    .unwrap()
+        .await,
+    )
 }
 
 pub(crate) async fn remove_state_key(key: String) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
-        with_state_lock(|| {
-            let mut state = read_state_unlocked()?;
-            state.remove(&key);
-            write_state_unlocked(&state)
+    join_blocking(
+        tokio::task::spawn_blocking(move || {
+            with_state_lock(|| {
+                let mut state = read_state_unlocked()?;
+                state.remove(&key);
+                write_state_unlocked(&state)
+            })
         })
-    })
-    .await
-    .unwrap()
+        .await,
+    )
 }
 
 fn with_state_lock<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -90,30 +94,31 @@ fn write_state_unlocked(state: &Map<String, Value>) -> Result<()> {
 }
 
 pub(crate) async fn record_connection(connection_id: String) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
-        with_state_lock(|| {
-            let state = read_state_unlocked()?;
-            let mut history = state
-                .get("connectionHistory")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if !history
-                .iter()
-                .filter_map(Value::as_str)
-                .any(|known| known == connection_id)
-            {
-                history.insert(0, Value::String(connection_id.clone()));
-            }
-            history.truncate(MAX_CONN_HISTORY);
-            let mut next = state;
-            next.insert("connectionId".to_string(), Value::String(connection_id));
-            next.insert("connectionHistory".to_string(), Value::Array(history));
-            write_state_unlocked(&next)
+    join_blocking(
+        tokio::task::spawn_blocking(move || {
+            with_state_lock(|| {
+                let state = read_state_unlocked()?;
+                let mut history = state
+                    .get("connectionHistory")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if !history
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|known| known == connection_id)
+                {
+                    history.insert(0, Value::String(connection_id.clone()));
+                }
+                history.truncate(MAX_CONN_HISTORY);
+                let mut next = state;
+                next.insert("connectionId".to_string(), Value::String(connection_id));
+                next.insert("connectionHistory".to_string(), Value::Array(history));
+                write_state_unlocked(&next)
+            })
         })
-    })
-    .await
-    .unwrap()
+        .await,
+    )
 }
 
 pub(crate) fn log_status(message: &str) {

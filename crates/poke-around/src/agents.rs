@@ -16,15 +16,31 @@ pub fn run_agent_by_name(name: &str) -> Result<()> {
     }
 }
 
-pub fn find_agent(name: &str) -> Result<PathBuf> {
-    let dir = config::agents_dir()?;
-    let direct = dir.join(name);
-    if direct.exists() {
-        return Ok(direct);
+fn validate_agent_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('\0')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.contains("..")
+    {
+        return Err(Error::msg(
+            "invalid agent name: path separators and parent directories are not allowed",
+        ));
     }
-    let js_path = dir.join(format!("{}.js", name));
-    if js_path.exists() {
-        return Ok(js_path);
+    Ok(())
+}
+
+pub fn find_agent(name: &str) -> Result<PathBuf> {
+    validate_agent_name(name)?;
+    let dir = config::agents_dir()?;
+    let candidates = [dir.join(name), dir.join(format!("{name}.js"))];
+    for candidate in candidates {
+        if candidate.exists() {
+            return ensure_agent_path(&dir, candidate);
+        }
     }
     let prefix = format!("{name}.");
     for entry in std::fs::read_dir(&dir)? {
@@ -40,13 +56,69 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
 
         let stem = &file_name_str[..file_name_str.len() - 3];
         if stem == name || stem.starts_with(&prefix) {
-            return Ok(entry.path());
+            return ensure_agent_path(&dir, entry.path());
         }
     }
     Err(Error::msg(format!(
         "agent '{name}' not found in {}",
         dir.display()
     )))
+}
+
+fn normalized_components(path: &Path) -> Option<Vec<std::ffi::OsString>> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => {
+                parts.push(prefix.as_os_str().to_os_string());
+            }
+            std::path::Component::RootDir => {
+                parts.push(std::ffi::OsString::from(
+                    std::path::MAIN_SEPARATOR.to_string(),
+                ));
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let root = std::ffi::OsString::from(std::path::MAIN_SEPARATOR.to_string());
+                if parts.last() == Some(&root) || parts.pop().is_none() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(part) => parts.push(part.to_os_string()),
+        }
+    }
+    Some(parts)
+}
+
+fn path_is_within(root: &Path, candidate: &Path) -> bool {
+    match (
+        normalized_components(root),
+        normalized_components(candidate),
+    ) {
+        (Some(root_parts), Some(candidate_parts)) => candidate_parts.starts_with(&root_parts),
+        _ => false,
+    }
+}
+
+fn ensure_agent_path(dir: &Path, path: PathBuf) -> Result<PathBuf> {
+    match (dir.canonicalize(), path.canonicalize()) {
+        (Ok(root), Ok(canonical)) => {
+            if path_is_within(&root, &canonical) {
+                Ok(canonical)
+            } else {
+                Err(Error::msg("agent path escaped the agents directory"))
+            }
+        }
+        _ => {
+            // Windows temp dirs can deny canonicalize (os error 5). Fall back to
+            // component containment so lookup still fails closed on `..`.
+            if path_is_within(dir, &path) {
+                Ok(path)
+            } else {
+                Err(Error::msg("agent path escaped the agents directory"))
+            }
+        }
+    }
 }
 
 pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
@@ -66,6 +138,7 @@ pub fn create_agent(prompt: Option<&str>) -> Result<PathBuf> {
 }
 
 pub fn download_agent(name: &str) -> Result<PathBuf> {
+    validate_agent_name(name)?;
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -82,7 +155,10 @@ pub fn download_agent(name: &str) -> Result<PathBuf> {
     });
     let url = format!("{base_url}/{name}.js");
 
-    let response = reqwest::blocking::get(&url)
+    let client = crate::mcp::public_http_client(&url)?;
+    let response = client
+        .get(&url)
+        .send()
         .map_err(|e| Error::msg(format!("failed to fetch agent: {}", e)))?;
     if !response.status().is_success() {
         return Err(Error::msg(format!(
@@ -152,6 +228,13 @@ mod tests {
         }
     }
 
+    fn assert_same_agent_path(found: &Path, expected: &Path) {
+        match (found.canonicalize(), expected.canonicalize()) {
+            (Ok(found), Ok(expected)) => assert_eq!(found, expected),
+            _ => assert_eq!(found, expected),
+        }
+    }
+
     fn setup_test_env() -> EnvGuard {
         let lock = ENV_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
         let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
@@ -177,7 +260,7 @@ mod tests {
         std::fs::write(&agent_path, "test content").unwrap();
 
         let found = find_agent("my_agent").unwrap();
-        assert_eq!(found, agent_path);
+        assert_same_agent_path(&found, &agent_path);
     }
 
     #[test]
@@ -191,7 +274,7 @@ mod tests {
         std::fs::write(&agent_path, "test content").unwrap();
 
         let found = find_agent("my_agent").unwrap();
-        assert_eq!(found, agent_path);
+        assert_same_agent_path(&found, &agent_path);
     }
 
     #[test]
@@ -238,15 +321,52 @@ mod tests {
     #[test]
     #[serial]
     fn test_download_agent_invalid_name() {
-        let invalid_names = ["bad/name", "name with spaces", "name&", ".name", "name#1"];
+        let path_names = ["bad/name", r"bad\name", "..", "foo..bar", "C:name"];
+        for name in path_names {
+            let result = download_agent(name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "invalid agent name: path separators and parent directories are not allowed"
+            );
+        }
+
+        let invalid_names = ["name with spaces", "name&", ".name", "name#1"];
         for name in invalid_names {
             let result = download_agent(name);
-            assert!(result.is_err(), "Expected error for name '{}'", name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
             assert_eq!(
                 result.unwrap_err().to_string(),
                 "invalid agent name: only alphanumeric, dash, and underscore are allowed"
             );
         }
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_agent_rejects_path_traversal_names() {
+        let _guard = setup_test_env();
+        let agents_dir = config::agents_dir().unwrap();
+        std::fs::create_dir_all(&agents_dir).unwrap();
+
+        for name in ["../secret", r"..\secret", "..", "foo/bar", "foo\\bar", ""] {
+            let result = find_agent(name);
+            assert!(result.is_err(), "Expected error for name '{name}'");
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "invalid agent name: path separators and parent directories are not allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_agent_path_falls_back_to_component_containment() {
+        let root = PathBuf::from("poke-around-agents");
+        let inside = root.join("ok.js");
+        let escaped = root.join("..").join("secret.js");
+        assert!(path_is_within(&root, &inside));
+        assert!(!path_is_within(&root, &escaped));
+        assert!(ensure_agent_path(&root, escaped).is_err());
     }
 
     #[cfg(not(windows))]

@@ -3,7 +3,7 @@ use crate::mcp::AppState;
 use crate::mcp_server::{new_bearer_capability, start_server};
 use crate::policy::{ApprovalMode, PermissionMode};
 use crate::{Result, config};
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -23,6 +23,11 @@ pub fn run(mode_arg: Option<&str>, approval_mode_arg: Option<&str>, verbose: boo
     }
     crate::platform::log_gui_session_readiness(verbose);
     let mcp_bearer = new_bearer_capability();
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = shutdown_tx.send(());
+    })
+    .map_err(|err| crate::Error::msg(format!("failed to set Ctrl-C handler: {err}")))?;
     let port = start_server(state, &mcp_bearer)?;
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
     eprintln!("poke-around MCP server listening on {mcp_url}");
@@ -35,12 +40,8 @@ pub fn run(mode_arg: Option<&str>, approval_mode_arg: Option<&str>, verbose: boo
             ""
         }
     );
+    let _ = io::stderr().flush();
     let mut bridge = Bridge::start(&mcp_url, &mcp_bearer, mode.as_str(), approval_mode.as_str())?;
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    ctrlc::set_handler(move || {
-        let _ = shutdown_tx.send(());
-    })
-    .map_err(|err| crate::Error::msg(format!("failed to set Ctrl-C handler: {err}")))?;
     let _ = shutdown_rx.recv();
     eprintln!("poke-around shutting down");
     bridge.stop()?;
