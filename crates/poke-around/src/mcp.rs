@@ -747,6 +747,18 @@ pub(crate) fn ensure_path_allowed(path: &Path, state: &AppState) -> Result<()> {
 }
 
 pub(crate) fn block_private_urls(url_str: &str) -> Result<()> {
+    resolve_public_addrs(url_str, false).map(|_| ())
+}
+
+fn host_ip(host: &str) -> Option<IpAddr> {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse().ok()
+}
+
+fn public_url(url_str: &str) -> Result<Url> {
     if url_str.trim().is_empty() {
         return Err(Error::msg("url is required"));
     }
@@ -761,31 +773,79 @@ pub(crate) fn block_private_urls(url_str: &str) -> Result<()> {
         .host_str()
         .ok_or_else(|| Error::msg("url missing host"))?;
     let host_lower = host.to_ascii_lowercase();
-    if host_lower == "localhost" || host_lower.ends_with(".localhost") {
+    if host_lower == "localhost"
+        || host_lower.ends_with(".localhost")
+        || host_lower == "metadata.google.internal"
+        || host_lower.ends_with(".internal")
+    {
         return Err(Error::msg("requests to localhost are not allowed"));
     }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_ip(ip) {
-            return Err(Error::msg(format!(
-                "requests to private IP {ip} are not allowed"
-            )));
-        }
-        return Ok(());
+    Ok(url)
+}
+
+fn reject_private_ip(ip: IpAddr, allow_loopback: bool) -> Result<()> {
+    if is_private_ip(ip) && !(allow_loopback && ip.is_loopback()) {
+        return Err(Error::msg(format!(
+            "requests to private IP {ip} are not allowed"
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_public_addrs(
+    url_str: &str,
+    allow_loopback: bool,
+) -> Result<(Url, Vec<std::net::SocketAddr>)> {
+    let url = public_url(url_str)?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::msg("url missing host"))?;
+    if let Some(ip) = host_ip(host) {
+        reject_private_ip(ip, allow_loopback)?;
+        let port = url.port_or_known_default().unwrap_or(80);
+        return Ok((url, vec![std::net::SocketAddr::new(ip, port)]));
     }
     let port = url.port_or_known_default().unwrap_or(80);
     let addrs: Vec<std::net::SocketAddr> = (host, port)
         .to_socket_addrs()
         .map_err(|err| Error::msg(format!("dns resolution failed for '{host}': {err}")))?
         .collect();
-    for addr in &addrs {
-        if is_private_ip(addr.ip()) {
-            return Err(Error::msg(format!(
-                "url resolves to private IP {}",
-                addr.ip()
-            )));
-        }
+    if addrs.is_empty() {
+        return Err(Error::msg(format!("dns resolution failed for '{host}'")));
     }
-    Ok(())
+    for addr in &addrs {
+        reject_private_ip(addr.ip(), allow_loopback)?;
+    }
+    Ok((url, addrs))
+}
+
+pub(crate) fn public_http_client(url_str: &str) -> Result<reqwest::blocking::Client> {
+    // Production stays fail-closed on loopback. Tests may pin httptest's loopback listener.
+    if !cfg!(test) {
+        block_private_urls(url_str)?;
+    }
+    let (url, addrs) = resolve_public_addrs(url_str, cfg!(test))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::msg("url missing host"))?
+        .to_string();
+    let redirect_host = host.clone();
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > 5 {
+            return attempt.error("too many redirects");
+        }
+        match resolve_public_addrs(attempt.url().as_str(), false) {
+            Ok((next, _)) if next.host_str() == Some(redirect_host.as_str()) => attempt.follow(),
+            Ok(_) => attempt.error("cross-host redirects are not allowed"),
+            Err(error) => attempt.error(error.to_string()),
+        }
+    });
+    reqwest::blocking::Client::builder()
+        .redirect(policy)
+        .timeout(Duration::from_secs(15))
+        .resolve_to_addrs(&host, &addrs)
+        .build()
+        .map_err(|err| Error::msg(format!("failed to build http client: {err}")))
 }
 
 pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
@@ -796,13 +856,21 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
+                || matches!(v4.octets(), [100, 64..=127, ..])
+                || v4.is_documentation()
+                || matches!(v4.octets(), [198, 18..=19, ..])
                 || v4.octets()[0] == 0
         }
         IpAddr::V6(v6) => {
+            let mapped = v6.to_ipv4_mapped();
+            if let Some(v4) = mapped {
+                return is_private_ip(IpAddr::V4(v4));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_unique_local()
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || v6.segments()[0] == 0x2001 && v6.segments()[1] == 0xdb8
         }
     }
 }
@@ -1293,5 +1361,46 @@ mod tests {
             "command??[2J?secret"
         );
         assert_eq!(sanitize_host_prompt(&"a".repeat(513)).len(), 512);
+    }
+
+    #[test]
+    fn block_private_urls_rejects_loopback_and_link_local() {
+        for url in [
+            "http://127.0.0.1/",
+            "http://localhost/",
+            "http://[::1]/",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/",
+            "http://[::ffff:127.0.0.1]/",
+            "file:///etc/passwd",
+            "ftp://example.com/",
+        ] {
+            assert!(
+                block_private_urls(url).is_err(),
+                "expected private/blocked url to fail: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn public_http_client_rejects_redirects_to_private_hosts() {
+        use httptest::{Expectation, Server, matchers::*, responders::*};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/start")).respond_with(
+                status_code(302).append_header("Location", "http://127.0.0.1/secret"),
+            ),
+        );
+        let url = server.url_str("/start");
+        let client = public_http_client(&url).expect("public mock server is allowed");
+        let error = client.get(&url).send().unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("localhost")
+                || message.contains("private")
+                || message.contains("redirect"),
+            "unexpected redirect error: {message}"
+        );
     }
 }
