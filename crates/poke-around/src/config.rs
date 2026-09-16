@@ -109,8 +109,16 @@ pub(crate) fn restrict_private_dir(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+fn is_not_found(error: &Error) -> bool {
+    matches!(error, Error::Io(inner) if inner.kind() == std::io::ErrorKind::NotFound)
+        || error.to_string().contains("No such file or directory")
+}
+
 pub(crate) fn harden_peekaboo_cache() -> Result<()> {
-    let path = rs_peekaboo::cache::snapshot_dir()?;
+    let path = match rs_peekaboo::cache::snapshot_dir() {
+        Ok(path) => path,
+        Err(_) => return Ok(()),
+    };
     match path.try_exists() {
         Ok(true) => {}
         Ok(false) => return Ok(()),
@@ -118,7 +126,7 @@ pub(crate) fn harden_peekaboo_cache() -> Result<()> {
         Err(error) => return Err(error.into()),
     }
     if let Err(error) = restrict_private_dir(&path) {
-        if matches!(error, Error::Io(ref inner) if inner.kind() == std::io::ErrorKind::NotFound) {
+        if is_not_found(&error) {
             return Ok(());
         }
         return Err(error);

@@ -77,9 +77,9 @@ impl AppState {
     }
 
     pub fn with_approval_mode(mode: PermissionMode, approval_mode: ApprovalMode) -> Result<Self> {
-        config::harden_peekaboo_cache()?;
+        let _ = config::harden_peekaboo_cache();
         let home = config::home_dir()?;
-        mcp_tools::harden_artifact_cache(&home)?;
+        let _ = mcp_tools::harden_artifact_cache(&home);
         Ok(Self {
             inner: Arc::new(StateInner {
                 mode: RwLock::new(mode),

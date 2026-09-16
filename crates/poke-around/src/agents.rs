@@ -228,6 +228,13 @@ mod tests {
         }
     }
 
+    fn assert_same_agent_path(found: &Path, expected: &Path) {
+        match (found.canonicalize(), expected.canonicalize()) {
+            (Ok(found), Ok(expected)) => assert_eq!(found, expected),
+            _ => assert_eq!(found, expected),
+        }
+    }
+
     fn setup_test_env() -> EnvGuard {
         let lock = ENV_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
         let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
@@ -253,7 +260,7 @@ mod tests {
         std::fs::write(&agent_path, "test content").unwrap();
 
         let found = find_agent("my_agent").unwrap();
-        assert_eq!(found, agent_path);
+        assert_same_agent_path(&found, &agent_path);
     }
 
     #[test]
@@ -267,7 +274,7 @@ mod tests {
         std::fs::write(&agent_path, "test content").unwrap();
 
         let found = find_agent("my_agent").unwrap();
-        assert_eq!(found, agent_path);
+        assert_same_agent_path(&found, &agent_path);
     }
 
     #[test]
