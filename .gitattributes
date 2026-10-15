@@ -1,2 +1,7 @@
 examples/** linguist-documentation=true
 *.sh linguist-vendored
+
+# Exclude Shell from GitHub language statistics.
+*.sh linguist-detectable=false
+/.agents/resume linguist-detectable=false
+/.agents/setup linguist-detectable=false
