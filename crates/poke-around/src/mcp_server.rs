@@ -47,7 +47,7 @@ pub fn start_server(state: AppState, bearer: &str) -> Result<u16> {
 
 fn try_acquire_connection(connections: &AtomicUsize) -> bool {
     connections
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
             (active < MAX_CONCURRENT_CONNECTIONS).then_some(active + 1)
         })
         .is_ok()
