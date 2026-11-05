@@ -73,3 +73,44 @@ fn per_action_mode_fails_closed_without_a_host_terminal() {
             .contains("per-action approval mode requires an interactive host terminal")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn daemon_exits_when_bridge_authentication_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let credentials = temp.path().join("poke");
+    std::fs::create_dir(&credentials).unwrap();
+    std::fs::write(credentials.join("credentials.json"), b"not json").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_poke-around"))
+        .arg("daemon")
+        .env("XDG_CONFIG_HOME", temp.path())
+        .env("HOME", temp.path())
+        .env_remove("POKE_API_KEY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let exited = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        exited,
+        "daemon remained alive after bridge auth failure: {stderr}"
+    );
+    assert!(
+        !output.status.success(),
+        "daemon exited successfully: {stderr}"
+    );
+    assert!(stderr.to_ascii_lowercase().contains("bridge"), "{stderr}");
+}

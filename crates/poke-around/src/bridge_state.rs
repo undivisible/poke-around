@@ -6,7 +6,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Mutex;
 
-const MAX_CONN_HISTORY: usize = 10;
 static STATE_MUTEX: Mutex<()> = Mutex::new(());
 
 fn join_blocking<T>(result: std::result::Result<Result<T>, tokio::task::JoinError>) -> Result<T> {
@@ -43,17 +42,37 @@ pub(crate) async fn patch_state(updates: Vec<(String, Value)>) -> Result<()> {
     )
 }
 
-pub(crate) async fn remove_state_key(key: String) -> Result<()> {
+pub(crate) async fn forget_connections(ids: Vec<String>) -> Result<()> {
     join_blocking(
         tokio::task::spawn_blocking(move || {
             with_state_lock(|| {
                 let mut state = read_state_unlocked()?;
-                state.remove(&key);
+                forget_connections_in_state(&mut state, &ids);
                 write_state_unlocked(&state)
             })
         })
         .await,
     )
+}
+
+fn forget_connections_in_state(state: &mut Map<String, Value>, ids: &[String]) {
+    if state
+        .get("connectionId")
+        .and_then(Value::as_str)
+        .is_some_and(|id| ids.iter().any(|deleted| deleted == id))
+    {
+        state.remove("connectionId");
+    }
+    if let Some(history) = state
+        .get_mut("connectionHistory")
+        .and_then(Value::as_array_mut)
+    {
+        history.retain(|value| {
+            !value
+                .as_str()
+                .is_some_and(|id| ids.iter().any(|deleted| deleted == id))
+        });
+    }
 }
 
 fn with_state_lock<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -97,31 +116,56 @@ pub(crate) async fn record_connection(connection_id: String) -> Result<()> {
     join_blocking(
         tokio::task::spawn_blocking(move || {
             with_state_lock(|| {
-                let state = read_state_unlocked()?;
-                let mut history = state
-                    .get("connectionHistory")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                if !history
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .any(|known| known == connection_id)
-                {
-                    history.insert(0, Value::String(connection_id.clone()));
-                }
-                history.truncate(MAX_CONN_HISTORY);
-                let mut next = state;
-                next.insert("connectionId".to_string(), Value::String(connection_id));
-                next.insert("connectionHistory".to_string(), Value::Array(history));
-                write_state_unlocked(&next)
+                let mut state = read_state_unlocked()?;
+                record_connection_in_state(&mut state, connection_id);
+                write_state_unlocked(&state)
             })
         })
         .await,
     )
 }
 
+fn record_connection_in_state(state: &mut Map<String, Value>, connection_id: String) {
+    let mut history = state
+        .get("connectionHistory")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !history
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|known| known == connection_id)
+    {
+        history.insert(0, Value::String(connection_id.clone()));
+    }
+    state.insert("connectionId".to_string(), Value::String(connection_id));
+    state.insert("connectionHistory".to_string(), Value::Array(history));
+}
+
 pub(crate) fn log_status(message: &str) {
     let now = chrono::Local::now().format("%H:%M:%S");
     eprintln!("[{now}] {message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failed_connections_survive_history_growth_and_successful_cleanup() {
+        let mut state = Map::new();
+        for i in 0..20 {
+            record_connection_in_state(&mut state, format!("id-{i}"));
+        }
+        forget_connections_in_state(&mut state, &["id-1".into(), "id-19".into()]);
+        let history = state["connectionHistory"].as_array().unwrap();
+        assert_eq!(history.len(), 18);
+        assert!(history.contains(&json!("id-0")));
+        assert!(!history.contains(&json!("id-1")));
+        assert!(!state.contains_key("connectionId"));
+        record_connection_in_state(&mut state, "new".into());
+        forget_connections_in_state(&mut state, &["id-0".into()]);
+        assert_eq!(state["connectionId"], json!("new"));
+    }
 }

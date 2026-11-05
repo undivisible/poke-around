@@ -20,6 +20,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Enforce advisory exception expiry
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import re
+          import tomllib
+
+          with open('deny.toml', 'rb') as config:
+              ignores = tomllib.load(config).get('advisories', {}).get('ignore', [])
+          today = datetime.datetime.now(datetime.timezone.utc).date()
+          for ignore in ignores:
+              reason = ignore.get('reason', '') if isinstance(ignore, dict) else ''
+              match = re.match(r'^Expires (\d{4}-\d{2}-\d{2}): .+', reason)
+              if not match or datetime.date.fromisoformat(match.group(1)) <= today:
+                  raise SystemExit(f'Advisory exception missing a future expiry or expired: {ignore}')
+          PY
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           deny-version: 0.20.2
@@ -49,6 +65,10 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --all-features
+
+      - name: Test approval prompt thread bound
+        if: runner.os == 'Linux'
+        run: script -q -e -c 'cargo test invalidated_approvals_do_not_accumulate_prompt_threads -- --test-threads=1' /dev/null
 
       - name: Install script test
         if: runner.os != 'Windows'

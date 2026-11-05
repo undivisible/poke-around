@@ -41,6 +41,7 @@ pub(crate) struct StateInner {
     mode_transition: AtomicBool,
     pub(crate) approval_generation: AtomicU64,
     approval_prompt: Mutex<()>,
+    approval_prompt_worker: AtomicBool,
     pub(crate) praefectus_signing_key: SigningKey,
     pub(crate) praefectus_executor: Arc<NativeExecutor>,
     pub(crate) semantic_observations:
@@ -55,6 +56,7 @@ pub(crate) struct Approval {
     generation: u64,
     expires_at: Instant,
     decision: ApprovalDecision,
+    host_summary: Option<String>,
 }
 
 #[derive(Default)]
@@ -92,6 +94,7 @@ impl AppState {
                 mode_transition: AtomicBool::new(false),
                 approval_generation: AtomicU64::new(rand::random()),
                 approval_prompt: Mutex::new(()),
+                approval_prompt_worker: AtomicBool::new(false),
                 praefectus_signing_key: SigningKey::from_bytes(&rand::random()),
                 praefectus_executor: Arc::new(NativeExecutor::default()),
                 semantic_observations: Mutex::new(HashMap::new()),
@@ -546,6 +549,7 @@ fn request_approval(
         generation,
         expires_at: Instant::now() + Duration::from_secs(300),
         decision: ApprovalDecision::Pending,
+        host_summary: Some(host_summary),
     };
     let mut approvals = state.approvals_lock()?;
     approvals.retain(|_, approval| {
@@ -557,7 +561,7 @@ fn request_approval(
     approvals.insert(request_id.clone(), approval);
     drop(approvals);
 
-    spawn_host_prompt(state.clone(), request_id.clone(), host_summary);
+    spawn_host_prompt(state.clone());
     Ok(json!({
         "content": [{
             "type": "text",
@@ -581,31 +585,73 @@ fn approval_status_result(status: &str) -> Value {
     })
 }
 
-fn spawn_host_prompt(state: AppState, request_id: String, summary: String) {
+fn spawn_host_prompt(state: AppState) {
     if !io::stdin().is_terminal() {
+        return;
+    }
+    if state
+        .inner
+        .approval_prompt_worker
+        .swap(true, Ordering::AcqRel)
+    {
         return;
     }
     std::thread::spawn(move || {
         let Ok(_prompt) = state.inner.approval_prompt.lock() else {
+            state
+                .inner
+                .approval_prompt_worker
+                .store(false, Ordering::Release);
             return;
         };
-        eprint!(
-            "Poke Around requests: {}\nApprove? [y/N] ",
-            sanitize_host_prompt(&summary)
-        );
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        let approved = io::stdin()
-            .read_line(&mut answer)
-            .is_ok_and(|_| answer.trim().eq_ignore_ascii_case("y"));
-        let _ = state.decide_approval(
-            &request_id,
-            if approved {
-                ApprovalDecision::Approved
-            } else {
-                ApprovalDecision::Denied
-            },
-        );
+        loop {
+            let Ok(mut approvals) = state.approvals_lock() else {
+                state
+                    .inner
+                    .approval_prompt_worker
+                    .store(false, Ordering::Release);
+                return;
+            };
+            let generation = state.inner.approval_generation.load(Ordering::Acquire);
+            let next = approvals.iter_mut().find_map(|(id, approval)| {
+                if approval.generation == generation
+                    && approval.expires_at > Instant::now()
+                    && approval.decision == ApprovalDecision::Pending
+                {
+                    approval
+                        .host_summary
+                        .take()
+                        .map(|summary| (id.clone(), summary))
+                } else {
+                    None
+                }
+            });
+            let Some((request_id, summary)) = next else {
+                state
+                    .inner
+                    .approval_prompt_worker
+                    .store(false, Ordering::Release);
+                return;
+            };
+            eprint!(
+                "Poke Around requests: {}\nApprove? [y/N] ",
+                sanitize_host_prompt(&summary)
+            );
+            let _ = io::stderr().flush();
+            drop(approvals);
+            let mut answer = String::new();
+            let approved = io::stdin()
+                .read_line(&mut answer)
+                .is_ok_and(|_| answer.trim().eq_ignore_ascii_case("y"));
+            let _ = state.decide_approval(
+                &request_id,
+                if approved {
+                    ApprovalDecision::Approved
+                } else {
+                    ApprovalDecision::Denied
+                },
+            );
+        }
     });
 }
 
@@ -1167,6 +1213,40 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn invalidated_approvals_do_not_accumulate_prompt_threads() {
+        if !io::stdin().is_terminal() {
+            return;
+        }
+        let state =
+            AppState::with_approval_mode(PermissionMode::Full, ApprovalMode::PerAction).unwrap();
+        let prompt = state.inner.approval_prompt.lock().unwrap();
+        let baseline = fs::read_dir("/proc/self/task").unwrap().count();
+        for index in 0..40 {
+            let generation = state.inner.approval_generation.load(Ordering::Acquire);
+            request_approval(
+                "clipboard_write",
+                &json!({"text": "value"}),
+                "session",
+                generation,
+                &state,
+            )
+            .unwrap();
+            state.set_mode(if index % 2 == 0 {
+                PermissionMode::Limited
+            } else {
+                PermissionMode::Full
+            });
+        }
+        let threads = fs::read_dir("/proc/self/task").unwrap().count();
+        drop(prompt);
+        assert!(
+            threads <= baseline + 1,
+            "prompt threads grew from {baseline} to {threads}"
+        );
+    }
+
+    #[test]
     fn approval_queue_is_bounded() {
         let state =
             AppState::with_approval_mode(PermissionMode::Full, ApprovalMode::PerAction).unwrap();
@@ -1178,6 +1258,7 @@ mod tests {
             generation,
             expires_at: Instant::now() + Duration::from_secs(60),
             decision: ApprovalDecision::Pending,
+            host_summary: None,
         };
         let mut approvals = state.approvals_lock().unwrap();
         for index in 0..MAX_PENDING_APPROVALS {
