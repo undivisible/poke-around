@@ -2,7 +2,11 @@
 all-features = true
 
 [advisories]
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "Expires 2027-02-05: praefectus 0.8.0 and atspi 0.30 require zbus 5 and its zvariant crate; migrate when upstream supports zbus 6." },
+    { id = "RUSTSEC-2026-0371", reason = "Expires 2027-02-05: praefectus 0.8.0 and atspi 0.30 require zbus 5 and its zbus_names crate; migrate when upstream supports zbus 6." },
+    { id = "RUSTSEC-2026-0372", reason = "Expires 2027-02-05: praefectus 0.8.0 and atspi 0.30 require zbus 5 and its zvariant_derive crate; migrate when upstream supports zbus 6." },
+]
 
 [licenses]
 allow = [
