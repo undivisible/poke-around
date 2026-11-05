@@ -43,6 +43,7 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
         }
     }
     let prefix = format!("{name}.");
+    let mut matched = None;
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let file_name_os = entry.file_name();
@@ -56,8 +57,16 @@ pub fn find_agent(name: &str) -> Result<PathBuf> {
 
         let stem = &file_name_str[..file_name_str.len() - 3];
         if stem == name || stem.starts_with(&prefix) {
-            return ensure_agent_path(&dir, entry.path());
+            if matched.is_some() {
+                return Err(Error::msg(format!(
+                    "agent '{name}' is ambiguous; specify the full filename"
+                )));
+            }
+            matched = Some(entry.path());
         }
+    }
+    if let Some(path) = matched {
+        return ensure_agent_path(&dir, path);
     }
     Err(Error::msg(format!(
         "agent '{name}' not found in {}",
@@ -275,6 +284,27 @@ mod tests {
 
         let found = find_agent("my_agent").unwrap();
         assert_same_agent_path(&found, &agent_path);
+    }
+
+    #[test]
+    #[serial]
+    fn ambiguous_agent_name_requires_exact_filename() {
+        let _guard = setup_test_env();
+        let agents_dir = config::agents_dir().unwrap();
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("report.30m.js"), "first").unwrap();
+        std::fs::write(agents_dir.join("report.1h.js"), "second").unwrap();
+
+        assert!(
+            find_agent("report")
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        assert_same_agent_path(
+            &find_agent("report.30m.js").unwrap(),
+            &agents_dir.join("report.30m.js"),
+        );
     }
 
     #[test]
