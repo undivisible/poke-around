@@ -19,6 +19,14 @@ Semantic UI uses Praefectus accessibility backends (macOS accessibility, Linux A
 - **Windows diagnostics:** `system_info` uses Windows CIM for memory and uptime. Verify these probes on supported Windows desktops, including restricted environments where they may be unavailable.
 - **All platforms:** semantic observation errors collapse to a generic unavailable message. Provide sanitized, actionable categories for missing permission, session, or accessibility service without exposing UI contents. Verify on real desktop sessions; OS build/test CI alone does not exercise these backends.
 
+### Interactive desktop verification still required
+
+CI does not establish that an assistant can operate a real desktop. The following remain explicitly unverified because no interactive macOS or Windows runner is available:
+
+- On macOS, grant and revoke Accessibility and Screen Recording permissions, then exercise observation, capture, and approved semantic effects against real applications.
+- On Windows, exercise observation, capture, and approved semantic effects in an interactive user session, and check the session-0 warning in a non-interactive service session.
+- On Linux, check capture, clipboard, screen enumeration and semantic accessibility on representative X11 and Wayland sessions, including installations with both X11 and Wayland utilities.
+
 ## Capability directions
 
 - Add a **local, read-only readiness diagnostic** covering session type, semantic backend, capture backend and permissions, with actionable remediation. Keep remote capability reporting disabled until its privacy boundary is designed.
