@@ -1606,7 +1606,9 @@ fn permissions(args: &Value) -> Result<Value> {
     if str_arg(args, "action") == Some("grant") {
         Ok(ok_json(peekaboo().grant_permissions()?))
     } else {
-        Ok(ok_json(peekaboo().permissions()))
+        Ok(ok_json(crate::platform::diagnostic_permissions(
+            peekaboo().permissions(),
+        )))
     }
 }
 
@@ -1788,8 +1790,36 @@ fn system_memory_bytes() -> Option<u64> {
             }
         }
         None
+    } else if cfg!(target_os = "windows") {
+        command_output(
+            "powershell.exe",
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory",
+            ],
+        )?
+        .parse()
+        .ok()
     } else {
         None
+    }
+}
+
+fn system_uptime() -> Option<String> {
+    if cfg!(target_os = "windows") {
+        command_output(
+            "powershell.exe",
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "((Get-Date) - (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime).ToString('c')",
+            ],
+        )
+    } else {
+        command_output("uptime", &[])
     }
 }
 
@@ -1798,7 +1828,7 @@ fn system_info(state: &AppState) -> Result<Value> {
         "os": std::env::consts::OS,
         "hostname": command_output("hostname", &[]).unwrap_or_default(),
         "arch": std::env::consts::ARCH,
-        "uptime": command_output("uptime", &[]).unwrap_or_default(),
+        "uptime": system_uptime().unwrap_or_default(),
         "memory_bytes": system_memory_bytes(),
         "home": state.inner.home,
         "now": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
@@ -1973,6 +2003,23 @@ mod tests {
     use crate::mcp::AppState;
     use crate::policy::PermissionMode;
     use serial_test::serial;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_system_diagnostics_report_uptime_and_physical_memory() {
+        assert!(!system_uptime().unwrap().is_empty());
+        assert!(system_memory_bytes().unwrap() > 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_permissions_report_accessibility_as_unverified() {
+        let result = permissions(&json!({})).unwrap();
+        let report = &result["structuredContent"];
+        assert!(report["accessibility"].is_null());
+        assert!(report["xdotool_available"].is_boolean());
+        assert!(report["accessibility_note"].is_string());
+    }
 
     #[test]
     fn image_arguments_reject_paths_endpoints_and_interactive_scopes() {
