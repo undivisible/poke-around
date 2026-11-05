@@ -2,10 +2,10 @@ use crate::bridge_auth::{
     self, OAuthRecoveryOutcome, ensure_auth, make_poke, recover_from_oauth_required,
 };
 use crate::bridge_state::{
-    log_status, patch_state, read_state, record_connection, remove_state_key,
+    forget_connections, log_status, patch_state, read_state, record_connection,
 };
 use crate::{Error, Result};
-use futures::future::join_all;
+use futures::{StreamExt, stream};
 use rs_poke::{
     CreateWebhook, FetchWithAuthOptions, Poke, TunnelEvent, TunnelOptions, TunnelRunner,
     fetch_with_auth,
@@ -29,7 +29,7 @@ const DELETE_RETRY_DELAY: Duration = Duration::from_secs(2);
 pub struct Bridge {
     tx: async_mpsc::UnboundedSender<BridgeCommand>,
     handle: Option<thread::JoinHandle<()>>,
-    done: Option<mpsc::Receiver<()>>,
+    done: Option<mpsc::Receiver<std::result::Result<(), String>>>,
 }
 
 enum BridgeCommand {
@@ -53,24 +53,19 @@ impl Bridge {
             {
                 Ok(runtime) => runtime,
                 Err(err) => {
-                    log_status(&format!(
-                        "Bridge error: failed to start async runtime: {err}"
-                    ));
-                    let _ = done_tx.send(());
+                    let _ = done_tx.send(Err(format!("failed to start async runtime: {err}")));
                     return;
                 }
             };
-            if let Err(err) = runtime.block_on(run_bridge(
+            let result = runtime.block_on(run_bridge(
                 mcp_url,
                 tunnel_mcp_url,
                 mcp_bearer,
                 mode,
                 approval_mode,
                 rx,
-            )) {
-                log_status(&format!("Bridge error: {err}"));
-            }
-            let _ = done_tx.send(());
+            ));
+            let _ = done_tx.send(result.map_err(|err| err.to_string()));
         });
         Ok(Self {
             tx,
@@ -87,13 +82,23 @@ impl Bridge {
 
     pub fn stop(&mut self) -> Result<()> {
         let _ = self.tx.send(BridgeCommand::Stop);
-        if let Some(done_rx) = self.done.take() {
-            let _ = done_rx.recv_timeout(BRIDGE_STOP_TIMEOUT);
+        if let Some(done_rx) = self.done.take()
+            && matches!(
+                done_rx.recv_timeout(BRIDGE_STOP_TIMEOUT),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            )
+        {
+            self.handle.take();
+            return Err(Error::msg("timed out stopping bridge"));
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
         Ok(())
+    }
+
+    pub fn completion(&self) -> &mpsc::Receiver<std::result::Result<(), String>> {
+        self.done.as_ref().expect("bridge already stopped")
     }
 }
 
@@ -110,7 +115,7 @@ async fn run_bridge(
     let tunnel_name = bridge_auth::ensure_integration_name("poke-around".to_string()).await?;
     let (webhook_url, webhook_token) = ensure_webhook(&poke, &tunnel_name).await?;
     log_status("Webhook ready.");
-    cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
+    cleanup_stale_connections(&poke).await?;
 
     let mut stop_requested = false;
     let mut reconnect_attempt = 0u32;
@@ -165,7 +170,7 @@ async fn run_bridge(
             StartTunnelResult::Error(err) => {
                 log_status(&format!("Bridge error: {err}"));
                 stop_tunnel(&mut runner, false).await;
-                cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
+                cleanup_stale_connections(&poke).await?;
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 let delay = reconnect_backoff(reconnect_attempt);
                 log_status(&format!(
@@ -208,7 +213,7 @@ async fn run_bridge(
         }
 
         stop_tunnel(&mut runner, false).await;
-        cleanup_stale_connections(&poke, &webhook_url, &webhook_token).await?;
+        cleanup_stale_connections(&poke).await?;
         if restart_tunnel {
             reconnect_attempt = 0;
             log_status("Restarting tunnel with refreshed credentials...");
@@ -428,11 +433,7 @@ async fn ensure_webhook(poke: &Poke, tunnel_name: &str) -> Result<(String, Strin
     Ok((webhook.webhook_url, webhook.webhook_token))
 }
 
-async fn cleanup_stale_connections(
-    poke: &Poke,
-    webhook_url: &str,
-    webhook_token: &str,
-) -> Result<()> {
+async fn cleanup_stale_connections(poke: &Poke) -> Result<()> {
     let state = read_state().await?;
     let mut ids = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -455,29 +456,27 @@ async fn cleanup_stale_connections(
     let poke = poke.clone();
     let futures = ids.into_iter().map(|id| {
         let poke = poke.clone();
-        async move { delete_remote_connection_with_retry(&poke, &id).await }
+        async move {
+            if delete_remote_connection_with_retry(&poke, &id).await {
+                Some(id)
+            } else {
+                None
+            }
+        }
     });
-    join_all(futures).await;
-    patch_state(vec![
-        (
-            "webhookUrl".to_string(),
-            Value::String(webhook_url.to_string()),
-        ),
-        (
-            "webhookToken".to_string(),
-            Value::String(webhook_token.to_string()),
-        ),
-        ("connectionHistory".to_string(), Value::Array(Vec::new())),
-    ])
-    .await?;
-    remove_state_key("connectionId".to_string()).await?;
+    let deleted = stream::iter(futures)
+        .buffer_unordered(10)
+        .filter_map(|id| async move { id })
+        .collect()
+        .await;
+    forget_connections(deleted).await?;
     Ok(())
 }
 
-async fn delete_remote_connection_with_retry(poke: &Poke, connection_id: &str) {
+async fn delete_remote_connection_with_retry(poke: &Poke, connection_id: &str) -> bool {
     for attempt in 1..=DELETE_MAX_ATTEMPTS {
         match delete_remote_connection(poke, connection_id).await {
-            Ok(()) => return,
+            Ok(()) => return true,
             Err(err) => {
                 log_status(&format!(
                     "Failed to delete connection {connection_id} (attempt {attempt}/{DELETE_MAX_ATTEMPTS}): {err}"
@@ -488,6 +487,7 @@ async fn delete_remote_connection_with_retry(poke: &Poke, connection_id: &str) {
             }
         }
     }
+    false
 }
 
 async fn delete_remote_connection(poke: &Poke, connection_id: &str) -> Result<()> {
@@ -716,6 +716,102 @@ pub fn send_one_shot_message(message: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_connection_cleanup_retries_failures_from_persisted_state() {
+        const CHILD: &str = "POKE_AROUND_CLEANUP_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let temp = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "bridge::tests::stale_connection_cleanup_retries_failures_from_persisted_state",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("XDG_CONFIG_HOME", temp.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        use httptest::{Expectation, Server, matchers::*, responders::*};
+        use rs_poke::PokeOptions;
+        use serde_json::json;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let server = Server::run();
+            server.expect(
+                Expectation::matching(request::method_path("DELETE", "/mcp/connections/failed"))
+                    .times(3)
+                    .respond_with(status_code(500)),
+            );
+            server.expect(
+                Expectation::matching(request::method_path("DELETE", "/mcp/connections/success"))
+                    .times(1)
+                    .respond_with(status_code(204)),
+            );
+            let poke = Poke::new(PokeOptions {
+                api_key: Some("test-token".into()),
+                base_url: server.url_str("/").trim_end_matches('/').to_string(),
+            })
+            .unwrap();
+            patch_state(vec![
+                ("connectionId".into(), json!("failed")),
+                ("connectionHistory".into(), json!(["failed", "success"])),
+            ])
+            .await
+            .unwrap();
+            cleanup_stale_connections(&poke).await.unwrap();
+            let state = read_state().await.unwrap();
+            assert_eq!(
+                state.get("connectionId"),
+                Some(&json!("failed")),
+                "failed deletion must remain retryable"
+            );
+            assert_eq!(state["connectionHistory"], json!(["failed"]));
+            drop(server);
+
+            for i in 0..12 {
+                record_connection(format!("new-{i}")).await.unwrap();
+            }
+            let server = Server::run();
+            server.expect(
+                Expectation::matching(request::method_path("DELETE", "/mcp/connections/failed"))
+                    .times(1)
+                    .respond_with(status_code(204)),
+            );
+            for i in 0..12 {
+                server.expect(
+                    Expectation::matching(request::method_path(
+                        "DELETE",
+                        format!("/mcp/connections/new-{i}"),
+                    ))
+                    .times(1)
+                    .respond_with(status_code(204)),
+                );
+            }
+            let poke = Poke::new(PokeOptions {
+                api_key: Some("test-token".into()),
+                base_url: server.url_str("/").trim_end_matches('/').to_string(),
+            })
+            .unwrap();
+            cleanup_stale_connections(&poke).await.unwrap();
+            let state = read_state().await.unwrap();
+            assert!(state.get("connectionId").is_none());
+            assert_eq!(state["connectionHistory"], json!([]));
+        });
+    }
 
     #[test]
     fn reconnect_backoff_grows_to_cap() {

@@ -42,10 +42,30 @@ pub fn run(mode_arg: Option<&str>, approval_mode_arg: Option<&str>, verbose: boo
     );
     let _ = io::stderr().flush();
     let mut bridge = Bridge::start(&mcp_url, &mcp_bearer, mode.as_str(), approval_mode.as_str())?;
-    let _ = shutdown_rx.recv();
+    let result = wait_for_shutdown(&shutdown_rx, bridge.completion());
     eprintln!("poke-around shutting down");
     bridge.stop()?;
-    Ok(())
+    result
+}
+
+fn wait_for_shutdown(
+    shutdown: &mpsc::Receiver<()>,
+    bridge: &mpsc::Receiver<std::result::Result<(), String>>,
+) -> Result<()> {
+    loop {
+        match bridge.try_recv() {
+            Ok(Err(err)) => return Err(crate::Error::msg(format!("bridge failed: {err}"))),
+            Ok(Ok(())) => return Err(crate::Error::msg("bridge exited unexpectedly")),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(crate::Error::msg("bridge thread terminated unexpectedly"));
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        match shutdown.recv_timeout(Duration::from_millis(100)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
 }
 
 fn spawn_config_poll(state: AppState) {
@@ -60,4 +80,32 @@ fn spawn_config_poll(state: AppState) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_exit_ends_daemon_wait() {
+        let (_shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (bridge_tx, bridge_rx) = mpsc::channel();
+        bridge_tx.send(Err("authentication failed".into())).unwrap();
+        assert!(
+            wait_for_shutdown(&shutdown_rx, &bridge_rx)
+                .unwrap_err()
+                .to_string()
+                .contains("authentication failed")
+        );
+        drop(bridge_tx);
+        assert!(wait_for_shutdown(&shutdown_rx, &bridge_rx).is_err());
+    }
+
+    #[test]
+    fn shutdown_ends_daemon_wait() {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (_bridge_tx, bridge_rx) = mpsc::channel();
+        shutdown_tx.send(()).unwrap();
+        assert!(wait_for_shutdown(&shutdown_rx, &bridge_rx).is_ok());
+    }
 }
