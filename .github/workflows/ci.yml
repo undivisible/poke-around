@@ -50,6 +50,10 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      - name: Test approval prompt thread bound
+        if: runner.os == 'Linux'
+        run: script -q -e -c 'cargo test invalidated_approvals_do_not_accumulate_prompt_threads -- --test-threads=1' /dev/null
+
       - name: Install script test
         if: runner.os != 'Windows'
         run: bash scripts/test-install.sh
